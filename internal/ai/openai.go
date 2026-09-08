@@ -26,7 +26,7 @@ type OpenAIClient struct {
 
 type Parser interface {
 	Transcribe(ctx context.Context, filename string, audio []byte) (string, error)
-	ParseText(ctx context.Context, transcript, tz string) ([]byte, error)
+	ParseText(ctx context.Context, transcript, tz string) ([]byte, Usage, error)
 }
 
 func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
@@ -73,9 +73,9 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 	return strings.TrimSpace(out.Text), nil
 }
 
-func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]byte, error) {
+func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]byte, Usage, error) {
 	if c.cfg.OpenAIKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY missing")
+		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
 	}
 
 	// Calculate current date in User's TZ
@@ -104,28 +104,17 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		bs, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("llm error: %s", string(bs))
+		return nil, Usage{}, fmt.Errorf("llm error: %s", string(bs))
 	}
 
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
+	var out chatCompletion
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	log.Printf(
 		"openai parse usage: model=%s prompt_tokens=%d completion_tokens=%d total_tokens=%d",
@@ -135,7 +124,7 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 		out.Usage.TotalTokens,
 	)
 	if len(out.Choices) == 0 {
-		return nil, fmt.Errorf("no choices")
+		return nil, Usage{}, fmt.Errorf("no choices")
 	}
-	return []byte(out.Choices[0].Message.Content), nil
+	return []byte(out.Choices[0].Message.Content), out.usage(), nil
 }

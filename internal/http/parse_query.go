@@ -684,6 +684,9 @@ type answeredQuestionRequest struct {
 	inputChars    int
 	responseBytes int
 	audioSize     int64
+	// What the provider reported for the call that produced this question, so
+	// answering one costs the same to account for as capturing a transaction.
+	reported ai.Usage
 }
 
 // answerParsedQuestion completes the question direction of /v1/parse.
@@ -697,17 +700,24 @@ type answeredQuestionRequest struct {
 func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRequest) {
 	question := normalizeLedgerQuestion(request.rawQuery, timepkg.Now().In(s.questionLocation(request.tz)))
 
+	questionPrompt, questionCompletion, questionTotal := tokenPointers(request.reported)
+
 	answer, err := answerLedgerQuestion(request.userID, question)
 	if err != nil {
 		// The provider call succeeded and was paid for; the ledger read did
 		// not. Charging for it and then showing nothing would be the worse of
 		// the two, so the reservation is released.
 		_, _ = request.creditService.FinalizeUsage(request.usageEventID, billing.ProviderUsage{
-			Status:        billing.UsageStatusFailedAfterProvider,
-			ErrorCode:     "question_lookup_failed",
-			InputChars:    &request.inputChars,
-			ResponseBytes: &request.responseBytes,
-			AudioBytes:    optionalInt64(request.audioSize),
+			Status:           billing.UsageStatusFailedAfterProvider,
+			ErrorCode:        "question_lookup_failed",
+			Provider:         "openai",
+			Model:            s.cfg.OpenAILlmModel,
+			InputChars:       &request.inputChars,
+			ResponseBytes:    &request.responseBytes,
+			AudioBytes:       optionalInt64(request.audioSize),
+			PromptTokens:     questionPrompt,
+			CompletionTokens: questionCompletion,
+			TotalTokens:      questionTotal,
 		})
 		log.Printf("question lookup error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "question_lookup_failed"})
@@ -722,6 +732,7 @@ func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRe
 		request.inputChars,
 		request.responseBytes,
 		request.audioSize,
+		request.reported,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})

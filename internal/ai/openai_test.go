@@ -34,7 +34,7 @@ func TestParseTextUsesConfiguredCostControls(t *testing.T) {
 		OpenAIMaxTokens: 600,
 	})
 
-	if _, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata"); err != nil {
+	if _, _, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata"); err != nil {
 		t.Fatal(err)
 	}
 	if got := requestBody["model"]; got != "gpt-4o-mini" {
@@ -70,5 +70,64 @@ func TestTranscribeUsesConfiguredModel(t *testing.T) {
 	}
 	if got != "coffee 200 via upi" {
 		t.Fatalf("transcript = %q", got)
+	}
+}
+
+// The counts used to stop at a log line, which left every usage row with null
+// tokens and pushed the cost model onto its flat per-credit fallback. The
+// client has to hand them back to its caller for any of that to be recorded.
+func TestParseTextReturnsProviderTokenUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"{\"stage\":\"draft\"}"}}],
+			"usage":{"prompt_tokens":4387,"completion_tokens":132,"total_tokens":4519}
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(&config.Config{
+		OpenAIKey:      "test-key",
+		OpenAIBaseURL:  server.URL,
+		OpenAILlmModel: "gpt-4o-mini",
+	})
+
+	content, usage, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) == 0 {
+		t.Fatal("expected the message content alongside the usage")
+	}
+	if usage.PromptTokens != 4387 || usage.CompletionTokens != 132 || usage.TotalTokens != 4519 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if !usage.Reported() {
+		t.Fatal("a response carrying counts should report as measured")
+	}
+}
+
+// A provider that says nothing about tokens must not be recorded as having
+// used none: downstream stores nil for "unknown" and zero for "measured none",
+// and conflating them prices a real call at nothing.
+func TestParseTextUsageIsUnreportedWhenProviderOmitsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(&config.Config{
+		OpenAIKey:      "test-key",
+		OpenAIBaseURL:  server.URL,
+		OpenAILlmModel: "gpt-4o-mini",
+	})
+
+	_, usage, err := client.ParseText(context.Background(), "coffee", "Asia/Kolkata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Reported() {
+		t.Fatalf("expected no reported usage, got %#v", usage)
 	}
 }

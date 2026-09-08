@@ -102,7 +102,7 @@ func (s *Server) importCardStatementAlert(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	raw, parseErr := parser.ParseStatementAlert(ctx, input.Text, receivedAt)
+	raw, alertUsage, parseErr := parser.ParseStatementAlert(ctx, input.Text, receivedAt)
 	if parseErr != nil {
 		s.recordAIProviderFailure()
 		log.Printf("statement alert parse failed: %v", parseErr)
@@ -113,12 +113,12 @@ func (s *Server) importCardStatementAlert(c *gin.Context) {
 	parsed, parseErr := decodeStatementAlert(raw, input, receivedAt)
 	if parseErr != nil {
 		responseBytes := len(raw)
-		_, _ = creditService.FinalizeUsage(usage.ID, billing.ProviderUsage{Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_alert_response", ResponseBytes: &responseBytes})
+		_, _ = creditService.FinalizeUsage(usage.ID, withStatementTokens(billing.ProviderUsage{Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_alert_response", ResponseBytes: &responseBytes}, alertUsage, s.cfg.OpenAILlmModel))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "statement_alert_not_recognized"})
 		return
 	}
 	responseBytes := len(raw)
-	credits, err := s.finalizeParseSuccess(creditService, usage.ID, subject, action.Code, utf8.RuneCountInString(input.Text), responseBytes, 0)
+	credits, err := s.finalizeParseSuccess(creditService, usage.ID, subject, action.Code, utf8.RuneCountInString(input.Text), responseBytes, 0, alertUsage)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})
 		return
@@ -201,4 +201,23 @@ func statementAlertContainsAmount(text string, amount models.Money) bool {
 		return true
 	}
 	return strings.HasSuffix(decimal, ".00") && strings.Contains(normalized, strings.TrimSuffix(decimal, ".00"))
+}
+
+// withStatementTokens records what a statement parse cost when the provider
+// answered but the answer could not be used. The credit is spent either way,
+// and a call that produced an unreadable statement costs exactly what one that
+// produced a readable one does.
+func withStatementTokens(usage billing.ProviderUsage, reported ai.Usage, model string) billing.ProviderUsage {
+	prompt, completion, total := tokenPointers(reported)
+	if prompt == nil {
+		return usage
+	}
+	usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens = prompt, completion, total
+	if usage.Provider == "" {
+		usage.Provider = "openai"
+	}
+	if usage.Model == "" {
+		usage.Model = model
+	}
+	return usage
 }

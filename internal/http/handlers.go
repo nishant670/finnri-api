@@ -553,7 +553,11 @@ func (s *Server) handleParse(c *gin.Context) {
 		usageEvent = &event
 	}
 
-	parsed, err := s.parser.ParseText(ctx, transcript, tz)
+	parsed, parseUsage, err := s.parser.ParseText(ctx, transcript, tz)
+	// Every finalisation below this line follows a call the provider actually
+	// answered, so each one carries what that answer cost. The `could_not_parse`
+	// branch is the exception: the call itself failed and reported nothing.
+	promptTokens, completionTokens, totalTokens := tokenPointers(parseUsage)
 	if err != nil {
 		s.recordAIProviderFailure()
 		inputChars := utf8.RuneCountInString(transcript)
@@ -572,11 +576,16 @@ func (s *Server) handleParse(c *gin.Context) {
 		inputChars := utf8.RuneCountInString(transcript)
 		responseBytes := len(parsed)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status:        billing.UsageStatusFailedAfterProvider,
-			ErrorCode:     "invalid_parse_response",
-			InputChars:    &inputChars,
-			ResponseBytes: &responseBytes,
-			AudioBytes:    optionalInt64(audioSize),
+			Status:           billing.UsageStatusFailedAfterProvider,
+			ErrorCode:        "invalid_parse_response",
+			Provider:         "openai",
+			Model:            s.cfg.OpenAILlmModel,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+			InputChars:       &inputChars,
+			ResponseBytes:    &responseBytes,
+			AudioBytes:       optionalInt64(audioSize),
 		})
 		c.JSON(500, gin.H{"error": "invalid_parse_response"})
 		return
@@ -603,6 +612,7 @@ func (s *Server) handleParse(c *gin.Context) {
 			inputChars:    utf8.RuneCountInString(transcript),
 			responseBytes: len(parsed),
 			audioSize:     audioSize,
+			reported:      parseUsage,
 		})
 		return
 	}
@@ -612,11 +622,16 @@ func (s *Server) handleParse(c *gin.Context) {
 		inputChars := utf8.RuneCountInString(transcript)
 		responseBytes := len(parsed)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status:        billing.UsageStatusFailedAfterProvider,
-			ErrorCode:     "non_transactional_prompt",
-			InputChars:    &inputChars,
-			ResponseBytes: &responseBytes,
-			AudioBytes:    optionalInt64(audioSize),
+			Status:           billing.UsageStatusFailedAfterProvider,
+			ErrorCode:        "non_transactional_prompt",
+			Provider:         "openai",
+			Model:            s.cfg.OpenAILlmModel,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+			InputChars:       &inputChars,
+			ResponseBytes:    &responseBytes,
+			AudioBytes:       optionalInt64(audioSize),
 		})
 		c.JSON(422, gin.H{
 			"error":      "non_transactional_prompt",
@@ -629,10 +644,15 @@ func (s *Server) handleParse(c *gin.Context) {
 	if err != nil {
 		inputChars := utf8.RuneCountInString(transcript)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status:     billing.UsageStatusFailedAfterProvider,
-			ErrorCode:  "serialization_failed",
-			InputChars: &inputChars,
-			AudioBytes: optionalInt64(audioSize),
+			Status:           billing.UsageStatusFailedAfterProvider,
+			ErrorCode:        "serialization_failed",
+			Provider:         "openai",
+			Model:            s.cfg.OpenAILlmModel,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+			InputChars:       &inputChars,
+			AudioBytes:       optionalInt64(audioSize),
 		})
 		c.JSON(500, gin.H{"error": "serialization_failed"})
 		return
@@ -643,11 +663,16 @@ func (s *Server) handleParse(c *gin.Context) {
 		inputChars := utf8.RuneCountInString(transcript)
 		responseBytes := len(parsed)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status:        billing.UsageStatusFailedAfterProvider,
-			ErrorCode:     "validation_failed",
-			InputChars:    &inputChars,
-			ResponseBytes: &responseBytes,
-			AudioBytes:    optionalInt64(audioSize),
+			Status:           billing.UsageStatusFailedAfterProvider,
+			ErrorCode:        "validation_failed",
+			Provider:         "openai",
+			Model:            s.cfg.OpenAILlmModel,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      totalTokens,
+			InputChars:       &inputChars,
+			ResponseBytes:    &responseBytes,
+			AudioBytes:       optionalInt64(audioSize),
 		})
 		c.JSON(500, gin.H{"error": "validation_failed"})
 		return
@@ -669,11 +694,16 @@ func (s *Server) handleParse(c *gin.Context) {
 			inputChars := utf8.RuneCountInString(transcript)
 			responseBytes := len(parsed)
 			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-				Status:        billing.UsageStatusFailedAfterProvider,
-				ErrorCode:     "schema_invalid",
-				InputChars:    &inputChars,
-				ResponseBytes: &responseBytes,
-				AudioBytes:    optionalInt64(audioSize),
+				Status:           billing.UsageStatusFailedAfterProvider,
+				ErrorCode:        "schema_invalid",
+				Provider:         "openai",
+				Model:            s.cfg.OpenAILlmModel,
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      totalTokens,
+				InputChars:       &inputChars,
+				ResponseBytes:    &responseBytes,
+				AudioBytes:       optionalInt64(audioSize),
 			})
 			c.JSON(422, gin.H{
 				"error":      "schema_invalid",
@@ -695,6 +725,7 @@ func (s *Server) handleParse(c *gin.Context) {
 		utf8.RuneCountInString(transcript),
 		len(parsed),
 		audioSize,
+		parseUsage,
 	)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "credit_finalization_failed"})
@@ -784,14 +815,19 @@ func (s *Server) finalizeParseSuccess(
 	inputChars int,
 	responseBytes int,
 	audioSize int64,
+	reported ai.Usage,
 ) (map[string]any, error) {
+	prompt, completion, total := tokenPointers(reported)
 	providerUsage := billing.ProviderUsage{
-		Status:        billing.UsageStatusSucceeded,
-		Provider:      "openai",
-		Model:         s.cfg.OpenAILlmModel,
-		InputChars:    &inputChars,
-		ResponseBytes: &responseBytes,
-		AudioBytes:    optionalInt64(audioSize),
+		Status:           billing.UsageStatusSucceeded,
+		Provider:         "openai",
+		Model:            s.cfg.OpenAILlmModel,
+		InputChars:       &inputChars,
+		ResponseBytes:    &responseBytes,
+		AudioBytes:       optionalInt64(audioSize),
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      total,
 	}
 	if audioSize > 0 {
 		providerUsage.SecondaryProvider = "openai"
@@ -891,6 +927,22 @@ func optionalInt64(value int64) *int64 {
 		return nil
 	}
 	return &value
+}
+
+// tokenPointers turns what a provider reported about a call into the optional
+// fields the usage event stores.
+//
+// They are pointers because on this event nil means "the provider did not tell
+// us" and zero means "it told us, and the answer was none". Writing zeros for
+// an unreported call would price it at nothing and quietly understate real
+// spend, so a Usage that reports nothing yields three nils and the columns
+// stay null.
+func tokenPointers(reported ai.Usage) (prompt, completion, total *int) {
+	if !reported.Reported() {
+		return nil, nil, nil
+	}
+	p, c, t := reported.PromptTokens, reported.CompletionTokens, reported.TotalTokens
+	return &p, &c, &t
 }
 
 func (s *Server) saveEntry(c *gin.Context) {

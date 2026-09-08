@@ -23,7 +23,7 @@ type StatementImage struct {
 // parser implementations that only handle transaction text do not need fake
 // vision support just because the statement producer is optional.
 type StatementImageParser interface {
-	ParseStatementImages(ctx context.Context, images []StatementImage, cycleStart, cycleEnd string) ([]byte, error)
+	ParseStatementImages(ctx context.Context, images []StatementImage, cycleStart, cycleEnd string) ([]byte, Usage, error)
 }
 
 const statementImagePrompt = `Read these ordered credit-card statement screenshots and return JSON only.
@@ -36,12 +36,12 @@ Screenshots can overlap: emit an identical row only once. Preserve two genuinely
 // ParseStatementImages sends image data as data URLs in a multimodal user
 // message. Chat Completions is retained here because it is already the
 // configured provider path used by ParseText.
-func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []StatementImage, cycleStart, cycleEnd string) ([]byte, error) {
+func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []StatementImage, cycleStart, cycleEnd string) ([]byte, Usage, error) {
 	if c.cfg.OpenAIKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY missing")
+		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
 	}
 	if len(images) == 0 {
-		return nil, fmt.Errorf("no statement images")
+		return nil, Usage{}, fmt.Errorf("no statement images")
 	}
 
 	content := make([]map[string]any, 0, len(images)+1)
@@ -74,46 +74,35 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.OpenAIBaseURL+"/chat/completions", bytes.NewReader(encoded))
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.OpenAIKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, fmt.Errorf("statement vision error: %s", string(message))
+		return nil, Usage{}, fmt.Errorf("statement vision error: %s", string(message))
 	}
 
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
+	var out chatCompletion
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return nil, Usage{}, err
 	}
 	log.Printf(
 		"openai statement parse usage: model=%s images=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		c.cfg.OpenAILlmModel, len(images), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.Usage.TotalTokens,
 	)
 	if len(out.Choices) == 0 {
-		return nil, fmt.Errorf("no choices")
+		return nil, Usage{}, fmt.Errorf("no choices")
 	}
-	return []byte(out.Choices[0].Message.Content), nil
+	return []byte(out.Choices[0].Message.Content), out.usage(), nil
 }

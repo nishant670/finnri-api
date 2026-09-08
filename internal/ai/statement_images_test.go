@@ -28,7 +28,7 @@ func TestParseStatementImagesUsesMultimodalContentAndStatementLimit(t *testing.T
 		OpenAILlmModel:           "gpt-4o-mini",
 		OpenAIStatementMaxTokens: 4096,
 	})
-	_, err := client.ParseStatementImages(context.Background(), []StatementImage{{
+	_, _, err := client.ParseStatementImages(context.Background(), []StatementImage{{
 		MIME: "image/png", Data: []byte("png bytes"),
 	}}, "2026-07-06", "2026-08-05")
 	if err != nil {
