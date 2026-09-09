@@ -7,8 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // The reported symptom, as a test: a month with nothing in it must not make an

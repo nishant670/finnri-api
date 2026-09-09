@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 var canonicalAccountTypes = map[string]string{

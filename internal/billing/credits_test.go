@@ -9,8 +9,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/models"
 )
 
 func setupCreditTestDB(t *testing.T) *gorm.DB {
@@ -1105,5 +1105,93 @@ func assertLedgerDirectionCount(t *testing.T, db *gorm.DB, eventID uint, directi
 	}
 	if count != want {
 		t.Fatalf("expected %d %s ledger rows, got %d", want, direction, count)
+	}
+}
+
+// The regression this guards: every usage row landed with null tokens, so
+// estimateUsageCostUSDMicros never found any to price and fell through to its
+// flat per-credit fallback. With the counts supplied, the same code prices the
+// call from the model's own rates.
+func TestFinalizeUsageRecordsTokensAndPricesFromThem(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	if err := db.Create(&models.AIModelPricing{
+		Provider:             "openai",
+		Model:                "gpt-4o-mini",
+		Operation:            "llm",
+		InputTokenUSDMicros:  2,
+		OutputTokenUSDMicros: 8,
+		RequestUSDMicros:     50,
+		Active:               true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "parse-tokens-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompt, completion, total := 4387, 132, 4519
+	finalized, err := service.FinalizeUsage(event.ID, ProviderUsage{
+		Provider:         "openai",
+		Model:            "gpt-4o-mini",
+		PromptTokens:     &prompt,
+		CompletionTokens: &completion,
+		TotalTokens:      &total,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if finalized.PromptTokens == nil || *finalized.PromptTokens != prompt {
+		t.Fatalf("prompt tokens = %v", finalized.PromptTokens)
+	}
+	if finalized.CompletionTokens == nil || *finalized.CompletionTokens != completion {
+		t.Fatalf("completion tokens = %v", finalized.CompletionTokens)
+	}
+	if finalized.TotalTokens == nil || *finalized.TotalTokens != total {
+		t.Fatalf("total tokens = %v", finalized.TotalTokens)
+	}
+
+	// 4387*2 + 132*8 + 50 request fee.
+	const wantCost = int64(4387*2 + 132*8 + 50)
+	if finalized.EstimatedCostUSDMicros != wantCost {
+		t.Fatalf("cost = %d, want %d priced from the tokens", finalized.EstimatedCostUSDMicros, wantCost)
+	}
+}
+
+// Without counts the cost must still resolve — to the per-credit fallback —
+// rather than becoming zero.
+func TestFinalizeUsageLeavesTokensNullWhenProviderReportedNone(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "parse-tokens-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	finalized, err := service.FinalizeUsage(event.ID, ProviderUsage{Provider: "openai", Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized.PromptTokens != nil || finalized.CompletionTokens != nil || finalized.TotalTokens != nil {
+		t.Fatalf("unreported tokens should stay null, got %v/%v/%v",
+			finalized.PromptTokens, finalized.CompletionTokens, finalized.TotalTokens)
+	}
+	if finalized.EstimatedCostUSDMicros <= 0 {
+		t.Fatalf("expected the per-credit fallback to price the call, got %d", finalized.EstimatedCostUSDMicros)
 	}
 }

@@ -19,12 +19,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/identity"
-	"finance-parser-go/internal/mailer"
-	"finance-parser-go/internal/models"
+	"finnri/internal/billing"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/identity"
+	"finnri/internal/mailer"
+	"finnri/internal/models"
 )
 
 // Auth Response Wrapper

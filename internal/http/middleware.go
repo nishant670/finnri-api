@@ -12,9 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // lastActiveWriteInterval bounds how often a request refreshes users.last_active_at.

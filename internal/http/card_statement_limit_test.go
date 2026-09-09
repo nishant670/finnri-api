@@ -3,7 +3,7 @@ package http
 import (
 	"testing"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 // rupees builds a Money from whole rupees, so the tables below read like the

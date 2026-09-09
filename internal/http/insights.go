@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 
 	"github.com/gin-gonic/gin"
 )

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 
 	"github.com/gin-gonic/gin"
 )

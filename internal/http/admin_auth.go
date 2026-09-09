@@ -15,9 +15,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm/clause"
 
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 const adminSessionTTL = 8 * time.Hour

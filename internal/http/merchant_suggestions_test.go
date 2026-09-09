@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 func TestMerchantSuggestionsUseOwnedHistoryAndCategoryAssociation(t *testing.T) {

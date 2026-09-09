@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/billing"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xeipuuv/gojsonschema"
@@ -26,14 +26,15 @@ type fixtureParser struct {
 	err           error
 	transcript    string
 	transcribeErr error
+	usage         ai.Usage
 }
 
 func (p fixtureParser) Transcribe(context.Context, string, []byte) (string, error) {
 	return p.transcript, p.transcribeErr
 }
 
-func (p fixtureParser) ParseText(context.Context, string, string) ([]byte, error) {
-	return p.result, p.err
+func (p fixtureParser) ParseText(context.Context, string, string) ([]byte, ai.Usage, error) {
+	return p.result, p.usage, p.err
 }
 
 func TestParseHandlerMapsProviderFailure(t *testing.T) {
@@ -644,5 +645,54 @@ func TestParseHandlerAcceptsCardBillPayment(t *testing.T) {
 	}
 	if !strings.Contains(body, `"purpose_type":"card_payment"`) {
 		t.Fatalf("card bill purpose was not preserved: %s", body)
+	}
+}
+
+// The regression: the client read the provider's token counts, logged them and
+// returned only the content, so the handler had nothing to record and every
+// row landed with null tokens. This drives a real parse and reads the row back.
+func TestParseHandlerRecordsProviderTokensOnUsageEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	schema, err := gojsonschema.NewSchema(
+		gojsonschema.NewReferenceLoader("file://../../schemas/expense_entry.schema.json"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		cfg:       &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata", OpenAILlmModel: "gpt-4o-mini"},
+		validator: schema,
+		parser: fixtureParser{
+			result: []byte(`{
+				"title":"Metro","amount":45,"type":"expense","currency":"INR",
+				"mode":"UPI","category":"Travel","date":"2026-07-09"
+			}`),
+			usage: ai.Usage{PromptTokens: 4387, CompletionTokens: 132, TotalTokens: 4519},
+		},
+	}
+
+	context, response := newParseTextContext("metro 45 via upi")
+	user := attachParseCreditUser(t, context)
+
+	server.handleParse(context)
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var event models.AIUsageEvent
+	if err := database.DB.Where("user_id = ?", user.ID).Order("id DESC").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.PromptTokens == nil || *event.PromptTokens != 4387 {
+		t.Fatalf("prompt_tokens = %v, want 4387", event.PromptTokens)
+	}
+	if event.CompletionTokens == nil || *event.CompletionTokens != 132 {
+		t.Fatalf("completion_tokens = %v, want 132", event.CompletionTokens)
+	}
+	if event.TotalTokens == nil || *event.TotalTokens != 4519 {
+		t.Fatalf("total_tokens = %v, want 4519", event.TotalTokens)
+	}
+	if event.Model != "gpt-4o-mini" {
+		t.Fatalf("model = %q — cost cannot be priced without it", event.Model)
 	}
 }

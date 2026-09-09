@@ -7,7 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 type FeatureCode string

@@ -18,8 +18,8 @@ Legend:
 
 ## Current Status
 
-- Mobile app is the active MVP surface: `EZ-Money/`.
-- Backend API is active and tested: `EZ-Money-BE/`.
+- Mobile app is the active MVP surface: `finnri-app/`.
+- Backend API is active and tested: `finnri-api/`.
 - Web dashboard is active in `finnri-web/` with live overview, insights,
   transactions, accounts, notifications, budgets, recurring payments, and EMI
   API integrations documented in `docs/WEB_DASHBOARD.md`.
@@ -38,7 +38,7 @@ Legend:
 - [x] Code review and PR-sized implementation plan documented in `docs/review-report.md`.
 - [x] Reconcile docs with implementation route names: `/v1/entries` and `/v1/parse` are the canonical Phase 1.2 API routes.
 - [x] Update `docs/review-report.md` so old baseline findings that are now fixed are clearly separated from current remaining gaps.
-- [x] Decide whether `BACKLOG.md` should remain at workspace root or be copied into one of the three Git repos: canonical planning docs are copied into `EZ-Money-BE/` so they can be versioned with backend/API/security work.
+- [x] Decide whether `BACKLOG.md` should remain at workspace root or be copied into one of the three Git repos: canonical planning docs are copied into `finnri-api/` so they can be versioned with backend/API/security work.
 
 ## Completed MVP Foundations
 
@@ -48,7 +48,7 @@ Legend:
 - [x] Backend creates or ensures a default Cash account for new/existing guests.
 - [x] Voice/text parse endpoint exists at `POST /v1/parse`.
 - [x] Parse endpoint returns a draft only; it does not persist transactions.
-- [x] Parser provider interface exists in `EZ-Money-BE/internal/ai`.
+- [x] Parser provider interface exists in `finnri-api/internal/ai`.
 - [x] Parser normalizer exposes `confidence`, `needs_confirmation`, `missing_fields`, and `clarifications`.
 - [x] Mobile confirmation modal displays AI review prompts and clarifications.
 - [x] Manual transaction entry exists.
@@ -97,7 +97,7 @@ Legend:
   `@react-native-google-signin/google-signin` SDK before any release wider than
   friends testing. The browser flow depends on "Enable custom URI scheme" on the
   Android OAuth client, which Google marks as not recommended: any app can
-  register the same `ezmoney://` scheme and intercept the redirect. PKCE limits
+  register the same `finnri://` scheme and intercept the redirect. PKCE limits
   the damage but the native SDK avoids the redirect entirely. Note this changes
   the ID-token audience, so `GOOGLE_CLIENT_IDS` must switch from the Android
   client ID to the Web client ID at the same time as the app ships.
@@ -109,7 +109,7 @@ Legend:
 - [x] Reduce or intentionally document mobile lint warnings.
 - [x] Add mobile component tests for confirmation editing, uncertainty display, account selection, validation, and disabled double-submit.
 - [x] Add mobile flow tests for guest first transaction, text parse, manual entry, edit/delete, and dashboard refresh.
-- [x] Add API contract tests against `EZ-Money-BE/openapi.yaml`.
+- [x] Add API contract tests against `finnri-api/openapi.yaml`.
 - [x] Add an end-to-end smoke test for guest capture -> parse -> confirm -> save -> dashboard update.
 - [x] Document manual mobile QA for voice capture on a real device/simulator.
 - [x] Document accessibility QA for labels, touch targets, font scaling, contrast, and reduced motion.

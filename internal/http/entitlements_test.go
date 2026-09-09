@@ -7,8 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/models"
+	"finnri/internal/billing"
+	"finnri/internal/models"
 )
 
 func TestFreeUserGatedEndpointsReturnPaymentRequired(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 // A group with one split expense on it, and the ids needed to check what

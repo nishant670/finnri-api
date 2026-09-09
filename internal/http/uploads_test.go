@@ -12,7 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func uploadRequest(t *testing.T, filename string, contentType string, body []byte) *nethttp.Request {

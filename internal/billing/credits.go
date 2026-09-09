@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/models"
 )
 
 const (

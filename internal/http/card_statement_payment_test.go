@@ -3,8 +3,8 @@ package http
 import (
 	"testing"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // Paying a card bill must not read as fresh spending. The spending already

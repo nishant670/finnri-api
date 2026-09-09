@@ -3,8 +3,8 @@ package http
 import (
 	"testing"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // createNoCostEMIPlan is the common case in India: a ₹60,000 purchase split

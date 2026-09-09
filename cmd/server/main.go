@@ -5,10 +5,10 @@ import (
 	"os"
 	"strings"
 
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	httpserver "finance-parser-go/internal/http"
-	"finance-parser-go/internal/models"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	httpserver "finnri/internal/http"
+	"finnri/internal/models"
 
 	"github.com/joho/godotenv"
 )

@@ -14,10 +14,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
-	"finance-parser-go/internal/payments"
+	"finnri/internal/billing"
+	"finnri/internal/database"
+	"finnri/internal/models"
+	"finnri/internal/payments"
 )
 
 // maxWebhookBodyBytes caps what will be read from an unauthenticated endpoint.

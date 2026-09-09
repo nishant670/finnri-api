@@ -3,7 +3,7 @@ package http
 import (
 	"strings"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 const (

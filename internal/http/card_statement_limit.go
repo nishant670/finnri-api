@@ -1,6 +1,6 @@
 package http
 
-import "finance-parser-go/internal/models"
+import "finnri/internal/models"
 
 /*
 What a credit card has left to spend.

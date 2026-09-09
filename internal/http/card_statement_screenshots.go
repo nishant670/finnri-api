@@ -13,10 +13,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/billing"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 const maxStatementScreenshots = 8
@@ -134,7 +134,7 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(requestTimeout)*time.Second)
 	defer cancel()
-	parsed, parseErr := vision.ParseStatementImages(ctx, images, statement.CycleStart, statement.CycleEnd)
+	parsed, visionUsage, parseErr := vision.ParseStatementImages(ctx, images, statement.CycleStart, statement.CycleEnd)
 	if parseErr != nil {
 		s.recordAIProviderFailure()
 		log.Printf("statement image parse failed: %v", parseErr)
@@ -176,7 +176,7 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 	}
 
 	responseBytes := len(parsed)
-	credits, err := s.finalizeParseSuccess(creditService, usageEvent.ID, subject, action.Code, 0, responseBytes, 0)
+	credits, err := s.finalizeParseSuccess(creditService, usageEvent.ID, subject, action.Code, 0, responseBytes, 0, visionUsage)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})
 		return
