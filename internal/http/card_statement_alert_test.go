@@ -3,7 +3,7 @@ package http
 import (
 	"testing"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 func TestDecodeStatementAlertUsesReceivedDateWhenStatementDateMissing(t *testing.T) {

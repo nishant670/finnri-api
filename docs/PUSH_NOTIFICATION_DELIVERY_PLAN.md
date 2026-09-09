@@ -5,10 +5,10 @@ scoped but unbuilt.
 
 ## The problem
 
-`createNotification` in `EZ-Money-BE/internal/http/notifications.go` writes a row
+`createNotification` in `finnri-api/internal/http/notifications.go` writes a row
 in `notifications` and stops. Nothing sends it anywhere. The only code in the
 repo that talks to Expo's push service is
-`EZ-Money-BE/internal/http/subscription_automation.go`, and it does so on its own
+`finnri-api/internal/http/subscription_automation.go`, and it does so on its own
 rather than through a shared sender.
 
 So every notification the product raises — split group invites, invite
@@ -17,7 +17,7 @@ Finnri and looks. Nothing reaches a locked phone.
 
 For split group invites this is partly mitigated: an in-app prompt now surfaces a
 pending invite the moment the invitee opens the app, with Accept / Check later
-(see `EZ-Money/components/split/SplitInvitePrompt.tsx`). That closes the "she
+(see `finnri-app/components/split/SplitInvitePrompt.tsx`). That closes the "she
 never finds out" gap for anyone who opens the app, but not for anyone who
 doesn't.
 
@@ -39,7 +39,7 @@ doesn't.
    testable on a real device.
 5. **Deep links.** Notifications already carry `action_url` (e.g.
    `/invite/split/<token>`). Confirm the push payload carries it and that
-   `EZ-Money/app/+native-intent.ts` routes a cold-start tap to the right screen.
+   `finnri-app/app/+native-intent.ts` routes a cold-start tap to the right screen.
 
 ## Order
 

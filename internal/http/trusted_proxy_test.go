@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 // rateLimit keys its buckets on ClientIP, so if Gin trusts every proxy a caller

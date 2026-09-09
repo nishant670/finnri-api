@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 const maxEntryExportRows = 10000

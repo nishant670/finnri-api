@@ -13,10 +13,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/billing"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 func createAdminSessionForTest(t *testing.T, role string) (models.User, string) {

@@ -24,7 +24,7 @@ The correct Phase 1 response is to finish and harden the core mobile flow. The N
 
 ## 2. Current codebase state
 
-### Mobile: `EZ-Money`
+### Mobile: `finnri-app`
 
 Present:
 
@@ -45,7 +45,7 @@ Incomplete or misleading:
 - Mobile lint currently fails: 10 errors and 60 warnings in the inspected working tree.
 - No automated mobile tests were found.
 
-### Backend: `EZ-Money-BE`
+### Backend: `finnri-api`
 
 Present:
 

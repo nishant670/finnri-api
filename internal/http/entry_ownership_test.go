@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

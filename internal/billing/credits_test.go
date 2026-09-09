@@ -9,8 +9,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/models"
 )
 
 func setupCreditTestDB(t *testing.T) *gorm.DB {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/models"
 )
 
 func TestFinalizeUsageEstimatesFallbackCostAndMetrics(t *testing.T) {

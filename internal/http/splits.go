@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/identity"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/identity"
+	"finnri/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -2861,7 +2861,7 @@ func (s *Server) webBaseURL() string {
 }
 
 func splitInviteDeepLink(token string) string {
-	return fmt.Sprintf("ezmoney://invite/split/%s", token)
+	return fmt.Sprintf("finnri://invite/split/%s", token)
 }
 
 func displayNameForUser(user models.User) string {

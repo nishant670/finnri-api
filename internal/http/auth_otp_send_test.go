@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/mailer"
-	"finance-parser-go/internal/models"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/mailer"
+	"finnri/internal/models"
 )
 
 // stubMailer records what would have been sent, and can be told to fail, so

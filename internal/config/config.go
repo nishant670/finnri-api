@@ -272,7 +272,7 @@ func trustedProxies() []string {
 func ResolveBackendPath(rel string) string {
 	candidates := []string{
 		rel,
-		filepath.Join("EZ-Money-BE", rel),
+		filepath.Join("finnri-api", rel),
 	}
 
 	if _, file, _, ok := runtime.Caller(0); ok && filepath.IsAbs(file) {
@@ -281,10 +281,10 @@ func ResolveBackendPath(rel string) string {
 
 	if cwd, err := os.Getwd(); err == nil {
 		for dir := cwd; ; dir = filepath.Dir(dir) {
-			if filepath.Base(dir) == "EZ-Money-BE" {
+			if filepath.Base(dir) == "finnri-api" {
 				candidates = append(candidates, filepath.Join(dir, rel))
 			}
-			candidates = append(candidates, filepath.Join(dir, "EZ-Money-BE", rel))
+			candidates = append(candidates, filepath.Join(dir, "finnri-api", rel))
 			parent := filepath.Dir(dir)
 			if parent == dir {
 				break

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 //go:embed prompt.txt

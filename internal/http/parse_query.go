@@ -11,9 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/billing"
+	"finnri/internal/models"
 )
 
 // The parse channel carries two directions, not one.

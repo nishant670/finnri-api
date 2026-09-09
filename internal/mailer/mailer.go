@@ -15,7 +15,7 @@ import (
 	"net/mail"
 	"strings"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 // ErrNotConfigured is returned by the no-op sender. Callers must treat it as a

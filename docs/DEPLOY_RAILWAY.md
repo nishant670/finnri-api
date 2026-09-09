@@ -25,7 +25,7 @@ git rm --cached main && git commit -m "Stop tracking built binary; add Railway d
 
 ## 2. Create the Railway project
 
-1. New Project → Deploy from GitHub repo → `nishant670/EZ-Money-BE`, branch `phase-1.0.2`.
+1. New Project → Deploy from GitHub repo → `nishant670/finnri-api`, branch `phase-1.0.2`.
 2. Railway reads `railway.json` and builds with the Dockerfile. No build config needed.
 3. Add a Postgres database to the same project (New → Database → PostgreSQL).
 4. Service → Settings → Networking → Generate Domain. Note the
@@ -85,14 +85,14 @@ constraints — idempotently on each boot.
 ## 6. Build the APK against this URL
 
 The app falls back to `http://127.0.0.1:8080` when `EXPO_PUBLIC_API_URL` is
-unset (`EZ-Money/lib/transactions.ts`), and Android 9+ blocks cleartext HTTP —
+unset (`finnri-app/lib/transactions.ts`), and Android 9+ blocks cleartext HTTP —
 so the variable must be set at build time and must be `https://`.
 
-The `preview` profile in `EZ-Money/eas.json` now carries it; replace the
+The `preview` profile in `finnri-app/eas.json` now carries it; replace the
 placeholder with your real Railway domain, then:
 
 ```bash
-cd EZ-Money && eas build --profile preview --platform android
+cd finnri-app && eas build --profile preview --platform android
 ```
 
 EAS returns a download link you can send to your testers.

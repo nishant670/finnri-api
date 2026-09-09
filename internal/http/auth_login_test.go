@@ -9,10 +9,10 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/ai"
+	"finnri/internal/billing"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 func TestAuthLoginAcceptsLegacyRepeatedDigitPIN(t *testing.T) {

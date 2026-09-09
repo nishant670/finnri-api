@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 type accountProvider = models.AccountProviderDetails

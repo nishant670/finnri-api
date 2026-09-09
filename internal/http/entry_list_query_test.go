@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"testing"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 type entryListPage struct {

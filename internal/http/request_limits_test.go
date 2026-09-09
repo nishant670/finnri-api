@@ -11,7 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func TestAuthRequestBodyLimitReturns413(t *testing.T) {

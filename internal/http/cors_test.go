@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func TestCORSMiddlewareAllowsConfiguredOrigin(t *testing.T) {

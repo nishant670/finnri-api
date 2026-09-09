@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 const (

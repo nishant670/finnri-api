@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func TestParseTextUsesConfiguredCostControls(t *testing.T) {

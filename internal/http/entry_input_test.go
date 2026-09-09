@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 func testMoney(value string) models.Money {

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func TestNotConfiguredNeverReportsSuccess(t *testing.T) {

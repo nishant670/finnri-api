@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func TestSessionTTLUsesSafeConfigBound(t *testing.T) {

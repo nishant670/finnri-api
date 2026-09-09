@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 func TestParseStatementImagesUsesMultimodalContentAndStatementLimit(t *testing.T) {

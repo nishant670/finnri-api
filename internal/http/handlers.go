@@ -24,13 +24,13 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/ai"
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/mailer"
-	"finance-parser-go/internal/models"
-	"finance-parser-go/internal/payments"
+	"finnri/internal/ai"
+	"finnri/internal/billing"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/mailer"
+	"finnri/internal/models"
+	"finnri/internal/payments"
 )
 
 type Server struct {

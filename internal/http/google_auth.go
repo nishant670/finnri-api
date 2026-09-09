@@ -18,7 +18,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 const googleJWKSURL = "https://www.googleapis.com/oauth2/v3/certs"

@@ -1,7 +1,7 @@
 package models
 
 import (
-	"finance-parser-go/internal/identity"
+	"finnri/internal/identity"
 	"time"
 
 	"gorm.io/gorm"

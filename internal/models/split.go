@@ -4,7 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
-	"finance-parser-go/internal/identity"
+	"finnri/internal/identity"
 	"fmt"
 	"time"
 

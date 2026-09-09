@@ -7,8 +7,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // issueTestClaimToken plants a verified AuthVerification row and hands back the

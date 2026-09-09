@@ -1,4 +1,4 @@
-module finance-parser-go
+module finnri
 
 go 1.24.1
 

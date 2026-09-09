@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
 
-	"finance-parser-go/internal/config"
+	"finnri/internal/config"
 )
 
 var openAPIPathParamPattern = regexp.MustCompile(`\{([^}/]+)\}`)

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 /*

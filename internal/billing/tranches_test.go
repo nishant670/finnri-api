@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 func TestQuarterlyCreditsArriveInThreeMonthlyTranchesWithOneRollover(t *testing.T) {

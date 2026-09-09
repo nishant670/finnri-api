@@ -12,9 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/config"
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // The monthly review is the app's only closed retention loop: one message a

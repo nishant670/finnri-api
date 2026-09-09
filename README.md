@@ -18,7 +18,7 @@ template. `.env.example` lists every required variable with secrets redacted.
 
 ## Rotate the OpenAI key
 
-The key is read only by the backend from `EZ-Money-BE/.env`.
+The key is read only by the backend from `finnri-api/.env`.
 
 1. Open `.env` and replace only the value after `OPENAI_API_KEY=`.
 2. Do not add quotes or spaces, and never put the key in the mobile or web app.

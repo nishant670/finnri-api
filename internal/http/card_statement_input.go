@@ -3,7 +3,7 @@ package http
 import (
 	"strings"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 // cardStatementInput is a bill as the user reads it off their statement. Only

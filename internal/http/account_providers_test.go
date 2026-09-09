@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 func stringPointer(value string) *string { return &value }

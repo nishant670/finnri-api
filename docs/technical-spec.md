@@ -47,8 +47,8 @@ Parsing and persistence are separate operations. No parser, model provider, back
 
 ### 2.2 Repository boundaries
 
-- `EZ-Money/`: primary Expo/React Native MVP client.
-- `EZ-Money-BE/`: Go/Gin API and PostgreSQL persistence.
+- `finnri-app/`: primary Expo/React Native MVP client.
+- `finnri-api/`: Go/Gin API and PostgreSQL persistence.
 - `finnri-web/`: existing Next.js code, maintained only for security or low-cost compatibility fixes during MVP; not a Phase 1 deliverable.
 - `docs/`: product and engineering source of truth.
 

@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/billing"
-	"finance-parser-go/internal/database"
+	"finnri/internal/billing"
+	"finnri/internal/database"
 )
 
 func (s *Server) requireEntitlement(feature billing.FeatureCode) gin.HandlerFunc {

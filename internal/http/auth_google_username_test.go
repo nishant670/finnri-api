@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // Every Google sign-in used to be named `User_2c9f4a1b`, and the app printed

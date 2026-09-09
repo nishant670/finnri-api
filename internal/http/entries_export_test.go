@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"finance-parser-go/internal/models"
+	"finnri/internal/models"
 )
 
 func TestExportEntriesCSVUsesFiltersAndOwnedRows(t *testing.T) {

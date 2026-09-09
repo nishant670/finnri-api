@@ -9,8 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"finance-parser-go/internal/database"
-	"finance-parser-go/internal/models"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // cardPaymentPurposeType marks both the bank-side debit of a card payment and
