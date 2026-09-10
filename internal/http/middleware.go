@@ -169,6 +169,73 @@ func (l *memoryRateLimiter) evictOldest() {
 	}
 }
 
+// clientIPContextKey holds the address every per-client decision keys on: the
+// rate-limit buckets, the guest trial grant, and the hashed IP in the admin
+// audit log.
+const clientIPContextKey = "clientIP"
+
+// resolveClientIP settles the caller's address once per request.
+//
+// gin.Context.ClientIP() answers this correctly only where it can recognise the
+// proxy in front of it, which means knowing that proxy's address range.
+// Railway's edge does not connect from the private ranges TRUSTED_PROXIES
+// defaults to, and its address is neither stable nor documented, so ClientIP()
+// resolved to a value that differed from one request to the next. Every request
+// therefore opened its own rate-limit bucket and nothing was ever limited: 120
+// concurrent requests against production on 2026-09-10 drew zero 429s with the
+// limits set to 5 rps and a burst of 10.
+//
+// Counting hops from the right of X-Forwarded-For needs no knowledge of the
+// proxy at all. The last entry is the one the immediate proxy appended, and it
+// is the only entry a caller cannot choose - anything a caller sends itself
+// arrives to the left of it. TRUSTED_PROXY_HOPS is how many proxies stand
+// between the client and this process: 1 behind Railway, and 0 for a process
+// exposed directly to the internet, where the header must not be believed at
+// all and Gin's own answer is the honest one.
+func resolveClientIP(cfg *config.Config) gin.HandlerFunc {
+	hops := cfg.TrustedProxyHops
+	return func(c *gin.Context) {
+		c.Set(clientIPContextKey, clientIPFromHops(c, hops))
+		c.Next()
+	}
+}
+
+// clientIPFromHops takes the hops'th entry counting back from the end of
+// X-Forwarded-For, and falls back to Gin whenever the header cannot supply one:
+// no header at all, a chain shorter than hops claims, or an empty entry. A
+// wrong hops count fails loudly rather than silently - too many and every
+// caller shares one bucket, which shows up immediately as blanket 429s.
+func clientIPFromHops(c *gin.Context, hops int) string {
+	if hops <= 0 {
+		return c.ClientIP()
+	}
+	forwarded := c.GetHeader("X-Forwarded-For")
+	if forwarded == "" {
+		return c.ClientIP()
+	}
+	parts := strings.Split(forwarded, ",")
+	index := len(parts) - hops
+	if index < 0 || index >= len(parts) {
+		return c.ClientIP()
+	}
+	if ip := strings.TrimSpace(parts[index]); ip != "" {
+		return ip
+	}
+	return c.ClientIP()
+}
+
+// requestClientIP reads what resolveClientIP settled. Handlers reached without
+// that middleware - every test that builds a bare context - still get Gin's
+// answer rather than an empty key that would pool them all together.
+func requestClientIP(c *gin.Context) string {
+	if value, ok := c.Get(clientIPContextKey); ok {
+		if ip, ok := value.(string); ok && ip != "" {
+			return ip
+		}
+	}
+	return c.ClientIP()
+}
+
 func rateLimit(cfg *config.Config, scope string) gin.HandlerFunc {
 	return rateLimitAt(cfg.RateLimitRPS, cfg.RateLimitBurst, scope)
 }
@@ -187,7 +254,7 @@ func webhookRateLimit(cfg *config.Config) gin.HandlerFunc {
 func rateLimitAt(rps float64, burst int, scope string) gin.HandlerFunc {
 	limiter := newMemoryRateLimiter(rps, burst)
 	return func(c *gin.Context) {
-		key := scope + ":" + c.ClientIP()
+		key := scope + ":" + requestClientIP(c)
 		ok, retryAfter := limiter.allow(key)
 		if !ok {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))

@@ -65,6 +65,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		log.Fatalf("invalid TRUSTED_PROXIES: %v", err)
 	}
 	r.Use(gin.Recovery())
+	// Before anything that keys on the caller: the rate limiters, the guest
+	// trial grant, and the admin audit log all read what this settles.
+	r.Use(resolveClientIP(cfg))
 	r.Use(cors(cfg))
 	r.Use(logging())
 
