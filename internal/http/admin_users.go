@@ -327,7 +327,7 @@ func adminFeatureFlags(userID uint) gin.H {
 func (s *Server) auditPIIView(c *gin.Context, subjectID uint) {
 	adminUserID, actor := auditActor(c)
 	payload, _ := json.Marshal(gin.H{"fields": []string{"email", "phone"}})
-	_ = database.DB.Create(&models.AdminAuditLog{AdminUserID: adminUserID, Actor: actor, Action: "view_user_pii", SubjectType: "user", SubjectID: strconv.Itoa(int(subjectID)), Payload: string(payload), IPHash: s.hashAdminIP(c.ClientIP())}).Error
+	_ = database.DB.Create(&models.AdminAuditLog{AdminUserID: adminUserID, Actor: actor, Action: "view_user_pii", SubjectType: "user", SubjectID: strconv.Itoa(int(subjectID)), Payload: string(payload), IPHash: s.hashAdminIP(requestClientIP(c))}).Error
 }
 
 func maskEmail(value string) string {

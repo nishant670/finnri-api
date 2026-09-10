@@ -59,6 +59,7 @@ type Config struct {
 	MaintenanceIntervalHours        int
 	AnonymousGuestRetentionDays     int
 	TrustedProxies                  []string
+	TrustedProxyHops                int
 	AdminBootstrapUserIDs           []uint
 	AdminStaticToken                string
 	AdminRateLimitRPS               float64
@@ -215,6 +216,7 @@ func Load() *Config {
 		MaintenanceIntervalHours:        atoi("MAINTENANCE_INTERVAL_HOURS", 24),
 		AnonymousGuestRetentionDays:     atoi("ANONYMOUS_GUEST_RETENTION_DAYS", 90),
 		TrustedProxies:                  trustedProxies(),
+		TrustedProxyHops:                atoi("TRUSTED_PROXY_HOPS", 1),
 		AdminBootstrapUserIDs:           csvUint("ADMIN_BOOTSTRAP_USER_IDS"),
 		AdminStaticToken:                getenv("ADMIN_STATIC_TOKEN", ""),
 		AdminRateLimitRPS:               atof("ADMIN_RATE_LIMIT_RPS", 30),

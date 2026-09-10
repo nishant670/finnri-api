@@ -362,7 +362,7 @@ func (s *Server) authGuest(c *gin.Context) {
 				c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 				return
 			}
-			if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+			if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, requestClientIP(c)); err != nil {
 				c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
 				return
 			}
@@ -405,7 +405,7 @@ func (s *Server) authGuest(c *gin.Context) {
 					c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 					return
 				}
-				if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+				if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, requestClientIP(c)); err != nil {
 					c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
 					return
 				}
@@ -426,7 +426,7 @@ func (s *Server) authGuest(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_create_default_account"})
 		return
 	}
-	if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, c.ClientIP()); err != nil {
+	if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, requestClientIP(c)); err != nil {
 		c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
 		return
 	}

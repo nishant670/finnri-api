@@ -249,7 +249,7 @@ func (s *Server) adminAuditMiddleware() gin.HandlerFunc {
 			SubjectType: strings.Trim(strings.Split(strings.TrimPrefix(c.FullPath(), "/v1/admin/"), "/")[0], " "),
 			SubjectID:   firstNonEmpty(c.Param("id"), c.Param("code")),
 			Payload:     string(payload),
-			IPHash:      s.hashAdminIP(c.ClientIP()),
+			IPHash:      s.hashAdminIP(requestClientIP(c)),
 		}
 		_ = database.DB.Create(&entry).Error
 	}

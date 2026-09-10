@@ -62,7 +62,7 @@ func (s *Server) handleBillingWebhook(c *gin.Context) {
 	if !payments.VerifyWebhookSignature(config.WebhookSecret, body, signature) {
 		// Recorded, not silently dropped: a run of these is the only visible
 		// sign of either a rotated secret or somebody probing the endpoint.
-		recordRejectedWebhook(eventID, hashHex, c.ClientIP())
+		recordRejectedWebhook(eventID, hashHex, requestClientIP(c))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_signature"})
 		return
 	}
