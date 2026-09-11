@@ -495,7 +495,13 @@ func localSplitFriendForSlot(
 	}
 	if len(conditions) > 0 {
 		var byContact models.SplitFriend
-		err := owned().Where("("+strings.Join(conditions, " OR ")+")", args...).First(&byContact).Error
+		contactMatch := owned().Where("("+strings.Join(conditions, " OR ")+")", args...)
+		// Contact details are supporting evidence, not permission to relink a
+		// row already known to represent a different Finnri account.
+		if linkedUserID != nil {
+			contactMatch = contactMatch.Where("linked_user_id IS NULL OR linked_user_id = ?", *linkedUserID)
+		}
+		err := contactMatch.First(&byContact).Error
 		if err == nil {
 			if byContact.LinkedUserID == nil && linkedUserID != nil {
 				if err := tx.Model(&byContact).Update("linked_user_id", *linkedUserID).Error; err != nil {

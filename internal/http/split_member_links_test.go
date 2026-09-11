@@ -251,3 +251,35 @@ func TestPreexistingSharedGroupBackfillsMemberLinksOnRead(t *testing.T) {
 		t.Fatalf("reading the group did not backfill the owner link: %#v", shared[0].ViewerSlotFriends)
 	}
 }
+
+// A failed or interrupted migration can leave some translations behind. The
+// presence of one must not suppress healing of the rest of the roster.
+func TestPreexistingSharedGroupBackfillsPartiallyMissingMemberLinks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+
+	ownerToken, memberToken, _, group := joinedSplitGroup(t)
+	second := performJSONRequest[models.SplitFriend](
+		t, router, http.MethodPost, "/v1/split/friends", ownerToken,
+		map[string]any{"name": "Roommate", "phone": "+91 98200 44556"}, http.StatusCreated,
+	)
+	performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d", group.ID), ownerToken,
+		map[string]any{"name": "Home", "friend_ids": []uint{group.Members[0].FriendID, second.ID}}, http.StatusOK,
+	)
+
+	secondSlot := splitGroupSlotForFriend(second.ID)
+	if err := database.DB.Where("group_id = ? AND user_id IN (?) AND slot = ?", group.ID,
+		database.DB.Model(&models.SplitGroupUserMember{}).Select("user_id").Where("group_id = ?", group.ID), secondSlot).
+		Delete(&models.SplitGroupMemberLink{}).Error; err != nil {
+		t.Fatalf("delete one translated slot: %v", err)
+	}
+
+	shared := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", memberToken, nil, http.StatusOK,
+	)
+	if len(shared) != 1 || shared[0].ViewerSlotFriends[secondSlot] == 0 {
+		t.Fatalf("reading the group did not repair its missing slot %q: %#v", secondSlot, shared)
+	}
+}

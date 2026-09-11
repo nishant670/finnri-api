@@ -180,12 +180,12 @@ func TestParseHandlerNormalizesNoCostEMICreditCardDrift(t *testing.T) {
 	if response.Code != 200 {
 		t.Fatalf("status = %d, body = %s", response.Code, body)
 	}
-	for _, unexpected := range []string{"schema_invalid", "emi_tenure_months", "no_cost_emi", `"emi":`} {
+	for _, unexpected := range []string{"schema_invalid", "no_cost_emi", `"emi":`} {
 		if strings.Contains(body, unexpected) {
 			t.Fatalf("response contains unsupported schema drift %q: %s", unexpected, body)
 		}
 	}
-	for _, expected := range []string{`"mode":"Credit Card"`, `"card_network":null`, `"account_hint":"HDFC"`, `"tag":"EMI"`, `"purpose_type":"normal_spend"`, `"tags":["EMI"]`, `"missing_fields":["amount","category"]`} {
+	for _, expected := range []string{`"mode":"Credit Card"`, `"card_network":null`, `"account_hint":"HDFC"`, `"tag":"EMI"`, `"purpose_type":"normal_spend"`, `"tags":["EMI"]`, `"emi_tenure_months":6`, `"missing_fields":["amount","category"]`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("response missing %q: %s", expected, body)
 		}

@@ -961,18 +961,13 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 // Membership used to be all a member got, so every group already in flight has
 // a roster its members cannot name anybody in. Healing on read means an
 // existing group fixes itself the first time it is opened, instead of waiting
-// for its owner to happen to edit the roster. The lookup returns nothing once
-// the links are there, which is every call after the first.
+// for its owner to happen to edit the roster. Sync is idempotent and must run
+// for every active membership: testing only for the presence of *any* link
+// leaves a partially migrated group permanently incomplete.
 func backfillSplitGroupMemberLinks(db *gorm.DB, userID uint) error {
 	var groupIDs []uint
 	if err := db.Model(&models.SplitGroupUserMember{}).
 		Where("split_group_user_members.user_id = ? AND split_group_user_members.status = ?", userID, "active").
-		Where("NOT EXISTS (?)",
-			db.Model(&models.SplitGroupMemberLink{}).
-				Select("1").
-				Where("split_group_member_links.group_id = split_group_user_members.group_id").
-				Where("split_group_member_links.user_id = ?", userID),
-		).
 		Pluck("split_group_user_members.group_id", &groupIDs).Error; err != nil {
 		return err
 	}

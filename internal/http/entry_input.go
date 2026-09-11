@@ -11,25 +11,29 @@ import (
 )
 
 type entryInput struct {
-	Title       string             `json:"title"`
-	Type        string             `json:"type"`
-	Amount      models.Money       `json:"amount"`
-	Currency    string             `json:"currency"`
-	Source      string             `json:"source"`
-	Mode        string             `json:"mode"`
-	CardNetwork string             `json:"card_network"`
-	Category    string             `json:"category"`
-	Merchant    string             `json:"merchant"`
-	PurposeType string             `json:"purpose_type"`
-	Tag         string             `json:"tag"`
-	Tags        models.StringArray `json:"tags"`
-	Notes       string             `json:"notes"`
-	Date        string             `json:"date"`
-	Time        string             `json:"time"`
-	SourceText  string             `json:"source_text"`
-	Attachment  string             `json:"attachment"`
-	AccountID   *uint              `json:"account_id"`
-	Split       *entrySplitInput   `json:"split"`
+	Title            string             `json:"title"`
+	Type             string             `json:"type"`
+	Amount           models.Money       `json:"amount"`
+	Currency         string             `json:"currency"`
+	Source           string             `json:"source"`
+	Mode             string             `json:"mode"`
+	CardNetwork      string             `json:"card_network"`
+	Category         string             `json:"category"`
+	Merchant         string             `json:"merchant"`
+	PurposeType      string             `json:"purpose_type"`
+	Tag              string             `json:"tag"`
+	Tags             models.StringArray `json:"tags"`
+	Notes            string             `json:"notes"`
+	Date             string             `json:"date"`
+	Time             string             `json:"time"`
+	SourceText       string             `json:"source_text"`
+	Attachment       string             `json:"attachment"`
+	RefundableAmount *models.Money      `json:"refundable_amount"`
+	RefundExpectedOn *string            `json:"refund_expected_on"`
+	RefundReminderAt *time.Time         `json:"refund_reminder_at"`
+	RefundStatus     *string            `json:"refund_status"`
+	AccountID        *uint              `json:"account_id"`
+	Split            *entrySplitInput   `json:"split"`
 }
 
 type entrySplitInput struct {
@@ -47,25 +51,29 @@ type entrySplitParticipantInput struct {
 }
 
 type updateEntryInput struct {
-	Title       *string             `json:"title"`
-	Type        *string             `json:"type"`
-	Amount      *models.Money       `json:"amount"`
-	Currency    *string             `json:"currency"`
-	Source      *string             `json:"source"`
-	Mode        *string             `json:"mode"`
-	CardNetwork *string             `json:"card_network"`
-	Category    *string             `json:"category"`
-	Merchant    *string             `json:"merchant"`
-	PurposeType *string             `json:"purpose_type"`
-	Tag         *string             `json:"tag"`
-	Tags        *models.StringArray `json:"tags"`
-	Notes       *string             `json:"notes"`
-	Date        *string             `json:"date"`
-	Time        *string             `json:"time"`
-	SourceText  *string             `json:"source_text"`
-	Attachment  *string             `json:"attachment"`
-	AccountID   optionalAccountID   `json:"account_id"`
-	Split       optionalEntrySplit  `json:"split"`
+	Title            *string             `json:"title"`
+	Type             *string             `json:"type"`
+	Amount           *models.Money       `json:"amount"`
+	Currency         *string             `json:"currency"`
+	Source           *string             `json:"source"`
+	Mode             *string             `json:"mode"`
+	CardNetwork      *string             `json:"card_network"`
+	Category         *string             `json:"category"`
+	Merchant         *string             `json:"merchant"`
+	PurposeType      *string             `json:"purpose_type"`
+	Tag              *string             `json:"tag"`
+	Tags             *models.StringArray `json:"tags"`
+	Notes            *string             `json:"notes"`
+	Date             *string             `json:"date"`
+	Time             *string             `json:"time"`
+	SourceText       *string             `json:"source_text"`
+	Attachment       *string             `json:"attachment"`
+	RefundableAmount *models.Money       `json:"refundable_amount"`
+	RefundExpectedOn *string             `json:"refund_expected_on"`
+	RefundReminderAt *time.Time          `json:"refund_reminder_at"`
+	RefundStatus     *string             `json:"refund_status"`
+	AccountID        optionalAccountID   `json:"account_id"`
+	Split            optionalEntrySplit  `json:"split"`
 }
 
 type optionalAccountID struct {
@@ -162,6 +170,12 @@ func (input entryInput) validate() map[string]string {
 	if input.AccountID == nil && strings.TrimSpace(input.Mode) == "" {
 		fields["mode"] = "is required when account_id is omitted"
 	}
+	for field, message := range validateRefundableFields(
+		input.Type, input.Tag, input.Amount, input.RefundableAmount,
+		input.RefundExpectedOn, input.RefundReminderAt, input.RefundStatus,
+	) {
+		fields[field] = message
+	}
 	for field, message := range input.Split.validate() {
 		fields[field] = message
 	}
@@ -175,6 +189,48 @@ func (input entryInput) validate() map[string]string {
 		}
 		if totalShares > input.Amount {
 			fields["split.participants"] = "shares must not exceed transaction amount"
+		}
+	}
+	return fields
+}
+
+func validateRefundableFields(
+	entryType, tag string,
+	amount models.Money,
+	refundableAmount *models.Money,
+	expectedOn *string,
+	reminderAt *time.Time,
+	status *string,
+) map[string]string {
+	fields := map[string]string{}
+	isRefundable := strings.EqualFold(strings.TrimSpace(tag), "Refundable") || refundableAmount != nil
+	if !isRefundable {
+		if expectedOn != nil || reminderAt != nil || status != nil {
+			fields["refundable_amount"] = "is required when refund details are supplied"
+		}
+		return fields
+	}
+	if !strings.EqualFold(entryType, "expense") {
+		fields["refundable_amount"] = "can be tracked only on expenses"
+	}
+	if refundableAmount == nil || !refundableAmount.IsPositive() {
+		fields["refundable_amount"] = "must be greater than zero"
+	} else if *refundableAmount > amount {
+		fields["refundable_amount"] = "must not exceed the transaction amount"
+	}
+	if expectedOn == nil {
+		fields["refund_expected_on"] = "is required"
+	} else if _, err := time.Parse("2006-01-02", strings.TrimSpace(*expectedOn)); err != nil {
+		fields["refund_expected_on"] = "must use YYYY-MM-DD"
+	}
+	if reminderAt != nil && expectedOn == nil {
+		fields["refund_reminder_at"] = "requires an expected refund date"
+	}
+	if status != nil {
+		switch strings.ToLower(strings.TrimSpace(*status)) {
+		case "pending", "received", "written_off":
+		default:
+			fields["refund_status"] = "must be pending, received, or written_off"
 		}
 	}
 	return fields
@@ -238,12 +294,19 @@ func (input entryInput) toModel(userID uint) models.Entry {
 	if resolved, ok := categoryForSave(category, input.Type); ok {
 		category = resolved
 	}
+	refundStatus := input.RefundStatus
+	if input.RefundableAmount != nil && refundStatus == nil {
+		pending := "pending"
+		refundStatus = &pending
+	}
 	return models.Entry{
 		Title: input.Title, Type: strings.ToLower(input.Type), Amount: input.Amount,
 		Currency: currency, Source: source, Mode: input.Mode, CardNetwork: input.CardNetwork,
 		Category: category, Merchant: input.Merchant, PurposeType: input.PurposeType,
 		Tag: input.Tag, Tags: input.Tags, Notes: input.Notes, Date: input.Date,
 		Time: input.Time, SourceText: input.SourceText, Attachment: input.Attachment,
+		RefundableAmount: input.RefundableAmount, RefundExpectedOn: input.RefundExpectedOn,
+		RefundReminderAt: input.RefundReminderAt, RefundStatus: refundStatus,
 		AccountID: input.AccountID, UserID: userID,
 	}
 }

@@ -42,6 +42,24 @@
       ],
       "minimum": 0
     },
+    "refundable_amount": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "refund_expected_on": {
+      "type": ["string", "null"],
+      "format": "date"
+    },
+    "emi_tenure_months": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 360
+    },
+    "emi_rate_pct": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 100
+    },
     "currency": {
       "type": [
         "string",

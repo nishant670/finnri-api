@@ -1,11 +1,49 @@
 package http
 
 import (
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 
 	"finnri/internal/database"
 	"finnri/internal/models"
 )
+
+func TestCreateCardEMIPlanConvertsOnlyMatchingSourceEntry(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	user, token := createPaidBillingTestUserSession(t)
+	card := createTestCard(t, user.ID)
+	otherCard := createTestCard(t, user.ID)
+	source := createCardSpend(t, user.ID, card.ID, "2099-01-31", "67518.00")
+	payload := map[string]any{
+		"title": "Laptop", "principal": "67518.00", "annual_rate_pct": 0,
+		"tenure_months": 6, "purchased_on": "2099-01-31", "source_entry_id": source.ID,
+	}
+
+	performJSONRequest[map[string]any](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/accounts/%d/emi-plans", otherCard.ID), token,
+		payload, http.StatusUnprocessableEntity,
+	)
+	var sourceCount int64
+	database.DB.Model(&models.Entry{}).Where("id = ?", source.ID).Count(&sourceCount)
+	if sourceCount != 1 {
+		t.Fatal("a source entry on another card was removed")
+	}
+
+	created := performJSONRequest[cardEMIPlanResponse](
+		t, router, http.MethodPost, fmt.Sprintf("/v1/accounts/%d/emi-plans", card.ID), token,
+		payload, http.StatusCreated,
+	)
+	if !strings.HasPrefix(created.FirstInstallment, "2099-02-28") {
+		t.Fatalf("first instalment = %s, want the last valid day 2099-02-28", created.FirstInstallment)
+	}
+	database.DB.Model(&models.Entry{}).Where("id = ?", source.ID).Count(&sourceCount)
+	if sourceCount != 0 {
+		t.Fatal("the converted source entry still exists and would double-count spending")
+	}
+}
 
 // createNoCostEMIPlan is the common case in India: a ₹60,000 purchase split
 // into 12 instalments of ₹5,000 with no interest, so the principal component

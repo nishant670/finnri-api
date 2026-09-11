@@ -38,6 +38,10 @@ CAPTURE SCHEMA (no other keys):
   "type": "expense|income|null",
   "title": string|null (short description),
   "amount": number|null,
+  "refundable_amount": number|null,
+  "refund_expected_on": "YYYY-MM-DD"|null,
+  "emi_tenure_months": integer|null,
+  "emi_rate_pct": number|null,
   "currency": "INR" default,
   "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null",
   "card_network": "Visa|Mastercard|Amex|Rupay|null",
@@ -150,8 +154,9 @@ GUARDRAILS:
 - For bank-issued cards, set mode to "Credit Card", put the bank/issuer/card hint such as "HDFC credit card" in account_hint, and only set card_network when the network is explicitly Visa, Mastercard, Amex, or Rupay.
 - purpose_type should default to normal_spend unless the transcript implies investment, lending, refunds, donations, or other explicit cases.
 - Money invested into a fund, SIP, stock, ETF, or brokerage account is an expense (money leaving the user's spendable account), never income. Set type="expense", purpose_type="investment", tag="Investment", and include "Investment" in tags.
-- tags should be a focused list of hints like ["Investment"], ["Lending"], ["EMI"], ["Subscription"], or [] when nothing applies.
-- For no-cost EMI/installment language, do not add EMI-specific keys. Set tag="EMI", include "EMI" in tags, set purpose_type="normal_spend", and summarize tenure or no-cost details in note when stated.
+- tags should be a focused list of hints like ["Investment"], ["Lending"], ["EMI"], ["Subscription"], ["Refundable"], or [] when nothing applies.
+- For EMI/installment language, set tag="EMI", include "EMI" in tags, set purpose_type="normal_spend", and put the stated tenure in emi_tenure_months. Put an explicitly stated annual interest rate in emi_rate_pct; use 0 for language that explicitly says no-cost or zero-interest, and leave it null when no rate is stated.
+- When part of a payment is expected back later (a refundable deposit, security amount, or reimbursable part), set tag="Refundable", include "Refundable" in tags, set purpose_type="reimbursable", put only the expected-to-return portion in refundable_amount, and resolve the stated return date or relative period into refund_expected_on. Do not reduce amount: amount remains the full payment that left the account.
 - For explicit subscription or recurring-payment language, set tag to "Subscription", include "Subscription" in tags, set recurring_candidate=true, and fill subscription_candidate from the text. Do not guess the service name, billing interval, next due date, reminder preference, or cancellation preference. Ask concise clarifying questions for missing subscription fields such as service name, billing interval, and next payment date.
 - For a recurring investment, preserve "Investment" as the primary tag while also filling subscription_candidate so the recurrence can be saved. If the user says it runs only on weekdays, business days, market days, or excludes Saturdays/Sundays/market holidays, use billing_interval="business_daily". Use "daily" only for every calendar day.
 - Treat "auto debit", "autopay", "automatically deducts", and similar language as subscription_candidate.autopay=true. Copy the resolved transaction mode into subscription_candidate.payment_mode. Daily and business_daily schedules should use autopay=true and reminder_days=0.

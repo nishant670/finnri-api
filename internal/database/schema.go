@@ -945,6 +945,49 @@ func runtimeSchemaStatements() []string {
 			ALTER COLUMN amount SET NOT NULL,
 			ALTER COLUMN source SET DEFAULT 'manual',
 			ALTER COLUMN source SET NOT NULL`,
+		`ALTER TABLE entries
+			ADD COLUMN IF NOT EXISTS refundable_amount NUMERIC(19,2),
+			ADD COLUMN IF NOT EXISTS refund_expected_on TEXT,
+			ADD COLUMN IF NOT EXISTS refund_reminder_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS refund_status VARCHAR(16)`,
+		`ALTER TABLE entries
+			DROP CONSTRAINT IF EXISTS entries_refundable_amount_check`,
+		`ALTER TABLE entries
+			ADD CONSTRAINT entries_refundable_amount_check
+			CHECK (refundable_amount IS NULL OR (refundable_amount > 0 AND refundable_amount <= amount))`,
+		`ALTER TABLE entries
+			DROP CONSTRAINT IF EXISTS entries_refund_status_check`,
+		`ALTER TABLE entries
+			ADD CONSTRAINT entries_refund_status_check
+			CHECK (refund_status IS NULL OR refund_status IN ('pending', 'received', 'written_off'))`,
+		`ALTER TABLE entries
+			DROP CONSTRAINT IF EXISTS entries_refund_tracking_check`,
+		`ALTER TABLE entries
+			ADD CONSTRAINT entries_refund_tracking_check
+			CHECK (
+				(refundable_amount IS NULL AND refund_expected_on IS NULL AND refund_reminder_at IS NULL AND refund_status IS NULL)
+				OR
+				(refundable_amount IS NOT NULL AND refund_expected_on IS NOT NULL AND refund_status IS NOT NULL)
+			)`,
+		`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'entries'
+				  AND column_name = 'refund_expected_on'
+				  AND data_type = 'date'
+			) THEN
+				ALTER TABLE entries
+					ALTER COLUMN refund_expected_on TYPE TEXT
+					USING to_char(refund_expected_on, 'YYYY-MM-DD');
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_pending_refunds
+			ON entries (refund_expected_on, refund_reminder_at)
+			WHERE refund_status = 'pending'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_refund_due_unique
+			ON notifications (user_id, type, action_url)
+			WHERE type = 'refund.due'`,
 		`UPDATE entries
 			SET type = LOWER(type)
 			WHERE LOWER(type) IN ('expense', 'income')`,

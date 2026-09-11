@@ -68,6 +68,7 @@ func main() {
 	}
 	httpserver.StartMaintenanceJobs(cfg)
 	httpserver.StartSubscriptionAutomation(cfg)
+	httpserver.StartRefundAutomation(cfg)
 	httpserver.StartCardStatementAutomation(cfg)
 	httpserver.StartMonthlyReviewJob(cfg)
 	r := httpserver.NewServer(cfg)
