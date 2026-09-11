@@ -18,6 +18,8 @@ var allowedParseRootFields = map[string]bool{
 	"merchant": true, "tag": true, "purpose_type": true, "tags": true, "note": true,
 	"date": true, "time": true, "source_text": true, "recurring_candidate": true,
 	"subscription_candidate": true, "split_candidate": true, "split_candidate_details": true,
+	"refundable_amount": true, "refund_expected_on": true,
+	"emi_tenure_months": true, "emi_rate_pct": true,
 	"confidence": true, "needs_confirmation": true, "missing_fields": true,
 	"clarifications": true,
 }
@@ -138,10 +140,40 @@ func sanitizeParsedDraftFields(entry map[string]any) {
 		normalizeOptionalString(entry, field)
 	}
 	normalizeOptionalAmount(entry, "amount")
+	normalizeOptionalAmount(entry, "refundable_amount")
+	normalizeOptionalEMITenure(entry)
+	normalizeOptionalEMIRate(entry)
 	normalizeOptionalDate(entry, "date")
+	normalizeOptionalDate(entry, "refund_expected_on")
 	normalizeParseTime(entry)
 	normalizeOptionalBool(entry, "recurring_candidate")
 	normalizeOptionalBool(entry, "split_candidate")
+}
+
+func normalizeOptionalEMITenure(entry map[string]any) {
+	value, present := entry["emi_tenure_months"]
+	if !present {
+		return
+	}
+	number, ok := coerceParseNumber(value)
+	if !ok || number < 1 || number > maxEMITenureMonths || number != float64(int(number)) {
+		entry["emi_tenure_months"] = nil
+		return
+	}
+	entry["emi_tenure_months"] = number
+}
+
+func normalizeOptionalEMIRate(entry map[string]any) {
+	value, present := entry["emi_rate_pct"]
+	if !present {
+		return
+	}
+	number, ok := coerceParseNumber(value)
+	if !ok || number < 0 || number > maxEMIAnnualRatePercent {
+		entry["emi_rate_pct"] = nil
+		return
+	}
+	entry["emi_rate_pct"] = number
 }
 
 func normalizeInvestmentType(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
@@ -516,6 +548,8 @@ func normalizePurposeAndTags(entry map[string]any) {
 		entry["purpose_type"] = "refund"
 	case "reimbursable":
 		entry["purpose_type"] = "reimbursable"
+		appendTag(entry, "Refundable")
+		setPrimaryTagIfEmpty(entry, "Refundable")
 	case "donation":
 		entry["purpose_type"] = "donation"
 	// Settling a card bill, not buying anything. Kept out of spending and
@@ -565,6 +599,8 @@ func canonicalParseTag(value string) (string, bool) {
 		return "EMI", true
 	case "subscription":
 		return "Subscription", true
+	case "refundable", "reimbursable":
+		return "Refundable", true
 	case "general":
 		return "General", true
 	default:

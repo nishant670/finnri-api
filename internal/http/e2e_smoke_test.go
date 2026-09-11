@@ -281,6 +281,9 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	split.GET("/activity", server.listSplitActivity)
 	split.GET("/balances", server.listSplitBalances)
 	authorized.POST("/tools/emi/calculate", server.calculateEMI)
+	authorized.POST("/accounts/:id/emi-plans", server.createCardEMIPlan)
+	authorized.GET("/refundables", server.listRefundables)
+	authorized.PATCH("/refundables/:id", server.updateRefundStatus)
 	return router
 }
 
@@ -340,6 +343,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.SplitGroupInvite{},
 		&models.SplitGroupDirectInvite{},
 		&models.SplitGroupUserMember{},
+		&models.SplitGroupMemberLink{},
 		&models.SplitBill{},
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},

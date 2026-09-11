@@ -945,6 +945,49 @@ func runtimeSchemaStatements() []string {
 			ALTER COLUMN amount SET NOT NULL,
 			ALTER COLUMN source SET DEFAULT 'manual',
 			ALTER COLUMN source SET NOT NULL`,
+		`ALTER TABLE entries
+			ADD COLUMN IF NOT EXISTS refundable_amount NUMERIC(19,2),
+			ADD COLUMN IF NOT EXISTS refund_expected_on TEXT,
+			ADD COLUMN IF NOT EXISTS refund_reminder_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS refund_status VARCHAR(16)`,
+		`ALTER TABLE entries
+			DROP CONSTRAINT IF EXISTS entries_refundable_amount_check`,
+		`ALTER TABLE entries
+			ADD CONSTRAINT entries_refundable_amount_check
+			CHECK (refundable_amount IS NULL OR (refundable_amount > 0 AND refundable_amount <= amount))`,
+		`ALTER TABLE entries
+			DROP CONSTRAINT IF EXISTS entries_refund_status_check`,
+		`ALTER TABLE entries
+			ADD CONSTRAINT entries_refund_status_check
+			CHECK (refund_status IS NULL OR refund_status IN ('pending', 'received', 'written_off'))`,
+		`ALTER TABLE entries
+			DROP CONSTRAINT IF EXISTS entries_refund_tracking_check`,
+		`ALTER TABLE entries
+			ADD CONSTRAINT entries_refund_tracking_check
+			CHECK (
+				(refundable_amount IS NULL AND refund_expected_on IS NULL AND refund_reminder_at IS NULL AND refund_status IS NULL)
+				OR
+				(refundable_amount IS NOT NULL AND refund_expected_on IS NOT NULL AND refund_status IS NOT NULL)
+			)`,
+		`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'entries'
+				  AND column_name = 'refund_expected_on'
+				  AND data_type = 'date'
+			) THEN
+				ALTER TABLE entries
+					ALTER COLUMN refund_expected_on TYPE TEXT
+					USING to_char(refund_expected_on, 'YYYY-MM-DD');
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_entries_pending_refunds
+			ON entries (refund_expected_on, refund_reminder_at)
+			WHERE refund_status = 'pending'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_refund_due_unique
+			ON notifications (user_id, type, action_url)
+			WHERE type = 'refund.due'`,
 		`UPDATE entries
 			SET type = LOWER(type)
 			WHERE LOWER(type) IN ('expense', 'income')`,
@@ -1071,6 +1114,19 @@ func runtimeSchemaStatements() []string {
 			ON split_group_user_members (group_id, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_group_user_members_user_active
 			ON split_group_user_members (user_id, status, group_id)`,
+		`CREATE TABLE IF NOT EXISTS split_group_member_links (
+			id BIGSERIAL PRIMARY KEY,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			slot VARCHAR(32) NOT NULL,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			friend_id BIGINT NOT NULL REFERENCES split_friends(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_member_links_unique
+			ON split_group_member_links (group_id, slot, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_member_links_friend
+			ON split_group_member_links (user_id, friend_id)`,
 		`ALTER TABLE split_friends
 			ADD COLUMN IF NOT EXISTS linked_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`,
 		`ALTER TABLE users

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"finnri/internal/database"
+	"finnri/internal/identity"
 	"finnri/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -117,6 +118,24 @@ func mergeSplitFriendsTx(tx *gorm.DB, ownerID, loserID, survivorID uint) (models
 		"linked_user_id": nil,
 	}).Error; err != nil {
 		return models.SplitFriend{}, err
+	}
+
+	// A link pointing at the row that just disappeared would name something the
+	// server refuses, which is the very failure the redirect below exists to
+	// prevent — so links move with everything else.
+	if err := tx.Model(&models.SplitGroupMemberLink{}).
+		Where("user_id = ? AND friend_id = ?", ownerID, loserID).
+		Update("friend_id", survivorID).Error; err != nil {
+		return models.SplitFriend{}, err
+	}
+
+	// The merged row's slot no longer exists in any roster it was part of, so
+	// every other member's translation for it has to be rebuilt against the
+	// survivor.
+	for _, membership := range memberships {
+		if err := syncSplitGroupMemberLinks(tx, membership.GroupID); err != nil {
+			return models.SplitFriend{}, err
+		}
 	}
 
 	// The redirect outlives the row. Everything already holding the loser's id
@@ -262,4 +281,264 @@ func (s *Server) mergeSplitFriend(c *gin.Context) {
 		"friend":  survivor,
 		"message": fmt.Sprintf("Merged into %s", fallbackSplitFriendName(survivor)),
 	})
+}
+
+// splitGroupSlotForFriend renders a member's friend id in slot space.
+func splitGroupSlotForFriend(friendID uint) string {
+	return strconv.FormatUint(uint64(friendID), 10)
+}
+
+// syncSplitGroupMemberLinks makes sure every active member of a shared group
+// can name every other person in it.
+//
+// Run after anything that changes who is in a group — an invite accepted, the
+// roster rewritten, a duplicate merged away. It adds only what is missing and
+// drops links to slots that no longer exist, so running it twice costs nothing
+// and running it on an unshared group costs two queries.
+//
+// The owner is skipped throughout: the roster is already written in their
+// namespace, so every slot resolves for them without a translation.
+func syncSplitGroupMemberLinks(tx *gorm.DB, groupID uint) error {
+	var group models.SplitGroup
+	if err := tx.First(&group, groupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	var memberUsers []models.SplitGroupUserMember
+	if err := tx.Where("group_id = ? AND status = ?", group.ID, "active").
+		Find(&memberUsers).Error; err != nil {
+		return err
+	}
+	if len(memberUsers) == 0 {
+		return nil
+	}
+
+	var owner models.User
+	if err := tx.First(&owner, group.UserID).Error; err != nil {
+		return err
+	}
+
+	// Scoped to the owner's own membership rows. Anything else in this table is
+	// a stray written by a member's expense composer before that path was
+	// closed, and provisioning links for it would make the stray permanent.
+	var members []models.SplitGroupMember
+	if err := tx.Preload("Friend").
+		Where("group_id = ? AND user_id = ?", group.ID, group.UserID).
+		Find(&members).Error; err != nil {
+		return err
+	}
+
+	for _, memberUser := range memberUsers {
+		if memberUser.UserID == group.UserID {
+			continue
+		}
+		if err := syncSplitGroupMemberLinksForUser(tx, group, owner, members, memberUser.UserID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncSplitGroupMemberLinksForUser(
+	tx *gorm.DB,
+	group models.SplitGroup,
+	owner models.User,
+	members []models.SplitGroupMember,
+	viewerID uint,
+) error {
+	// Which slot the viewer occupies. They need no link to it — in their own
+	// composer they are "you", and offering them a row for themselves is the
+	// bug this whole table exists to fix.
+	selfSlot := ""
+	for index := range members {
+		friend := members[index].Friend
+		if friend.LinkedUserID != nil && *friend.LinkedUserID == viewerID {
+			selfSlot = splitGroupSlotForFriend(members[index].FriendID)
+			break
+		}
+	}
+
+	// slot -> the owner-side person it stands for; nil means the owner, who is
+	// a user rather than one of their own friend rows.
+	wanted := map[string]*models.SplitFriend{
+		models.SplitGroupDefaultSplitOwnerSlot: nil,
+	}
+	for index := range members {
+		friend := members[index].Friend
+		if friend.ID == 0 || friend.Archived {
+			continue
+		}
+		if friend.LinkedUserID != nil && *friend.LinkedUserID == viewerID {
+			continue
+		}
+		slot := splitGroupSlotForFriend(members[index].FriendID)
+		if slot == selfSlot {
+			continue
+		}
+		wanted[slot] = &members[index].Friend
+	}
+
+	var existing []models.SplitGroupMemberLink
+	if err := tx.Where("group_id = ? AND user_id = ?", group.ID, viewerID).
+		Find(&existing).Error; err != nil {
+		return err
+	}
+	have := map[string]models.SplitGroupMemberLink{}
+	for _, link := range existing {
+		have[link.Slot] = link
+	}
+
+	for slot, person := range wanted {
+		if _, ok := have[slot]; ok {
+			continue
+		}
+		friendID, err := localSplitFriendForSlot(tx, viewerID, owner, person)
+		if err != nil {
+			return err
+		}
+		if friendID == 0 {
+			continue
+		}
+		if err := tx.Create(&models.SplitGroupMemberLink{
+			GroupID:  group.ID,
+			Slot:     slot,
+			UserID:   viewerID,
+			FriendID: friendID,
+		}).Error; err != nil {
+			return err
+		}
+	}
+
+	// A slot that is gone — somebody the owner removed from the roster — stops
+	// being nameable on a new bill. The friend row itself stays: it carries the
+	// history of everything already split with that person.
+	for slot, link := range have {
+		if _, ok := wanted[slot]; ok {
+			continue
+		}
+		if err := tx.Delete(&models.SplitGroupMemberLink{}, link.ID).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// localSplitFriendForSlot finds, or creates, the row in the viewer's own friend
+// list that stands for one person in a shared group.
+//
+// `person` is the owner-side friend row for a member slot, and nil for the
+// owner slot. Matching before creating is the point: the viewer may already
+// have a row for this person from splitting with them outside the group, and a
+// second row would strand that history on an orphan with a zero balance —
+// exactly the duplicate-identity problem the merge tooling exists to clean up.
+func localSplitFriendForSlot(
+	tx *gorm.DB,
+	viewerID uint,
+	owner models.User,
+	person *models.SplitFriend,
+) (uint, error) {
+	var (
+		name         string
+		email        string
+		phone        string
+		linkedUserID *uint
+	)
+	if person == nil {
+		ownerID := owner.ID
+		name = displayNameForUser(owner)
+		email = stringFromPointer(owner.Email)
+		phone = stringFromPointer(owner.Phone)
+		linkedUserID = &ownerID
+	} else {
+		name = fallbackSplitFriendName(*person)
+		email = person.Email
+		phone = person.Phone
+		if person.LinkedUserID != nil {
+			linked := *person.LinkedUserID
+			linkedUserID = &linked
+		}
+	}
+	// Never hand somebody a row standing for themselves.
+	if linkedUserID != nil && *linkedUserID == viewerID {
+		return 0, nil
+	}
+
+	owned := func() *gorm.DB {
+		return tx.Where("user_id = ? AND archived = ?", viewerID, false)
+	}
+
+	// 1. A recorded link is certain.
+	if linkedUserID != nil {
+		var byLink models.SplitFriend
+		err := owned().Where("linked_user_id = ?", *linkedUserID).First(&byLink).Error
+		if err == nil {
+			return byLink.ID, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, err
+		}
+	}
+
+	// 2. Contact details, which is all there is for somebody with no account.
+	conditions := []string{}
+	args := []any{}
+	if trimmed := strings.ToLower(strings.TrimSpace(email)); trimmed != "" {
+		conditions = append(conditions, "LOWER(email) = ?")
+		args = append(args, trimmed)
+	}
+	if normalized := identity.NormalizePhone(phone); normalized != "" {
+		conditions = append(conditions, "phone_normalized = ?")
+		args = append(args, normalized)
+	}
+	if len(conditions) > 0 {
+		var byContact models.SplitFriend
+		contactMatch := owned().Where("("+strings.Join(conditions, " OR ")+")", args...)
+		// Contact details are supporting evidence, not permission to relink a
+		// row already known to represent a different Finnri account.
+		if linkedUserID != nil {
+			contactMatch = contactMatch.Where("linked_user_id IS NULL OR linked_user_id = ?", *linkedUserID)
+		}
+		err := contactMatch.First(&byContact).Error
+		if err == nil {
+			if byContact.LinkedUserID == nil && linkedUserID != nil {
+				if err := tx.Model(&byContact).Update("linked_user_id", *linkedUserID).Error; err != nil {
+					return 0, err
+				}
+			}
+			return byContact.ID, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, err
+		}
+	}
+
+	created := models.SplitFriend{
+		UserID:       viewerID,
+		Name:         name,
+		Email:        email,
+		Phone:        phone,
+		LinkedUserID: linkedUserID,
+	}
+	if err := tx.Create(&created).Error; err != nil {
+		return 0, err
+	}
+	return created.ID, nil
+}
+
+// splitGroupSlotFriendIDs is the viewer's slot translation for one group.
+// Empty for the group's owner, who needs none.
+func splitGroupSlotFriendIDs(db *gorm.DB, groupID, viewerID uint) (map[string]uint, error) {
+	var links []models.SplitGroupMemberLink
+	if err := db.Where("group_id = ? AND user_id = ?", groupID, viewerID).
+		Find(&links).Error; err != nil {
+		return nil, err
+	}
+	slots := make(map[string]uint, len(links))
+	for _, link := range links {
+		slots[link.Slot] = link.FriendID
+	}
+	return slots, nil
 }

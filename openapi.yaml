@@ -618,6 +618,59 @@ paths:
           description: Invalid filters, unsupported format, or export row limit exceeded
         "500":
           description: Export failed
+  /v1/refundables:
+    get:
+      summary: List refundable expense entries
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, received, written_off, all]
+            default: pending
+      responses:
+        "200":
+          description: Refundable entries ordered by expected date
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SavedEntry"
+        "422":
+          description: Invalid status filter
+  /v1/refundables/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    patch:
+      summary: Update a refundable entry's settlement status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [pending, received, written_off]
+      responses:
+        "200":
+          description: Updated refundable entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavedEntry"
+        "404":
+          description: Refundable entry not found
+        "422":
+          description: Invalid refund status
   /v1/merchants/suggestions:
     get:
       summary: Suggest merchants from the authenticated user's entry history
@@ -2780,6 +2833,23 @@ components:
           type: string
         tag:
           type: string
+        refundable_amount:
+          nullable: true
+          oneOf:
+            - type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+            - type: string
+              pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        refund_expected_on:
+          type: [string, "null"]
+          format: date
+        refund_reminder_at:
+          type: [string, "null"]
+          format: date-time
+        refund_status:
+          type: [string, "null"]
+          enum: [pending, received, written_off, null]
         split:
           description: Omit to leave the linked split unchanged, send null to remove it, or send an object to replace it atomically with the entry update.
           oneOf:

@@ -24,6 +24,19 @@
     "category": { "type": "string", "enum": ["Food", "Travel", "Shopping", "Bills", "Family/Gifts", "Misc"] },
     "merchant": { "type": ["string", "null"] },
     "tag": { "type": ["string", "null"] },
+    "refundable_amount": {
+      "oneOf": [
+        { "type": "number", "exclusiveMinimum": 0, "multipleOf": 0.01 },
+        { "type": "string", "pattern": "^[0-9]+(\\.[0-9]{1,2})?$" },
+        { "type": "null" }
+      ]
+    },
+    "refund_expected_on": { "type": ["string", "null"], "format": "date" },
+    "refund_reminder_at": { "type": ["string", "null"], "format": "date-time" },
+    "refund_status": {
+      "type": ["string", "null"],
+      "enum": ["pending", "received", "written_off", null]
+    },
     "notes": { "type": ["string", "null"] },
     "date": { "type": "string", "format": "date" },
     "time": { "type": ["string", "null"], "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(:[0-5]\\d)?$" },

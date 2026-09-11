@@ -200,6 +200,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
 		authorized.DELETE("/entries/:id", s.deleteEntry)
+		authorized.GET("/refundables", s.listRefundables)
+		authorized.PATCH("/refundables/:id", s.updateRefundStatus)
 		authorized.GET("/quick-prompts", s.listQuickPrompts)
 		authorized.POST("/quick-prompts", s.saveQuickPrompt)
 		authorized.PUT("/quick-prompts/:id", s.updateQuickPrompt)
@@ -367,6 +369,7 @@ func skipsStaticBearer(path string) bool {
 	return path == "/health" ||
 		strings.HasPrefix(path, "/v1/auth/") ||
 		strings.HasPrefix(path, "/v1/entries") ||
+		strings.HasPrefix(path, "/v1/refundables") ||
 		strings.HasPrefix(path, "/v1/quick-prompts") ||
 		strings.HasPrefix(path, "/v1/user") ||
 		strings.HasPrefix(path, "/v1/insights") ||
@@ -1180,6 +1183,9 @@ func (s *Server) updateEntry(c *gin.Context) {
 
 	amount, title, entryType := entry.Amount, entry.Title, entry.Type
 	currency, source, mode, category, date := entry.Currency, entry.Source, entry.Mode, entry.Category, entry.Date
+	entryTag := entry.Tag
+	refundableAmount, refundExpectedOn := entry.RefundableAmount, entry.RefundExpectedOn
+	refundReminderAt, refundStatus := entry.RefundReminderAt, entry.RefundStatus
 	if input.Amount != nil {
 		amount = *input.Amount
 	}
@@ -1203,6 +1209,31 @@ func (s *Server) updateEntry(c *gin.Context) {
 	}
 	if input.Date != nil {
 		date = *input.Date
+	}
+	if input.Tag != nil {
+		entryTag = *input.Tag
+	}
+	if input.RefundableAmount != nil {
+		refundableAmount = input.RefundableAmount
+	}
+	if input.RefundExpectedOn != nil {
+		refundExpectedOn = input.RefundExpectedOn
+	}
+	if input.RefundReminderAt != nil {
+		refundReminderAt = input.RefundReminderAt
+	}
+	if input.RefundStatus != nil {
+		refundStatus = input.RefundStatus
+	}
+	if input.Tag != nil && !strings.EqualFold(strings.TrimSpace(*input.Tag), "Refundable") {
+		refundableAmount = nil
+		refundExpectedOn = nil
+		refundReminderAt = nil
+		refundStatus = nil
+	}
+	if refundableAmount != nil && refundStatus == nil {
+		pending := refundStatusPending
+		refundStatus = &pending
 	}
 	if input.AccountID.Set && input.AccountID.Value != nil && *input.AccountID.Value == 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"account_id": "must be a positive integer"}})
@@ -1235,6 +1266,12 @@ func (s *Server) updateEntry(c *gin.Context) {
 		}
 	}
 	if fields := validateEntryValues(amount, title, entryType, currency, source, mode, category, date); len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
+		return
+	}
+	if fields := validateRefundableFields(
+		entryType, entryTag, amount, refundableAmount, refundExpectedOn, refundReminderAt, refundStatus,
+	); len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
@@ -1313,6 +1350,10 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.Tag != nil {
 		entry.Tag = *input.Tag
 	}
+	entry.RefundableAmount = refundableAmount
+	entry.RefundExpectedOn = refundExpectedOn
+	entry.RefundReminderAt = refundReminderAt
+	entry.RefundStatus = refundStatus
 	if input.Tags != nil {
 		entry.Tags = *input.Tags
 	}

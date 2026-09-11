@@ -289,6 +289,22 @@ func TestSplitGroupInviteCanBeViewedAndAccepted(t *testing.T) {
 		t.Fatalf("expected guest to see shared group bill, got %#v", guestBills)
 	}
 
+	// The guest splits with the group's owner, through the friend row joining
+	// the group gave them. `accepted.Friend` is the owner's row standing for
+	// the guest themselves, so naming it here would be splitting with yourself.
+	guestGroupView := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", guestToken, nil, http.StatusOK,
+	)
+	var guestRowForOwner uint
+	for _, candidate := range guestGroupView {
+		if candidate.ID == group.ID {
+			guestRowForOwner = candidate.ViewerSlotFriends[models.SplitGroupDefaultSplitOwnerSlot]
+		}
+	}
+	if guestRowForOwner == 0 {
+		t.Fatalf("guest has no friend row for the group owner: %#v", guestGroupView)
+	}
+
 	guestBill := performJSONRequest[models.SplitBill](
 		t, router, http.MethodPost, "/v1/split/bills", guestToken,
 		map[string]any{
@@ -299,7 +315,7 @@ func TestSplitGroupInviteCanBeViewedAndAccepted(t *testing.T) {
 			"date":         "2026-07-28",
 			"participants": []map[string]any{
 				{
-					"friend_id":    accepted.Friend.ID,
+					"friend_id":    guestRowForOwner,
 					"share_amount": "200.00",
 					"direction":    splitDirectionFriendOwesUser,
 				},

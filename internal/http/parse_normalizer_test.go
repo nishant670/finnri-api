@@ -68,6 +68,33 @@ func TestNormalizeParsedDraftTreatsInvestmentAsExpense(t *testing.T) {
 	}
 }
 
+func TestNormalizeParsedDraftPreservesEMIInputs(t *testing.T) {
+	entry := map[string]any{
+		"type": "expense", "title": "Phone", "amount": float64(67518),
+		"mode": "Credit Card", "category": "Shopping", "date": "2026-09-11",
+		"purpose_type": "emi", "emi_tenure_months": "6", "emi_rate_pct": "0",
+	}
+	normalizeParsedDraft(entry, "67518 turned into six month no-cost EMI")
+
+	if entry["tag"] != "EMI" || entry["emi_tenure_months"] != float64(6) || entry["emi_rate_pct"] != float64(0) {
+		t.Fatalf("EMI inputs were not preserved: %#v", entry)
+	}
+}
+
+func TestNormalizeParsedDraftPreservesRefundableDetails(t *testing.T) {
+	entry := map[string]any{
+		"type": "expense", "title": "Deposit", "amount": float64(10000),
+		"mode": "UPI", "category": "Misc", "date": "2026-09-11",
+		"purpose_type": "reimbursable", "refundable_amount": "5,000",
+		"refund_expected_on": "11/12/2026",
+	}
+	normalizeParsedDraft(entry, "paid 10000 and 5000 is refundable after three months")
+
+	if entry["tag"] != "Refundable" || entry["refundable_amount"] != float64(5000) || entry["refund_expected_on"] != "2026-12-11" {
+		t.Fatalf("refundable details were not preserved: %#v", entry)
+	}
+}
+
 func TestNormalizeParsedDraftDoesNotTurnExplicitBankAccountIntoCash(t *testing.T) {
 	entry := map[string]any{
 		"type": "expense", "title": "SIP", "amount": float64(100), "mode": "Cash",

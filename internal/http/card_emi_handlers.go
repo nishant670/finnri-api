@@ -82,13 +82,32 @@ func (s *Server) createCardEMIPlan(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_emi_plan", "fields": fields})
 		return
 	}
+	if input.SourceEntryID != nil {
+		var source models.Entry
+		if err := database.DB.
+			Where("id = ? AND user_id = ? AND account_id = ?", *input.SourceEntryID, userID, accountID).
+			First(&source).Error; err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_emi_plan", "fields": gin.H{
+				"source_entry_id": "must be an entry on this credit card",
+			}})
+			return
+		}
+		if source.Amount != input.Principal {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_emi_plan", "fields": gin.H{
+				"principal": "must match the source entry amount",
+			}})
+			return
+		}
+	}
 
 	purchasedOn, _ := parseStrictAPIDate(input.PurchasedOn)
 	firstInstallment := strings.TrimSpace(input.FirstInstallment)
 	if firstInstallment == "" {
 		// Issuers bill the first instalment on the statement after the
 		// purchase, so a month later is the honest default.
-		firstInstallment = purchasedOn.AddDate(0, 1, 0).Format(apiDateLayout)
+		firstInstallment = clampDayToMonth(
+			purchasedOn.Year(), purchasedOn.Month()+1, purchasedOn.Day(),
+		).Format(apiDateLayout)
 	}
 
 	// The schedule is emi.go's, not a second implementation of the same maths.
@@ -159,8 +178,15 @@ func convertSourceEntry(tx *gorm.DB, userID uint, entryID *uint) error {
 	if entryID == nil {
 		return nil
 	}
-	return tx.Where("id = ? AND user_id = ?", *entryID, userID).
-		Delete(&models.Entry{}).Error
+	result := tx.Where("id = ? AND user_id = ?", *entryID, userID).
+		Delete(&models.Entry{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // listCardEMIPlans returns a card's plans, newest first, each with progress.
