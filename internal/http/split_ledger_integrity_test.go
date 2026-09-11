@@ -248,7 +248,21 @@ func TestEntrySplitAcceptsASharedGroupAndItsMembers(t *testing.T) {
 		t, router, http.MethodGet, "/v1/accounts", memberToken, nil, http.StatusOK,
 	)
 	// The member records an expense in the owner's group, splitting it with the
-	// owner's friend row — the only namespace the group has.
+	// owner — through the friend row joining the group gave them. `friend` is
+	// the owner's row standing for the *member*, so splitting against it would
+	// be splitting with yourself, which is what the slot links exist to stop.
+	memberGroups := performJSONRequest[[]models.SplitGroup](
+		t, router, http.MethodGet, "/v1/split/groups", memberToken, nil, http.StatusOK,
+	)
+	var memberRowForOwner uint
+	for _, candidate := range memberGroups {
+		if candidate.ID == group.ID {
+			memberRowForOwner = candidate.ViewerSlotFriends[models.SplitGroupDefaultSplitOwnerSlot]
+		}
+	}
+	if memberRowForOwner == 0 {
+		t.Fatalf("member has no friend row for the group owner: %#v", memberGroups)
+	}
 	performJSONRequest[models.Entry](
 		t, router, http.MethodPost, "/v1/entries", memberToken,
 		map[string]any{
@@ -264,7 +278,7 @@ func TestEntrySplitAcceptsASharedGroupAndItsMembers(t *testing.T) {
 			"split": map[string]any{
 				"group_id": group.ID,
 				"participants": []map[string]any{
-					{"friend_id": friend.ID, "share_amount": "500.00"},
+					{"friend_id": memberRowForOwner, "share_amount": "500.00"},
 				},
 			},
 		}, http.StatusCreated,

@@ -1071,6 +1071,19 @@ func runtimeSchemaStatements() []string {
 			ON split_group_user_members (group_id, user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_group_user_members_user_active
 			ON split_group_user_members (user_id, status, group_id)`,
+		`CREATE TABLE IF NOT EXISTS split_group_member_links (
+			id BIGSERIAL PRIMARY KEY,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			slot VARCHAR(32) NOT NULL,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			friend_id BIGINT NOT NULL REFERENCES split_friends(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_member_links_unique
+			ON split_group_member_links (group_id, slot, user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_split_group_member_links_friend
+			ON split_group_member_links (user_id, friend_id)`,
 		`ALTER TABLE split_friends
 			ADD COLUMN IF NOT EXISTS linked_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`,
 		`ALTER TABLE users

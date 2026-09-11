@@ -110,14 +110,22 @@ type SplitGroup struct {
 	Members      []SplitGroupMember      `json:"members,omitempty" gorm:"foreignKey:GroupID"`
 	// What happened to the people just added, so the app never implies somebody
 	// was told when nobody could be. Response-only, and only on a save.
-	MemberInvites       []SplitGroupMemberInvite `gorm:"-" json:"member_invites,omitempty"`
-	OwnerName           string                   `gorm:"-" json:"owner_name,omitempty"`
-	ViewerFriendID      *uint                    `gorm:"-" json:"viewer_friend_id,omitempty"`
-	ViewerRole          string                   `gorm:"-" json:"viewer_role,omitempty"`
-	ViewerCanAddExpense bool                     `gorm:"-" json:"viewer_can_add_expense,omitempty"`
-	ViewerCanManage     bool                     `gorm:"-" json:"viewer_can_manage,omitempty"`
-	CreatedAt           time.Time                `json:"created_at"`
-	UpdatedAt           time.Time                `json:"updated_at"`
+	MemberInvites  []SplitGroupMemberInvite `gorm:"-" json:"member_invites,omitempty"`
+	OwnerName      string                   `gorm:"-" json:"owner_name,omitempty"`
+	ViewerFriendID *uint                    `gorm:"-" json:"viewer_friend_id,omitempty"`
+	// How each of this group's slots reads in the viewer's own friend list.
+	// Response-only, and only for a member: the owner needs no translation,
+	// because the roster is already written in their namespace.
+	ViewerSlotFriends map[string]uint `gorm:"-" json:"viewer_slot_friends,omitempty"`
+	// This group's ledger as the viewer sees it, in their own friend rows.
+	// Response-only, and filled on the groups list.
+	ViewerBalances      []SplitGroupFriendBalance `gorm:"-" json:"viewer_balances,omitempty"`
+	ViewerNetBalance    Money                     `gorm:"-" json:"viewer_net_balance"`
+	ViewerRole          string                    `gorm:"-" json:"viewer_role,omitempty"`
+	ViewerCanAddExpense bool                      `gorm:"-" json:"viewer_can_add_expense,omitempty"`
+	ViewerCanManage     bool                      `gorm:"-" json:"viewer_can_manage,omitempty"`
+	CreatedAt           time.Time                 `json:"created_at"`
+	UpdatedAt           time.Time                 `json:"updated_at"`
 }
 
 // SplitGroupMemberInviteStatus values.
@@ -195,6 +203,54 @@ type SplitGroupUserMember struct {
 	Status    string     `gorm:"type:varchar(16);not null;default:active" json:"status"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// SplitGroupMemberLink translates one slot of a shared group into a friend row
+// the viewer actually owns.
+//
+// A group's roster is written in the *owner's* namespace: the owner themselves,
+// plus their own friend rows. That namespace is unusable by anybody else,
+// because `split_participants.friend_id` has to name a row its author owns. So
+// a member had no way to record that the owner owed them, and their expense
+// composer could only offer them their own member row back — which is how a
+// member came to be splitting a bill between two copies of herself while the
+// owner was not on the list at all.
+//
+// This table is the missing half. For every non-owner member there is one row
+// per slot they are not, pointing at the row in their own friend list that
+// stands for that person. The owner has no rows here and needs none.
+type SplitGroupMemberLink struct {
+	ID      uint       `gorm:"primaryKey" json:"id"`
+	GroupID uint       `gorm:"index;not null" json:"group_id"`
+	Group   SplitGroup `json:"-" gorm:"foreignKey:GroupID;constraint:OnDelete:CASCADE"`
+	// Slot names the person in the owner's namespace: the owner slot, or an
+	// owner-side split_friends.id rendered as text. Deliberately the same
+	// namespace SplitGroupDefaultSplit uses, so a stored default split and a
+	// link always mean the same person by the same name.
+	Slot string `gorm:"type:varchar(32);not null" json:"slot"`
+	// The member this row translates for. Never the group's owner.
+	UserID uint `gorm:"index;not null" json:"user_id"`
+	User   User `json:"-" gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
+	// That member's own friend row standing for the person in the slot.
+	FriendID uint        `gorm:"index;not null" json:"friend_id"`
+	Friend   SplitFriend `json:"friend,omitempty" gorm:"foreignKey:FriendID;constraint:OnDelete:CASCADE"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (SplitGroupMemberLink) TableName() string { return "split_group_member_links" }
+
+// SplitGroupFriendBalance is one person's net inside one group, from the
+// viewer's side: positive means that person owes the viewer.
+//
+// Served rather than derived on the client. A bill's `direction` is written
+// relative to whoever recorded it, so summing a group's participant rows
+// without knowing each bill's author inverts the sign of everybody else's
+// expenses — which is what the group cards were doing.
+type SplitGroupFriendBalance struct {
+	FriendID   uint  `json:"friend_id"`
+	NetBalance Money `json:"net_balance"`
 }
 
 type SplitBill struct {

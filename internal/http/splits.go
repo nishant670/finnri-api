@@ -3,6 +3,7 @@ package http
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -118,7 +119,10 @@ type splitActivityItem struct {
 	ParticipantCount int                       `json:"participant_count,omitempty"`
 	Participants     []models.SplitParticipant `json:"participants,omitempty"`
 	Notes            string                    `json:"notes,omitempty"`
-	CreatedAt        time.Time                 `json:"created_at"`
+	// Set only when somebody else recorded this, named the way the viewer names
+	// them. A shared group's feed is otherwise silent about who did what.
+	ActorName string    `json:"actor_name,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type splitGroupInviteResponse struct {
@@ -332,7 +336,10 @@ func (s *Server) acceptSplitGroupInvite(c *gin.Context) {
 				return err
 			}
 		}
-		return nil
+		// The arriving member needs a row of their own for everybody already in
+		// the group, and everybody already in needs one for them. Without it
+		// they can name nobody but themselves — see SplitGroupMemberLink.
+		return syncSplitGroupMemberLinks(tx, group.ID)
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_accept_split_group_invite"})
 		return
@@ -867,8 +874,24 @@ func (s *Server) archiveSplitFriend(c *gin.Context) {
 		if result.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		return tx.Where("user_id = ? AND friend_id = ?", userID, id).
-			Delete(&models.SplitGroupMember{}).Error
+		var groupIDs []uint
+		if err := tx.Model(&models.SplitGroupMember{}).
+			Where("user_id = ? AND friend_id = ?", userID, id).
+			Pluck("group_id", &groupIDs).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ? AND friend_id = ?", userID, id).
+			Delete(&models.SplitGroupMember{}).Error; err != nil {
+			return err
+		}
+		// Off the roster means off every member's list of people they can
+		// name. The rows their links pointed at stay, carrying the history.
+		for _, groupID := range groupIDs {
+			if err := syncSplitGroupMemberLinks(tx, groupID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -932,8 +955,44 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 	c.JSON(http.StatusCreated, group)
 }
 
+// backfillSplitGroupMemberLinks provisions slot translations for shared groups
+// the viewer joined before those translations existed.
+//
+// Membership used to be all a member got, so every group already in flight has
+// a roster its members cannot name anybody in. Healing on read means an
+// existing group fixes itself the first time it is opened, instead of waiting
+// for its owner to happen to edit the roster. The lookup returns nothing once
+// the links are there, which is every call after the first.
+func backfillSplitGroupMemberLinks(db *gorm.DB, userID uint) error {
+	var groupIDs []uint
+	if err := db.Model(&models.SplitGroupUserMember{}).
+		Where("split_group_user_members.user_id = ? AND split_group_user_members.status = ?", userID, "active").
+		Where("NOT EXISTS (?)",
+			db.Model(&models.SplitGroupMemberLink{}).
+				Select("1").
+				Where("split_group_member_links.group_id = split_group_user_members.group_id").
+				Where("split_group_member_links.user_id = ?", userID),
+		).
+		Pluck("split_group_user_members.group_id", &groupIDs).Error; err != nil {
+		return err
+	}
+	for _, groupID := range groupIDs {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return syncSplitGroupMemberLinks(tx, groupID)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) listSplitGroups(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
+
+	if err := backfillSplitGroupMemberLinks(database.DB, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
+		return
+	}
 
 	sharedGroupIDs, err := activeSharedSplitGroupIDs(database.DB, userID)
 	if err != nil {
@@ -960,6 +1019,29 @@ func (s *Server) listSplitGroups(c *gin.Context) {
 	if err := decorateSplitGroupsForViewer(database.DB, groups, userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
 		return
+	}
+	groupBalances, err := buildSplitGroupBalances(database.DB, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_groups"})
+		return
+	}
+	for index := range groups {
+		group := &groups[index]
+		perFriend := groupBalances[group.ID]
+		group.ViewerBalances = make([]models.SplitGroupFriendBalance, 0, len(perFriend))
+		group.ViewerNetBalance = 0
+		for friendID, net := range perFriend {
+			group.ViewerBalances = append(group.ViewerBalances, models.SplitGroupFriendBalance{
+				FriendID:   friendID,
+				NetBalance: net,
+			})
+			group.ViewerNetBalance += net
+		}
+		// Map iteration order is random, and a list that reshuffles on every
+		// poll makes the rows built from it animate for no reason.
+		sort.SliceStable(group.ViewerBalances, func(i, j int) bool {
+			return group.ViewerBalances[i].FriendID < group.ViewerBalances[j].FriendID
+		})
 	}
 	c.JSON(http.StatusOK, groups)
 }
@@ -1030,7 +1112,7 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 				addedFriendIDs = append(addedFriendIDs, friendID)
 			}
 		}
-		return nil
+		return syncSplitGroupMemberLinks(tx, group.ID)
 	}); err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "split_group_not_found"})
@@ -1380,6 +1462,14 @@ func (s *Server) leaveSplitGroup(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "split_group_membership_not_found"})
 		return
 	}
+	// The slot translations go with the membership. The friend rows they point
+	// at stay: they carry whatever was already split in this group, and that
+	// history outlives leaving it.
+	if err := database.DB.Where("group_id = ? AND user_id = ?", id, userID).
+		Delete(&models.SplitGroupMemberLink{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_leave_split_group"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "split group left"})
 }
 
@@ -1404,7 +1494,7 @@ func (s *Server) createSplitBill(c *gin.Context) {
 			return
 		}
 	}
-	if err := resolveMergedSplitBillParticipants(userID, input.Participants); err != nil {
+	if err := resolveMergedSplitBillParticipants(userID, input.GroupID, input.Participants); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
 	}
@@ -1526,7 +1616,7 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 			return
 		}
 	}
-	if err := resolveMergedSplitBillParticipants(userID, input.Participants); err != nil {
+	if err := resolveMergedSplitBillParticipants(userID, input.GroupID, input.Participants); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
 	}
@@ -1629,20 +1719,8 @@ func (s *Server) createSplitSettlement(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_settlement", "fields": fields})
 		return
 	}
-	resolvedFriendID, err := resolveMergedSplitFriendID(database.DB, userID, input.FriendID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
-		return
-	}
-	input.FriendID = resolvedFriendID
-	if ok, err := userOwnsActiveSplitFriend(userID, input.FriendID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
-		return
-	} else if !ok {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_settlement", "fields": gin.H{"friend_id": "must belong to the current user"}})
-		return
-	}
-
+	// Checked before the friend, because whether the caller can reach the group
+	// decides which rule the friend is judged by.
 	if input.GroupID != nil {
 		if ok, err := userCanAccessActiveSplitGroup(userID, *input.GroupID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_group_lookup_failed"})
@@ -1654,6 +1732,49 @@ func (s *Server) createSplitSettlement(c *gin.Context) {
 			})
 			return
 		}
+	}
+
+	// Same two repairs the bill path makes: an owner-namespace id from an older
+	// build becomes the caller's own row for the same person, and a row merged
+	// away since the screen was opened becomes the row that absorbed it.
+	rewrite, err := splitGroupLocalFriendRewrite(userID, input.GroupID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	}
+	if local, ok := rewrite[input.FriendID]; ok {
+		input.FriendID = local
+	}
+	resolvedFriendID, err := resolveMergedSplitFriendID(database.DB, userID, input.FriendID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	}
+	input.FriendID = resolvedFriendID
+
+	// Inside a group a settlement follows the rule its expenses follow — the
+	// roster, read in the caller's own frame. Ownership alone would let a
+	// member close a group balance against a friend who has nothing to do with
+	// it. Outside a group there is no roster, so ownership is all there is.
+	if input.GroupID != nil {
+		allowed, err := splitGroupBillableFriendIDs(*input.GroupID, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+			return
+		}
+		if !allowed[input.FriendID] {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":  "invalid_split_settlement",
+				"fields": gin.H{"friend_id": "must belong to this group"},
+			})
+			return
+		}
+	} else if ok, err := userOwnsActiveSplitFriend(userID, input.FriendID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	} else if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_settlement", "fields": gin.H{"friend_id": "must belong to the current user"}})
+		return
 	}
 
 	settlement := input.toModel(userID)
@@ -1686,12 +1807,31 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	// that ever happened to it. A deleted group kept narrating itself here —
 	// "Ma Beta created", the expenses inside it, the settlements that closed
 	// them — for a group no other screen would open.
+	// Scoped like the bills list rather than to the viewer's own rows. A shared
+	// group's feed used to narrate only half of itself: the expenses the viewer
+	// had entered, and none of what anybody else in the group had — while the
+	// very same expenses were listed on the group's own screen.
+	accessibleGroupIDs, err := accessibleActiveSplitGroupIDs(database.DB, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+	frames, err := loadSplitGroupFrames(database.DB, accessibleGroupIDs)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+
 	var bills []models.SplitBill
-	if err := database.DB.Preload("Group").Preload("Participants.Friend").
-		Joins("LEFT JOIN split_groups ON split_groups.id = split_bills.group_id").
-		Where("split_bills.user_id = ?", userID).
-		Where("split_bills.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false).
-		Find(&bills).Error; err != nil {
+	billQuery := database.DB.Preload("Group").Preload("Participants.Friend")
+	if len(accessibleGroupIDs) > 0 {
+		billQuery = billQuery.Where(
+			"(split_bills.user_id = ? AND split_bills.group_id IS NULL) OR split_bills.group_id IN ?",
+			userID, accessibleGroupIDs)
+	} else {
+		billQuery = billQuery.Where("split_bills.user_id = ? AND split_bills.group_id IS NULL", userID)
+	}
+	if err := billQuery.Find(&bills).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
@@ -1701,10 +1841,31 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
+	// Payments the other side recorded. Restated below, because a settlement's
+	// direction and title are written from its author's point of view.
+	var foreignSettlements []models.SplitSettlement
+	if len(accessibleGroupIDs) > 0 {
+		if err := database.DB.
+			Where("group_id IN ? AND user_id <> ?", accessibleGroupIDs, userID).
+			Find(&foreignSettlements).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+			return
+		}
+	}
 	var groups []models.SplitGroup
 	if err := database.DB.Preload("Members.Friend").
 		Where("user_id = ? AND archived = ?", userID, false).
 		Find(&groups).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
+	// Groups the viewer joined rather than made. Dated from when they joined,
+	// which is the moment it entered *their* history — the group's own creation
+	// date belongs to somebody else's.
+	var sharedMemberships []models.SplitGroupUserMember
+	if err := database.DB.Preload("Group").Preload("Group.Members").
+		Where("user_id = ? AND status = ?", userID, "active").
+		Find(&sharedMemberships).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
@@ -1745,6 +1906,32 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			CreatedAt: friend.CreatedAt,
 		})
 	}
+	friendsByID := map[uint]models.SplitFriend{}
+	for _, friend := range friends {
+		friendsByID[friend.ID] = friend
+	}
+	// How the viewer knows whoever wrote a line in a shared group. Their account
+	// name would be a name the viewer has never seen; the friend row they keep
+	// for that person is the one every other screen shows.
+	actorName := func(groupID *uint, authorID uint) string {
+		if groupID == nil || authorID == userID {
+			return ""
+		}
+		frame, ok := frames[*groupID]
+		if !ok {
+			return ""
+		}
+		authorSlot, ok := frame.slotOfUser[authorID]
+		if !ok {
+			return ""
+		}
+		friend, ok := friendsByID[frame.friendFor(authorSlot, userID)]
+		if !ok {
+			return ""
+		}
+		return fallbackSplitFriendName(friend)
+	}
+
 	for _, bill := range bills {
 		amount := bill.TotalAmount
 		item := splitActivityItem{
@@ -1758,12 +1945,78 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			ParticipantCount: len(bill.Participants),
 			Participants:     bill.Participants,
 			Notes:            bill.Notes,
+			ActorName:        actorName(bill.GroupID, bill.UserID),
 			CreatedAt:        bill.CreatedAt,
 		}
 		if bill.Group != nil && bill.Group.ID != 0 {
 			item.Group = bill.Group
 		}
 		items = append(items, item)
+	}
+
+	for _, settlement := range foreignSettlements {
+		if settlement.GroupID == nil {
+			continue
+		}
+		frame, ok := frames[*settlement.GroupID]
+		if !ok {
+			continue
+		}
+		counterpartID, aboutViewer := restateForeignSplitRow(frame, userID, settlement.UserID, settlement.FriendID)
+		direction := flipSettlementDirection(settlement.Direction)
+		if !aboutViewer || direction == "" {
+			continue
+		}
+		counterpart, ok := friendsByID[counterpartID]
+		if !ok {
+			continue
+		}
+		amount := settlement.Amount
+		title := "Settlement"
+		if direction == settlementDirectionFriendPaidUser {
+			title = fmt.Sprintf("%s paid you", fallbackSplitFriendName(counterpart))
+		} else if direction == settlementDirectionUserPaidFriend {
+			title = fmt.Sprintf("You paid %s", fallbackSplitFriendName(counterpart))
+		}
+		friendID := counterpart.ID
+		friendCopy := counterpart
+		items = append(items, splitActivityItem{
+			ID:        fmt.Sprintf("settlement-%d", settlement.ID),
+			Type:      "settlement",
+			RecordID:  settlement.ID,
+			Title:     title,
+			Date:      settlement.Date,
+			Amount:    &amount,
+			GroupID:   settlement.GroupID,
+			FriendID:  &friendID,
+			Friend:    &friendCopy,
+			Direction: direction,
+			Notes:     settlement.Notes,
+			ActorName: actorName(settlement.GroupID, settlement.UserID),
+			CreatedAt: settlement.CreatedAt,
+		})
+	}
+
+	for _, membership := range sharedMemberships {
+		group := membership.Group
+		if group.ID == 0 || group.Archived || group.UserID == userID {
+			continue
+		}
+		groupID := group.ID
+		groupCopy := group
+		items = append(items, splitActivityItem{
+			ID:       fmt.Sprintf("group-joined-%d", group.ID),
+			Type:     "group_created",
+			RecordID: group.ID,
+			Title:    fmt.Sprintf("Joined %s", group.Name),
+			Date:     membership.CreatedAt.Format("2006-01-02"),
+			GroupID:  &groupID,
+			Group:    &groupCopy,
+			// The roster count is what the card's caption reads; without it a
+			// group you joined announces itself as having nobody in it.
+			ParticipantCount: len(group.Members),
+			CreatedAt:        membership.CreatedAt,
+		})
 	}
 	for _, settlement := range settlements {
 		friendID := settlement.FriendID
@@ -2033,6 +2286,324 @@ func (input splitSettlementInput) toModel(userID uint) models.SplitSettlement {
 	}
 }
 
+// splitGroupFrame is one shared group's roster, in every namespace at once.
+//
+// A group names its people by slot — the owner, or one of the owner's friend
+// rows — but every *bill* names them by a friend row belonging to whoever wrote
+// it. Reading somebody else's bill therefore means two translations: which slot
+// the line is about, and which of my own rows stands for the person who wrote
+// it. This holds both directions so neither has to be queried per row.
+type splitGroupFrame struct {
+	ownerID uint
+	// Which slot each Finnri account in this group occupies.
+	slotOfUser map[uint]string
+	// slot -> the owner's friend row for it. The owner's own slot is absent:
+	// nobody is one of their own friend rows.
+	ownerSlotFriend map[string]uint
+	// slot -> member -> that member's own friend row for the slot.
+	linkSlotFriend map[string]map[uint]uint
+}
+
+// friendFor is the row `forUser` would name to mean the person in `slot`, or 0
+// when they have none — which is exactly what the owner has for themselves.
+func (frame splitGroupFrame) friendFor(slot string, forUser uint) uint {
+	if forUser == frame.ownerID {
+		return frame.ownerSlotFriend[slot]
+	}
+	return frame.linkSlotFriend[slot][forUser]
+}
+
+func loadSplitGroupFrames(db *gorm.DB, groupIDs []uint) (map[uint]splitGroupFrame, error) {
+	frames := map[uint]splitGroupFrame{}
+	if len(groupIDs) == 0 {
+		return frames, nil
+	}
+
+	var groups []models.SplitGroup
+	if err := db.Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		frames[group.ID] = splitGroupFrame{
+			ownerID:         group.UserID,
+			slotOfUser:      map[uint]string{group.UserID: models.SplitGroupDefaultSplitOwnerSlot},
+			ownerSlotFriend: map[string]uint{},
+			linkSlotFriend:  map[string]map[uint]uint{},
+		}
+	}
+
+	var members []models.SplitGroupMember
+	if err := db.Preload("Friend").Where("group_id IN ?", groupIDs).Find(&members).Error; err != nil {
+		return nil, err
+	}
+	for _, member := range members {
+		frame, ok := frames[member.GroupID]
+		// Only the owner's rows are the roster; a stray written by an older
+		// build is not somebody this group can bill.
+		if !ok || member.UserID != frame.ownerID || member.Friend.Archived {
+			continue
+		}
+		slot := splitGroupSlotForFriend(member.FriendID)
+		frame.ownerSlotFriend[slot] = member.FriendID
+		if member.Friend.LinkedUserID != nil {
+			frame.slotOfUser[*member.Friend.LinkedUserID] = slot
+		}
+	}
+
+	var links []models.SplitGroupMemberLink
+	if err := db.Where("group_id IN ?", groupIDs).Find(&links).Error; err != nil {
+		return nil, err
+	}
+	for _, link := range links {
+		frame, ok := frames[link.GroupID]
+		if !ok {
+			continue
+		}
+		if frame.linkSlotFriend[link.Slot] == nil {
+			frame.linkSlotFriend[link.Slot] = map[uint]uint{}
+		}
+		frame.linkSlotFriend[link.Slot][link.UserID] = link.FriendID
+	}
+	return frames, nil
+}
+
+// restateForeignSplitRow answers, for a line somebody else wrote in a shared
+// group: is it about the viewer, and if so which of the viewer's own friend
+// rows stands for the person who wrote it?
+//
+// A line is about the viewer when the row it names is the one its author uses
+// for the viewer's slot. The counterpart is then the author, named the way the
+// viewer names them — which is the only name the viewer's screens can resolve.
+func restateForeignSplitRow(frame splitGroupFrame, viewerID, authorID, friendID uint) (uint, bool) {
+	viewerSlot, ok := frame.slotOfUser[viewerID]
+	if !ok {
+		return 0, false
+	}
+	authorSlot, ok := frame.slotOfUser[authorID]
+	if !ok {
+		return 0, false
+	}
+	if frame.friendFor(viewerSlot, authorID) != friendID {
+		return 0, false
+	}
+	counterpart := frame.friendFor(authorSlot, viewerID)
+	if counterpart == 0 {
+		return 0, false
+	}
+	return counterpart, true
+}
+
+func flipSplitDirection(direction string) string {
+	switch direction {
+	case splitDirectionFriendOwesUser:
+		return splitDirectionUserOwesFriend
+	case splitDirectionUserOwesFriend:
+		return splitDirectionFriendOwesUser
+	}
+	return ""
+}
+
+func flipSettlementDirection(direction string) string {
+	switch direction {
+	case settlementDirectionFriendPaidUser:
+		return settlementDirectionUserPaidFriend
+	case settlementDirectionUserPaidFriend:
+		return settlementDirectionFriendPaidUser
+	}
+	return ""
+}
+
+// splitLedgerAdjustment is one line of somebody else's ledger, restated in the
+// viewer's own terms: their friend row, and the direction seen from their side.
+type splitLedgerAdjustment struct {
+	FriendID  uint
+	GroupID   uint
+	Direction string
+	Amount    models.Money
+}
+
+// foldForeignSplitLedger restates every line another member of a shared group
+// wrote *about the viewer* as a line of the viewer's own ledger.
+//
+// A bill records the debts of its author and nobody else's, against friend rows
+// only its author owns. So a group's ledger was only ever half-read: the owner
+// summed their own bills and never saw a rupee of what a member recorded, and
+// the member saw nothing of the owner's. Both sides showed "settled up" over a
+// group with money moving through it.
+//
+// A line belongs to the viewer when the row it names is the one its author uses
+// for the viewer's slot. The counterpart is then the author, named by whichever
+// of the viewer's own rows stands for *them* — and the direction flips, because
+// "they owe me" written by somebody else means "I owe them" here.
+func foldForeignSplitLedger(db *gorm.DB, userID uint) (
+	participants []splitLedgerAdjustment,
+	settlements []splitLedgerAdjustment,
+	err error,
+) {
+	groupIDs, err := accessibleActiveSplitGroupIDs(db, userID)
+	if err != nil || len(groupIDs) == 0 {
+		return nil, nil, err
+	}
+	frames, err := loadSplitGroupFrames(db, groupIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	type foreignRow struct {
+		UserID    uint
+		FriendID  uint
+		Amount    models.Money
+		Direction string
+		GroupID   uint
+	}
+
+	translate := func(rows []foreignRow, flip func(string) string) []splitLedgerAdjustment {
+		out := make([]splitLedgerAdjustment, 0, len(rows))
+		for _, row := range rows {
+			frame, ok := frames[row.GroupID]
+			if !ok {
+				continue
+			}
+			counterpart, aboutViewer := restateForeignSplitRow(frame, userID, row.UserID, row.FriendID)
+			direction := flip(row.Direction)
+			if !aboutViewer || direction == "" {
+				continue
+			}
+			out = append(out, splitLedgerAdjustment{
+				FriendID:  counterpart,
+				GroupID:   row.GroupID,
+				Direction: direction,
+				Amount:    row.Amount,
+			})
+		}
+		return out
+	}
+
+	var participantRows []foreignRow
+	if err := db.Table("split_participants").
+		Select(`split_participants.user_id,
+			split_participants.friend_id,
+			split_participants.share_amount AS amount,
+			split_participants.direction,
+			split_bills.group_id`).
+		Joins("JOIN split_bills ON split_bills.id = split_participants.bill_id").
+		Where("split_bills.group_id IN ?", groupIDs).
+		Where("split_participants.user_id <> ?", userID).
+		Scan(&participantRows).Error; err != nil {
+		return nil, nil, err
+	}
+
+	// Settlements fold for the same reason the expenses do. Leaving them out
+	// would show the viewer everything they are owed and none of what has
+	// already been paid back against it, which is worse than showing neither.
+	var settlementRows []foreignRow
+	if err := db.Table("split_settlements").
+		Select("user_id, friend_id, amount, direction, group_id").
+		Where("group_id IN ?", groupIDs).
+		Where("user_id <> ?", userID).
+		Scan(&settlementRows).Error; err != nil {
+		return nil, nil, err
+	}
+
+	return translate(participantRows, flipSplitDirection),
+		translate(settlementRows, flipSettlementDirection),
+		nil
+}
+
+// buildSplitGroupBalances is every group's ledger, per person, from the
+// viewer's side. Keyed group id -> the viewer's friend id -> net.
+//
+// It exists because the group cards used to work this out on the client by
+// summing every participant row in the group and reading `direction` as if it
+// were absolute. It is not: a bill states the debts of whoever wrote it, so
+// somebody else's expense came out inverted — a card telling the owner that a
+// member owed him money she had in fact laid out for him. The same fold that
+// fixes the headline balances is the only thing that can answer this correctly,
+// so it is answered here and sent, rather than guessed at twice.
+func buildSplitGroupBalances(db *gorm.DB, userID uint) (map[uint]map[uint]models.Money, error) {
+	balances := map[uint]map[uint]models.Money{}
+	add := func(groupID, friendID uint, amount models.Money) {
+		if groupID == 0 || friendID == 0 {
+			return
+		}
+		if balances[groupID] == nil {
+			balances[groupID] = map[uint]models.Money{}
+		}
+		balances[groupID][friendID] += amount
+	}
+
+	type ledgerRow struct {
+		FriendID  uint
+		GroupID   uint
+		Amount    models.Money
+		Direction string
+	}
+
+	// The viewer's own bills, which already name their own friend rows.
+	var ownParticipants []ledgerRow
+	if err := db.Table("split_participants").
+		Select(`split_participants.friend_id,
+			split_bills.group_id,
+			split_participants.share_amount AS amount,
+			split_participants.direction`).
+		Joins("JOIN split_bills ON split_bills.id = split_participants.bill_id").
+		Joins("JOIN split_groups ON split_groups.id = split_bills.group_id").
+		Where("split_participants.user_id = ?", userID).
+		Where("split_groups.archived = ?", false).
+		Scan(&ownParticipants).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range ownParticipants {
+		switch row.Direction {
+		case splitDirectionFriendOwesUser:
+			add(row.GroupID, row.FriendID, row.Amount)
+		case splitDirectionUserOwesFriend:
+			add(row.GroupID, row.FriendID, -row.Amount)
+		}
+	}
+
+	var ownSettlements []ledgerRow
+	if err := db.Table("split_settlements").
+		Select("split_settlements.friend_id, split_settlements.group_id, split_settlements.amount, split_settlements.direction").
+		Joins("JOIN split_groups ON split_groups.id = split_settlements.group_id").
+		Where("split_settlements.user_id = ?", userID).
+		Where("split_groups.archived = ?", false).
+		Scan(&ownSettlements).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range ownSettlements {
+		switch row.Direction {
+		case settlementDirectionFriendPaidUser:
+			add(row.GroupID, row.FriendID, -row.Amount)
+		case settlementDirectionUserPaidFriend:
+			add(row.GroupID, row.FriendID, row.Amount)
+		}
+	}
+
+	// And everybody else's, restated in the viewer's terms.
+	foreignParticipants, foreignSettlements, err := foldForeignSplitLedger(db, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, adjustment := range foreignParticipants {
+		switch adjustment.Direction {
+		case splitDirectionFriendOwesUser:
+			add(adjustment.GroupID, adjustment.FriendID, adjustment.Amount)
+		case splitDirectionUserOwesFriend:
+			add(adjustment.GroupID, adjustment.FriendID, -adjustment.Amount)
+		}
+	}
+	for _, adjustment := range foreignSettlements {
+		switch adjustment.Direction {
+		case settlementDirectionFriendPaidUser:
+			add(adjustment.GroupID, adjustment.FriendID, -adjustment.Amount)
+		case settlementDirectionUserPaidFriend:
+			add(adjustment.GroupID, adjustment.FriendID, adjustment.Amount)
+		}
+	}
+	return balances, nil
+}
+
 func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 	var friends []models.SplitFriend
 	if err := ownedSplitFriends(db, userID).Order("name asc, created_at desc").Find(&friends).Error; err != nil {
@@ -2105,6 +2676,43 @@ func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 		}
 	}
 
+	// And now the other half of every shared group: what the people in it wrote
+	// about this user. Their rows name friend ids this user does not own, so
+	// nothing above reaches them — which is how a group with money moving
+	// through it managed to report "settled up" to both people in it.
+	foreignParticipants, foreignSettlements, err := foldForeignSplitLedger(db, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, adjustment := range foreignParticipants {
+		balance := balancesByFriend[adjustment.FriendID]
+		if balance == nil {
+			continue
+		}
+		switch adjustment.Direction {
+		case splitDirectionFriendOwesUser:
+			balance.TotalOwedByFriend += adjustment.Amount
+			balance.NetBalance += adjustment.Amount
+		case splitDirectionUserOwesFriend:
+			balance.TotalOwedToFriend += adjustment.Amount
+			balance.NetBalance -= adjustment.Amount
+		}
+	}
+	for _, adjustment := range foreignSettlements {
+		balance := balancesByFriend[adjustment.FriendID]
+		if balance == nil {
+			continue
+		}
+		switch adjustment.Direction {
+		case settlementDirectionFriendPaidUser:
+			balance.TotalOwedByFriend -= adjustment.Amount
+			balance.NetBalance -= adjustment.Amount
+		case settlementDirectionUserPaidFriend:
+			balance.TotalOwedToFriend -= adjustment.Amount
+			balance.NetBalance += adjustment.Amount
+		}
+	}
+
 	result := make([]splitBalance, 0, len(friends))
 	for _, friend := range friends {
 		result = append(result, *balancesByFriend[friend.ID])
@@ -2119,10 +2727,17 @@ func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 // user takes. A duplicate merged away in between leaves it naming an archived
 // row, and rejecting that is a validation error about somebody the user can see
 // on screen and cannot do anything about.
-func resolveMergedSplitBillParticipants(userID uint, participants []splitParticipantInput) error {
+func resolveMergedSplitBillParticipants(userID uint, groupID *uint, participants []splitParticipantInput) error {
+	rewrite, err := splitGroupLocalFriendRewrite(userID, groupID)
+	if err != nil {
+		return err
+	}
 	for index := range participants {
 		if participants[index].FriendID == 0 {
 			continue
+		}
+		if local, ok := rewrite[participants[index].FriendID]; ok {
+			participants[index].FriendID = local
 		}
 		resolved, err := resolveMergedSplitFriendID(database.DB, userID, participants[index].FriendID)
 		if err != nil {
@@ -2166,7 +2781,7 @@ func validateSplitBillParticipantFriends(userID uint, groupID *uint, participant
 	// Membership always names the *owner's* friend rows, and a member recording
 	// an expense in a shared group names them too — so the caller is usually
 	// not the person those rows belong to.
-	allowedFriendIDs, err := activeSplitGroupFriendIDs(*groupID)
+	allowedFriendIDs, err := splitGroupBillableFriendIDs(*groupID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -2212,11 +2827,27 @@ func decorateSplitGroupsForViewer(db *gorm.DB, groups []models.SplitGroup, viewe
 
 	ownerIDs := map[uint]bool{}
 	friendIDs := []uint{}
+	groupIDs := make([]uint, 0, len(groups))
 	for index := range groups {
 		ownerIDs[groups[index].UserID] = true
+		groupIDs = append(groupIDs, groups[index].ID)
 		for _, member := range groups[index].Members {
 			friendIDs = append(friendIDs, member.FriendID)
 		}
+	}
+
+	// The slot translations this viewer holds, across every group at once.
+	var links []models.SplitGroupMemberLink
+	if err := db.Where("user_id = ? AND group_id IN ?", viewerUserID, groupIDs).
+		Find(&links).Error; err != nil {
+		return err
+	}
+	slotFriendsByGroup := map[uint]map[string]uint{}
+	for _, link := range links {
+		if slotFriendsByGroup[link.GroupID] == nil {
+			slotFriendsByGroup[link.GroupID] = map[string]uint{}
+		}
+		slotFriendsByGroup[link.GroupID][link.Slot] = link.FriendID
 	}
 
 	ownerNames := map[uint]string{}
@@ -2251,11 +2882,14 @@ func decorateSplitGroupsForViewer(db *gorm.DB, groups []models.SplitGroup, viewe
 		group := &groups[index]
 		group.OwnerName = ownerNames[group.UserID]
 		group.ViewerFriendID = nil
+		group.ViewerSlotFriends = nil
 		// The owner is never one of their own friend rows, so they are always
-		// the owner slot and never a member slot.
+		// the owner slot and never a member slot — and every slot already names
+		// a row they own, so they need no translation either.
 		if group.UserID == viewerUserID {
 			continue
 		}
+		group.ViewerSlotFriends = slotFriendsByGroup[group.ID]
 		for _, member := range group.Members {
 			if viewerFriendIDs[member.FriendID] {
 				friendID := member.FriendID
@@ -2363,12 +2997,26 @@ func validateEntrySplitReferences(userID uint, input *entrySplitInput) (gin.H, e
 		input.Participants[index].FriendID = &resolved
 	}
 
-	// Inside a group, membership is the rule — the same one createSplitBill
-	// uses — because the people in a shared group are the owner's friend rows,
-	// not the caller's. Outside one there is no roster to check against, so
-	// ownership is all there is.
+	// Inside a group the rule is the roster — the same one createSplitBill
+	// uses — read in the caller's own frame: their friend rows if they own the
+	// group, the rows their slot links gave them otherwise. Outside a group
+	// there is no roster to check against, so ownership is all there is.
 	if input.GroupID != nil {
-		allowed, err := activeSplitGroupFriendIDs(*input.GroupID)
+		rewrite, err := splitGroupLocalFriendRewrite(userID, input.GroupID)
+		if err != nil {
+			return nil, err
+		}
+		for index := range input.Participants {
+			friendID := input.Participants[index].FriendID
+			if friendID == nil {
+				continue
+			}
+			if local, ok := rewrite[*friendID]; ok {
+				localID := local
+				input.Participants[index].FriendID = &localID
+			}
+		}
+		allowed, err := splitGroupBillableFriendIDs(*input.GroupID, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -2406,14 +3054,24 @@ func validateEntrySplitReferences(userID uint, input *entrySplitInput) (gin.H, e
 // arrives nowhere, since buildSplitBalances walks active friends and never
 // reaches that participant row.
 //
-// Deliberately not scoped by the caller's user id. Membership always names the
-// group *owner's* friend rows, and a member recording an expense in a shared
-// group names them too.
+// Scoped to the *owner's* membership rows. A member's expense composer used to
+// be able to write membership into somebody else's group, and those strays
+// survived every roster rewrite — which only deletes the owner's rows — leaving
+// people permanently in a group with no way to take them out. They are excluded
+// here so an old stray cannot widen who may be named on a bill.
 func activeSplitGroupFriendIDs(groupID uint) (map[uint]bool, error) {
+	var group models.SplitGroup
+	if err := database.DB.First(&group, groupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return map[uint]bool{}, nil
+		}
+		return nil, err
+	}
 	var friendIDs []uint
 	if err := database.DB.Model(&models.SplitGroupMember{}).
 		Joins("JOIN split_friends ON split_friends.id = split_group_members.friend_id").
 		Where("split_group_members.group_id = ?", groupID).
+		Where("split_group_members.user_id = ?", group.UserID).
 		Where("split_friends.archived = ?", false).
 		Pluck("split_group_members.friend_id", &friendIDs).Error; err != nil {
 		return nil, err
@@ -2423,6 +3081,83 @@ func activeSplitGroupFriendIDs(groupID uint) (map[uint]bool, error) {
 		allowed[friendID] = true
 	}
 	return allowed, nil
+}
+
+// splitGroupBillableFriendIDs is the set of friend rows `userID` may name on a
+// bill in `groupID`, expressed in their own frame.
+//
+// The owner names their own friend rows, because the roster is written in their
+// namespace. Everybody else names the rows `split_group_member_links` gave
+// them — which is what finally lets a member record that the *owner* owes them,
+// rather than only ever being able to name themselves.
+func splitGroupBillableFriendIDs(groupID, userID uint) (map[uint]bool, error) {
+	var group models.SplitGroup
+	if err := database.DB.First(&group, groupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return map[uint]bool{}, nil
+		}
+		return nil, err
+	}
+	if group.UserID == userID {
+		return activeSplitGroupFriendIDs(groupID)
+	}
+
+	var friendIDs []uint
+	if err := database.DB.Model(&models.SplitGroupMemberLink{}).
+		Joins("JOIN split_friends ON split_friends.id = split_group_member_links.friend_id").
+		Where("split_group_member_links.group_id = ?", groupID).
+		Where("split_group_member_links.user_id = ?", userID).
+		Where("split_friends.archived = ?", false).
+		Pluck("split_group_member_links.friend_id", &friendIDs).Error; err != nil {
+		return nil, err
+	}
+	allowed := make(map[uint]bool, len(friendIDs))
+	for _, friendID := range friendIDs {
+		allowed[friendID] = true
+	}
+	return allowed, nil
+}
+
+// splitGroupLocalFriendRewrite maps the owner's friend ids onto the caller's
+// own rows for one group. Nil when the caller needs no translation.
+//
+// Members used to be handed the owner's rows to split against, because those
+// were the only rows the roster named. Balances never reach them —
+// buildSplitBalances walks the friends the viewer owns — so the share was
+// written to the database and then shown on no screen at all. Anything still
+// holding one, an old bill being edited or an app build from before the links
+// existed, is rewritten to the row now standing for the same person, so the
+// bill heals on its next save instead of failing validation about somebody
+// plainly in the group.
+func splitGroupLocalFriendRewrite(userID uint, groupID *uint) (map[uint]uint, error) {
+	if groupID == nil {
+		return nil, nil
+	}
+	var group models.SplitGroup
+	if err := database.DB.First(&group, *groupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if group.UserID == userID {
+		return nil, nil
+	}
+	slots, err := splitGroupSlotFriendIDs(database.DB, group.ID, userID)
+	if err != nil || len(slots) == 0 {
+		return nil, err
+	}
+	rewrite := make(map[uint]uint, len(slots))
+	for slot, localFriendID := range slots {
+		ownerSide, parseErr := strconv.ParseUint(slot, 10, 64)
+		if parseErr != nil {
+			// The owner slot stands for a user, not a friend row, so there is
+			// no owner-side id anybody could have been holding.
+			continue
+		}
+		rewrite[uint(ownerSide)] = localFriendID
+	}
+	return rewrite, nil
 }
 
 func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *entrySplitInput) error {
@@ -2465,8 +3200,22 @@ func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *e
 		groupID = &group.ID
 	}
 	if groupID != nil {
-		if _, err := createSplitGroupMembers(tx, userID, *groupID, friendIDs); err != nil {
+		// Only the group's owner writes its roster. A member splitting into a
+		// shared group names people who are already in it, through their own
+		// slot links — and adding membership from here wrote rows in the
+		// member's name that the owner's roster rewrite can neither see nor
+		// remove, leaving ghosts nobody could take out of the group.
+		var group models.SplitGroup
+		if err := tx.First(&group, *groupID).Error; err != nil {
 			return err
+		}
+		if group.UserID == userID {
+			if _, err := createSplitGroupMembers(tx, userID, *groupID, friendIDs); err != nil {
+				return err
+			}
+			if err := syncSplitGroupMemberLinks(tx, *groupID); err != nil {
+				return err
+			}
 		}
 	}
 
