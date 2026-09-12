@@ -534,10 +534,11 @@ func loadDashboardDailySpending(userID uint, dateRange dashboardRange) ([]Dashbo
 	start := dateRange.Start.Format("2006-01-02")
 	end := dateRange.End.Format("2006-01-02")
 	var rows []dashboardDailySpendRow
+	dateExpression := sqlDateDay(database.DB, "date")
 	if err := database.DB.Model(&models.Entry{}).
-		Select("date, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
+		Select(dateExpression+" AS date, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
 		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
-		Group("date").
+		Group(dateExpression).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}

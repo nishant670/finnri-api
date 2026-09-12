@@ -1,24 +1,122 @@
 package database
 
-// PrepareForAutoMigrate reconciles constraint names between the two mechanisms
-// that build this schema, and must run before AutoMigrate.
-//
-// Tables created by the raw SQL below declare uniqueness inline — `code
-// VARCHAR(64) NOT NULL UNIQUE` — which Postgres names for itself:
-// `plans_code_key`. The GORM models declare the same uniqueness with
-// `uniqueIndex`, which GORM names `uni_plans_code`. Neither side is wrong on
-// its own; they simply do not recognise each other's work.
-//
-// AutoMigrate reconciles the difference by issuing
-// `ALTER TABLE plans DROP CONSTRAINT uni_plans_code` for a constraint that has
-// never existed, and a failed migration is fatal at boot. That is exactly what
-// took production down when `models.Payment` — which reaches `plans` through
-// its `Plan` association — entered the AutoMigrate set for the first time.
-//
-// Renaming is deliberate: the constraint, and the unique index behind it, are
-// carried across intact. Dropping and recreating would open a window in which
-// two rows could take the same plan code.
-func PrepareForAutoMigrate() error {
+import "finnri/internal/models"
+
+// Migrate is the sole production schema-change path. It is invoked by the
+// dedicated migrate binary during Railway's pre-deploy phase; the server boot
+// path must remain read-only with respect to schema. AutoMigrate establishes
+// the model-backed baseline (including fresh databases), then the explicit SQL
+// below applies constraints, indexes, backfills, and tables GORM cannot express.
+// Any error aborts the deployment before traffic moves to the new release.
+func Migrate() error {
+	if err := reconcileLegacyConstraints(); err != nil {
+		return err
+	}
+	// Data-shape migrations that GORM cannot safely infer run before model
+	// reconciliation. In particular, AutoMigrate must never get the first try
+	// at casting legacy free-form text into a date column.
+	for _, statement := range preAutoMigrateStatements() {
+		if err := DB.Exec(statement).Error; err != nil {
+			return err
+		}
+	}
+	if err := DB.AutoMigrate(
+		&models.User{},
+		&models.AuthSession{},
+		&models.AuthVerification{},
+		&models.AdminUser{},
+		&models.AdminAuditLog{},
+		&models.AdminDailyMetric{},
+		&models.Account{},
+		&models.Entry{},
+		&models.QuickPrompt{},
+		&models.Notification{},
+		&models.Feedback{},
+		&models.Budget{},
+		&models.BudgetAlert{},
+		&models.MonthlyReview{},
+		&models.Subscription{},
+		&models.SubscriptionReminder{},
+		&models.SubscriptionOccurrence{},
+		&models.CardStatement{},
+		&models.CardStatementPayment{},
+		&models.CardStatementReminder{},
+		&models.CardEMIPlan{},
+		&models.CardEMIInstallment{},
+		&models.PushDevice{},
+		&models.SplitFriend{},
+		&models.SplitGroup{},
+		&models.SplitGroupMember{},
+		&models.SplitBill{},
+		&models.SplitParticipant{},
+		&models.SplitSettlement{},
+		&models.SplitFriendMerge{},
+		&models.Payment{},
+		&models.PaymentWebhookEvent{},
+	); err != nil {
+		return err
+	}
+	return EnsureRuntimeSchema()
+}
+
+func preAutoMigrateStatements() []string {
+	return []string{
+		// Preserve every malformed legacy value before replacing it. Valid ISO
+		// dates retain their exact calendar day; anything else falls back to the
+		// row's Asia/Kolkata creation date, which is deterministic and auditable.
+		// The block is a no-op for fresh databases and after the column is DATE.
+		`DO $$
+		DECLARE
+			entry_row RECORD;
+			parsed_date DATE;
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public' AND table_name = 'entries'
+					AND column_name = 'date' AND data_type <> 'date'
+			) THEN
+				RETURN;
+			END IF;
+
+			CREATE TABLE IF NOT EXISTS entry_date_migration_rejects (
+				entry_id BIGINT PRIMARY KEY,
+				original_date TEXT,
+				replacement_date DATE NOT NULL,
+				migrated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			);
+
+			FOR entry_row IN SELECT id, date, created_at FROM entries LOOP
+				BEGIN
+					parsed_date := BTRIM(entry_row.date)::DATE;
+					IF TO_CHAR(parsed_date, 'YYYY-MM-DD') <> BTRIM(entry_row.date) THEN
+						RAISE EXCEPTION 'entry date is not canonical ISO';
+					END IF;
+				EXCEPTION WHEN OTHERS THEN
+					parsed_date := (entry_row.created_at AT TIME ZONE 'Asia/Kolkata')::DATE;
+					INSERT INTO entry_date_migration_rejects
+						(entry_id, original_date, replacement_date)
+					VALUES (entry_row.id, entry_row.date, parsed_date)
+					ON CONFLICT (entry_id) DO NOTHING;
+					UPDATE entries SET date = TO_CHAR(parsed_date, 'YYYY-MM-DD')
+					WHERE id = entry_row.id;
+				END;
+			END LOOP;
+
+			ALTER TABLE entries
+				ALTER COLUMN date TYPE DATE USING BTRIM(date)::DATE,
+				ALTER COLUMN date SET NOT NULL;
+		END
+		$$`,
+	}
+}
+
+// reconcileLegacyConstraints is compatibility work inside the one explicit
+// migration path, not a boot-time safety net. Older databases may have the
+// Postgres-generated plans_code_key name while GORM expects uni_plans_code;
+// carrying the existing constraint across prevents AutoMigrate from trying to
+// drop a name that never existed. Once every deployed database has crossed this
+// migration, this shim can be removed without changing the server boot path.
+func reconcileLegacyConstraints() error {
 	for _, statement := range legacyConstraintRenames() {
 		if err := DB.Exec(statement).Error; err != nil {
 			return err
@@ -27,16 +125,6 @@ func PrepareForAutoMigrate() error {
 	return nil
 }
 
-// renameUniqueConstraint builds an idempotent rename: it acts only when the
-// Postgres-named constraint is present and the GORM-named one is not, so it is
-// a no-op on a database built entirely by AutoMigrate and on every boot after
-// the first.
-//
-// Constraints are looked up by joining pg_class rather than casting to
-// regclass. SQL does not promise to short-circuit AND, so a `to_regclass(...)
-// IS NOT NULL` guard sitting beside a `'table'::regclass` cast does not stop
-// the cast from throwing — which is how the first version of this broke every
-// fresh database, where `plans` does not exist until AutoMigrate creates it.
 func renameUniqueConstraint(table, from, to string) string {
 	constraintExists := func(name string) string {
 		return `EXISTS (
@@ -60,8 +148,6 @@ func renameUniqueConstraint(table, from, to string) string {
 
 func legacyConstraintRenames() []string {
 	return []string{
-		// plans.code — reached by AutoMigrate through models.Payment.Plan and
-		// models.UserSubscription.Plan.
 		renameUniqueConstraint("plans", "plans_code_key", "uni_plans_code"),
 	}
 }

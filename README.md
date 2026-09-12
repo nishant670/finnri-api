@@ -55,32 +55,20 @@ configuration names and safe defaults but no real secrets.
 
 ## Database migration
 
-Apply checked-in migrations in filename order before deploying the updated
-server. Migrations `0002_lock_transaction_contract.sql` and
-`0005_require_entry_account_id.sql` create a default Cash account where needed,
-backfill legacy transactions, and make `account_id` mandatory. Migration `0002`
-also converts amounts to `numeric(19,2)`.
+Schema changes have one production entry point: `cmd/migrate`. Railway runs the
+compiled `/app/migrate` binary as a pre-deploy command, and a failure stops the
+deployment before the new server receives traffic. The server process never
+mutates schema during boot.
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0001_add_entry_account_id.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0002_lock_transaction_contract.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0003_make_entry_account_optional.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0004_add_entry_idempotency.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0005_require_entry_account_id.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0006_create_auth_sessions.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0007_create_auth_verifications.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0008_guest_device_and_login_lockout.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0030_add_google_subject_to_users.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0031_remove_transaction_self_notifications.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0032_canonicalize_entry_categories.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0033_canonicalize_subscription_categories.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0039_correct_account_derived_payment_modes.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0043_repair_split_ledger.sql
+go run ./cmd/migrate
 ```
 
-`0043` also runs itself at boot from `internal/database/schema.go`, keyed on the
-same `schema_repairs` row, so applying it by hand and letting the server do it
-are the same operation done once. Its destructive half is guarded for a reason:
+The numbered SQL files remain historical records; do not apply them separately
+to a live database. Their current equivalents live in
+`internal/database/schema.go` and execute only through the migration command.
+The `0043` repair is keyed on a `schema_repairs` row. Its destructive half is
+guarded for a reason:
 it deletes settlements for friends with no expense history, which is right for a
 leftover from a deleted group and wrong for a settlement somebody records before
 their first expense.

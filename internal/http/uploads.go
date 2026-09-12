@@ -1,7 +1,9 @@
 package http
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -10,9 +12,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 // uploadDir is the on-disk root for receipts. Deployments mount a persistent
@@ -22,6 +30,8 @@ const uploadDir = "uploads"
 // sniffLength is what http.DetectContentType reads, and is also enough to cover
 // the ISO base media file format header used by HEIC.
 const sniffLength = 512
+
+const signedUploadTTL = 5 * time.Minute
 
 // allowedUploadTypes maps an accepted media type to the extension we store it
 // under. The extension is always derived from the sniffed bytes, never from the
@@ -131,13 +141,164 @@ func isHEIC(header []byte) bool {
 	return heicBrands[string(header[8:12])]
 }
 
-// randomUploadName returns an unguessable filename. Receipts are served from a
-// static route with no authentication, so the name is the only thing keeping
-// one user's documents from being enumerable.
+// randomUploadName returns an unguessable filename as defence in depth. Access
+// is independently constrained by the owner-session signature on the read path.
 func randomUploadName(extension string) (string, error) {
 	buffer := make([]byte, 16)
 	if _, err := rand.Read(buffer); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(buffer) + extension, nil
+}
+
+func (s *Server) createSignedUploadURL(c *gin.Context) {
+	name, ok := safeUploadName(c.Param("name"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload_not_found"})
+		return
+	}
+	userID, ok := c.Get("userID")
+	if !ok || !userCanReadUpload(userID.(uint), name) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload_not_found"})
+		return
+	}
+	sessionID, ok := c.Get("authSessionID")
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_session"})
+		return
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+	if token == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_session"})
+		return
+	}
+
+	expires := time.Now().UTC().Add(signedUploadTTL).Unix()
+	signature := uploadSignature(hashSessionToken(token), name, expires)
+	url := fmt.Sprintf("%s/%s/%s?sid=%d&expires=%d&signature=%s",
+		publicOrigin(c.Request), uploadDir, name, sessionID.(uint), expires, signature)
+	c.JSON(http.StatusOK, gin.H{"url": url, "expires_at": time.Unix(expires, 0).UTC()})
+}
+
+func (s *Server) serveSignedUpload(c *gin.Context) {
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'; img-src 'self'; object-src 'none'; sandbox")
+	c.Header("Cache-Control", "private, no-store")
+
+	name, ok := safeUploadName(c.Param("name"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload_not_found"})
+		return
+	}
+	sessionID, err := strconv.ParseUint(c.Query("sid"), 10, 64)
+	if err != nil || sessionID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_upload_signature"})
+		return
+	}
+	expires, err := strconv.ParseInt(c.Query("expires"), 10, 64)
+	now := time.Now().UTC()
+	if err != nil || expires <= now.Unix() || expires > now.Add(signedUploadTTL+time.Minute).Unix() {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "expired_upload_signature"})
+		return
+	}
+
+	var session models.AuthSession
+	if err := database.DB.Where("id = ? AND revoked_at IS NULL AND expires_at > ?", sessionID, now).First(&session).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_upload_signature"})
+		return
+	}
+	expected := uploadSignature(session.TokenHash, name, expires)
+	provided, err := hex.DecodeString(c.Query("signature"))
+	if err != nil || !hmac.Equal([]byte(expected), []byte(hex.EncodeToString(provided))) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_upload_signature"})
+		return
+	}
+	if !userCanReadUpload(session.UserID, name) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload_not_found"})
+		return
+	}
+
+	path := filepath.Join(uploadDir, name)
+	if _, err := os.Stat(path); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "upload_not_found"})
+		return
+	}
+	c.File(path)
+}
+
+func uploadSignature(sessionTokenHash, name string, expires int64) string {
+	mac := hmac.New(sha256.New, []byte(sessionTokenHash))
+	_, _ = fmt.Fprintf(mac, "%s\n%d", name, expires)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func safeUploadName(raw string) (string, bool) {
+	name := strings.TrimSpace(raw)
+	if name == "" || filepath.Base(name) != name {
+		return "", false
+	}
+	extension := strings.ToLower(filepath.Ext(name))
+	allowed := false
+	for _, candidate := range allowedUploadTypes {
+		if extension == candidate {
+			allowed = true
+			break
+		}
+	}
+	stem := strings.TrimSuffix(name, extension)
+	if !allowed || len(stem) != 32 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(stem); err != nil {
+		return "", false
+	}
+	return name, true
+}
+
+// userCanReadUpload answers whether this user may see these bytes.
+//
+// Ownership is not the only claim. A receipt belongs to the one person whose
+// entry carries it, but a split group's photo is a property of the group and is
+// drawn by every member — so gating uploads on ownership alone turned every
+// group photo into a broken image, including for the member who chose it.
+func userCanReadUpload(userID uint, name string) bool {
+	return userOwnsEntryUpload(userID, name) || userCanReadSplitGroupPhoto(userID, name)
+}
+
+func userOwnsEntryUpload(userID uint, name string) bool {
+	var attachments []string
+	if err := database.DB.Model(&models.Entry{}).
+		Where("user_id = ? AND attachment <> ?", userID, "").
+		Pluck("attachment", &attachments).Error; err != nil && err != gorm.ErrRecordNotFound {
+		return false
+	}
+	for _, attachment := range attachments {
+		path, ok := localUploadPathFromAttachment(attachment)
+		if ok && filepath.Base(path) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// userCanReadSplitGroupPhoto matches the photo to a group and then asks the
+// same question the group screens ask — owner, or an active member.
+func userCanReadSplitGroupPhoto(userID uint, name string) bool {
+	var groups []models.SplitGroup
+	if err := database.DB.
+		Where("photo_url <> ?", "").
+		Find(&groups).Error; err != nil && err != gorm.ErrRecordNotFound {
+		return false
+	}
+	for _, group := range groups {
+		path, ok := localUploadPathFromAttachment(group.PhotoURL)
+		if !ok || filepath.Base(path) != name {
+			continue
+		}
+		allowed, err := viewerCanAccessSplitGroup(database.DB, group, userID)
+		if err == nil && allowed {
+			return true
+		}
+	}
+	return false
 }

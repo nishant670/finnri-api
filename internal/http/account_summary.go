@@ -107,6 +107,10 @@ func monthToDateWindow(now time.Time) (string, string) {
 // this same code against SQLite.
 func loadAccountLedgerTotals(userID uint, monthStart, monthEnd string) (map[uint]accountLedgerTotals, error) {
 	var rows []accountLedgerTotals
+	lastActivityExpression := "COALESCE(MAX(entries.date), '')"
+	if database.DB.Dialector.Name() == "postgres" {
+		lastActivityExpression = "COALESCE(TO_CHAR(MAX(entries.date), 'YYYY-MM-DD'), '')"
+	}
 	if err := database.DB.Model(&models.Entry{}).
 		Joins("JOIN accounts AS ledger_account ON ledger_account.id = entries.account_id").
 		Select(`entries.account_id AS account_id,
@@ -117,8 +121,7 @@ func loadAccountLedgerTotals(userID uint, monthStart, monthEnd string) (map[uint
 			COALESCE(SUM(CASE WHEN LOWER(entries.type) <> 'expense' THEN entries.amount ELSE 0 END), 0) AS lifetime_received,
 			COALESCE(SUM(CASE WHEN LOWER(entries.type) = 'expense' AND (ledger_account.card_ledger_reset_entry_id IS NULL OR entries.id > ledger_account.card_ledger_reset_entry_id) THEN entries.amount ELSE 0 END), 0) AS card_spent_since_reset,
 			COALESCE(SUM(CASE WHEN LOWER(entries.type) <> 'expense' AND (ledger_account.card_ledger_reset_entry_id IS NULL OR entries.id > ledger_account.card_ledger_reset_entry_id) THEN entries.amount ELSE 0 END), 0) AS card_received_since_reset,
-			COUNT(*) AS entries_total,
-			COALESCE(MAX(entries.date), '') AS last_activity_date`,
+			COUNT(*) AS entries_total, `+lastActivityExpression+` AS last_activity_date`,
 			monthStart, monthEnd,
 			monthStart, monthEnd,
 			monthStart, monthEnd).
