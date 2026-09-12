@@ -1530,6 +1530,7 @@ func (s *Server) createSplitBill(c *gin.Context) {
 	}
 
 	applySplitBillViewerPermissions(&bill, userID)
+	decorateSplitBillForViewer(database.DB, &bill, userID)
 	c.JSON(http.StatusCreated, bill)
 }
 
@@ -1557,6 +1558,10 @@ func (s *Server) listSplitBills(c *gin.Context) {
 		return
 	}
 	applySplitBillListViewerPermissions(bills, userID)
+	if err := decorateSplitBillsForViewer(database.DB, bills, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_bills"})
+		return
+	}
 	c.JSON(http.StatusOK, bills)
 }
 
@@ -1583,6 +1588,7 @@ func (s *Server) getSplitBillByEntry(c *gin.Context) {
 	}
 
 	applySplitBillViewerPermissions(&bill, userID)
+	decorateSplitBillForViewer(database.DB, &bill, userID)
 	c.JSON(http.StatusOK, bill)
 }
 
@@ -1668,6 +1674,7 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 	}
 
 	applySplitBillViewerPermissions(&bill, userID)
+	decorateSplitBillForViewer(database.DB, &bill, userID)
 	c.JSON(http.StatusOK, bill)
 }
 
@@ -2297,6 +2304,32 @@ type splitGroupFrame struct {
 	ownerSlotFriend map[string]uint
 	// slot -> member -> that member's own friend row for the slot.
 	linkSlotFriend map[string]map[uint]uint
+	// slot -> the group's own name for the person in it: the owner's account
+	// name, and the owner's name for each member row. Only a fallback, for a
+	// reader who has no row of their own for somebody — without it that person
+	// renders as a blank in a roster that is otherwise complete.
+	slotName map[string]string
+	// The order the group is written in: the owner, then the roster.
+	slotOrder []string
+}
+
+// slotsForUser is friendFor read backwards: which slot each of one person's
+// own friend rows stands for. It is how a line on somebody else's bill is
+// traced back to the person it is actually about.
+func (frame splitGroupFrame) slotsForUser(userID uint) map[uint]string {
+	slots := map[uint]string{}
+	if userID == frame.ownerID {
+		for slot, friendID := range frame.ownerSlotFriend {
+			slots[friendID] = slot
+		}
+		return slots
+	}
+	for slot, byUser := range frame.linkSlotFriend {
+		if friendID, ok := byUser[userID]; ok {
+			slots[friendID] = slot
+		}
+	}
+	return slots
 }
 
 // friendFor is the row `forUser` would name to mean the person in `slot`, or 0
@@ -2318,17 +2351,37 @@ func loadSplitGroupFrames(db *gorm.DB, groupIDs []uint) (map[uint]splitGroupFram
 	if err := db.Where("id IN ?", groupIDs).Find(&groups).Error; err != nil {
 		return nil, err
 	}
+	ownerIDs := make([]uint, 0, len(groups))
+	for _, group := range groups {
+		ownerIDs = append(ownerIDs, group.UserID)
+	}
+	var owners []models.User
+	if err := db.Where("id IN ?", ownerIDs).Find(&owners).Error; err != nil {
+		return nil, err
+	}
+	ownerNames := map[uint]string{}
+	for _, owner := range owners {
+		ownerNames[owner.ID] = displayNameForUser(owner)
+	}
+
 	for _, group := range groups {
 		frames[group.ID] = splitGroupFrame{
 			ownerID:         group.UserID,
 			slotOfUser:      map[uint]string{group.UserID: models.SplitGroupDefaultSplitOwnerSlot},
 			ownerSlotFriend: map[string]uint{},
 			linkSlotFriend:  map[string]map[uint]uint{},
+			slotName: map[string]string{
+				models.SplitGroupDefaultSplitOwnerSlot: ownerNames[group.UserID],
+			},
+			slotOrder: []string{models.SplitGroupDefaultSplitOwnerSlot},
 		}
 	}
 
 	var members []models.SplitGroupMember
-	if err := db.Preload("Friend").Where("group_id IN ?", groupIDs).Find(&members).Error; err != nil {
+	// Ordered so the roster every viewer is shown comes out the same way twice
+	// running; the rows built from it animate for no reason otherwise.
+	if err := db.Preload("Friend").Where("group_id IN ?", groupIDs).
+		Order("id asc").Find(&members).Error; err != nil {
 		return nil, err
 	}
 	for _, member := range members {
@@ -2339,7 +2392,12 @@ func loadSplitGroupFrames(db *gorm.DB, groupIDs []uint) (map[uint]splitGroupFram
 			continue
 		}
 		slot := splitGroupSlotForFriend(member.FriendID)
+		if _, seen := frame.ownerSlotFriend[slot]; !seen {
+			frame.slotOrder = append(frame.slotOrder, slot)
+			frames[member.GroupID] = frame
+		}
 		frame.ownerSlotFriend[slot] = member.FriendID
+		frame.slotName[slot] = fallbackSplitFriendName(member.Friend)
 		if member.Friend.LinkedUserID != nil {
 			frame.slotOfUser[*member.Friend.LinkedUserID] = slot
 		}
@@ -2873,6 +2931,31 @@ func decorateSplitGroupsForViewer(db *gorm.DB, groups []models.SplitGroup, viewe
 		}
 	}
 
+	// The reader's own address book, which is where every name and contact in
+	// the roster below comes from. A group's membership rows carry the owner's
+	// names for people, and those are not the reader's to show.
+	var viewerFriends []models.SplitFriend
+	if err := db.Where("user_id = ?", viewerUserID).Find(&viewerFriends).Error; err != nil {
+		return err
+	}
+	viewerFriendByID := make(map[uint]models.SplitFriend, len(viewerFriends))
+	for _, friend := range viewerFriends {
+		viewerFriendByID[friend.ID] = friend
+	}
+
+	// The roster, read rather than trusted from the caller's preloads: this
+	// runs on single-group responses too, and half of those never preloaded
+	// Members at all.
+	var rosterRows []models.SplitGroupMember
+	if err := db.Preload("Friend").Where("group_id IN ?", groupIDs).
+		Order("id asc").Find(&rosterRows).Error; err != nil {
+		return err
+	}
+	rosterByGroup := map[uint][]models.SplitGroupMember{}
+	for _, row := range rosterRows {
+		rosterByGroup[row.GroupID] = append(rosterByGroup[row.GroupID], row)
+	}
+
 	for index := range groups {
 		group := &groups[index]
 		group.OwnerName = ownerNames[group.UserID]
@@ -2881,19 +2964,100 @@ func decorateSplitGroupsForViewer(db *gorm.DB, groups []models.SplitGroup, viewe
 		// The owner is never one of their own friend rows, so they are always
 		// the owner slot and never a member slot — and every slot already names
 		// a row they own, so they need no translation either.
-		if group.UserID == viewerUserID {
-			continue
-		}
-		group.ViewerSlotFriends = slotFriendsByGroup[group.ID]
-		for _, member := range group.Members {
-			if viewerFriendIDs[member.FriendID] {
-				friendID := member.FriendID
-				group.ViewerFriendID = &friendID
-				break
+		if group.UserID != viewerUserID {
+			group.ViewerSlotFriends = slotFriendsByGroup[group.ID]
+			for _, member := range rosterByGroup[group.ID] {
+				if member.UserID == group.UserID && viewerFriendIDs[member.FriendID] {
+					friendID := member.FriendID
+					group.ViewerFriendID = &friendID
+					break
+				}
 			}
 		}
+		group.ViewerMembers = splitGroupViewerRoster(
+			*group,
+			rosterByGroup[group.ID],
+			viewerUserID,
+			viewerFriendByID,
+		)
 	}
 	return nil
+}
+
+// splitGroupViewerRoster is everybody in a group, named the way one reader
+// names them — the reader included, flagged as themselves.
+//
+// Every screen that wanted this used to build it out of `Members`, which is
+// the owner's list of the owner's own friend rows. For the owner that happens
+// to be right. For everybody else it was somebody else's address book read as
+// if it were theirs: the member saw one row, her own, labelled "(you)", and the
+// person who owned the group was not in the list at all.
+//
+// FriendID is left at zero where the reader has no row of their own for
+// somebody — a slot whose link has not been provisioned yet. The person still
+// appears, by name, so the roster is complete; they simply cannot be settled
+// with until there is a row to settle against.
+func splitGroupViewerRoster(
+	group models.SplitGroup,
+	roster []models.SplitGroupMember,
+	viewerUserID uint,
+	viewerFriendByID map[uint]models.SplitFriend,
+) []models.SplitGroupViewerMember {
+	viewerSlot := models.SplitGroupDefaultSplitOwnerSlot
+	if group.UserID != viewerUserID {
+		if group.ViewerFriendID == nil {
+			// Nothing identifies the reader inside this group yet, so there is
+			// no honest way to say which row is them. Better no roster than one
+			// with the reader listed twice, once as themselves.
+			return nil
+		}
+		viewerSlot = splitGroupSlotForFriend(*group.ViewerFriendID)
+	}
+	slotFriends := group.ViewerSlotFriends
+
+	members := make([]models.SplitGroupViewerMember, 0, len(roster)+1)
+	appendSlot := func(slot string, ownerSideName, fallbackName string) {
+		entry := models.SplitGroupViewerMember{Slot: slot, IsViewer: slot == viewerSlot}
+		if entry.IsViewer {
+			members = append(members, entry)
+			return
+		}
+		if group.UserID == viewerUserID {
+			// The roster is already written in the owner's own rows.
+			if parsed, err := strconv.ParseUint(slot, 10, 64); err == nil {
+				entry.FriendID = uint(parsed)
+			}
+		} else {
+			entry.FriendID = slotFriends[slot]
+		}
+		if friend, ok := viewerFriendByID[entry.FriendID]; ok {
+			entry.Name = fallbackSplitFriendName(friend)
+			entry.Email = friend.Email
+			entry.Phone = friend.Phone
+		} else {
+			entry.Name = ownerSideName
+			if strings.TrimSpace(entry.Name) == "" {
+				entry.Name = fallbackName
+			}
+		}
+		members = append(members, entry)
+	}
+
+	appendSlot(models.SplitGroupDefaultSplitOwnerSlot, group.OwnerName, "Group owner")
+	for _, member := range roster {
+		// Only the owner's rows are the roster. Anything else in this table is
+		// a stray from an older build, and listing it would put a second copy
+		// of somebody in the group.
+		if member.UserID != group.UserID || member.Friend.Archived {
+			continue
+		}
+		appendSlot(
+			splitGroupSlotForFriend(member.FriendID),
+			fallbackSplitFriendName(member.Friend),
+			"Group member",
+		)
+	}
+	return members
 }
 
 func decorateSplitGroupForViewer(db *gorm.DB, group *models.SplitGroup, viewerUserID uint) error {
@@ -2938,6 +3102,22 @@ func applySplitBillViewerPermissions(bill *models.SplitBill, viewerUserID uint) 
 	if bill.Group != nil {
 		applySplitGroupViewerPermissions(bill.Group, viewerUserID)
 	}
+}
+
+// decorateSplitBillForViewer is the single-bill form of the restatement.
+//
+// A failure is swallowed rather than turned into a 500: the bill itself saved,
+// and refusing to hand it back over a decoration would lose the write the
+// caller just made. The screen falls back to showing no per-person breakdown.
+func decorateSplitBillForViewer(db *gorm.DB, bill *models.SplitBill, viewerUserID uint) {
+	if bill == nil {
+		return
+	}
+	bills := []models.SplitBill{*bill}
+	if err := decorateSplitBillsForViewer(db, bills, viewerUserID); err != nil {
+		return
+	}
+	bill.ViewerShares = bills[0].ViewerShares
 }
 
 func applySplitBillListViewerPermissions(bills []models.SplitBill, viewerUserID uint) {

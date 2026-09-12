@@ -3953,6 +3953,16 @@ components:
           description: >-
             Which of the group's member friend rows is the caller. Absent for
             the owner, who is always the "owner" slot.
+        viewer_members:
+          type: array
+          description: >-
+            The group's whole roster written in the caller's own friend rows,
+            themselves included and flagged. Prefer it over `members` for
+            anything drawn on screen: `members` is the owner's list of the
+            owner's own rows, so to any other member it names people their
+            account cannot resolve, and leaves out the owner entirely.
+          items:
+            $ref: "#/components/schemas/SplitGroupViewerMember"
         members:
           type: array
           items:
@@ -3963,6 +3973,53 @@ components:
         updated_at:
           type: string
           format: date-time
+    SplitGroupViewerMember:
+      type: object
+      required: [slot, friend_id, name, is_viewer]
+      properties:
+        slot:
+          type: string
+          description: >-
+            The person in the group owner's namespace: "owner", or an
+            owner-side split friend id rendered as text.
+        friend_id:
+          type: integer
+          description: >-
+            The caller's own friend row for this person. Zero for the caller
+            themselves, and zero for anybody they have no row for yet — such a
+            person can be shown but not settled with.
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        is_viewer:
+          type: boolean
+    SplitBillViewerShare:
+      type: object
+      required: [slot, friend_id, name, is_viewer, paid, share]
+      properties:
+        slot:
+          type: string
+          description: >-
+            The person in the group owner's namespace. On a bill with no group
+            it is the caller's own friend id, or "self" for the caller.
+        friend_id:
+          type: integer
+          description: The caller's own friend row; zero for the caller.
+        name:
+          type: string
+        is_viewer:
+          type: boolean
+        paid:
+          type: number
+          multipleOf: 0.01
+          description: What this person laid out. Only the payer is non-zero.
+        share:
+          type: number
+          multipleOf: 0.01
+          description: What the bill makes theirs to carry.
     SplitParticipantInput:
       type: object
       required: [friend_id, share_amount, direction]
@@ -4049,6 +4106,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SplitParticipant"
+        viewer_shares:
+          type: array
+          description: >-
+            This bill restated for whoever asked for it: who paid, and what each
+            person carries, named in the caller's own friend rows. Prefer it
+            over `participants` on anything that says "you". `participants`
+            records only the debts of the bill's author, against friend rows
+            only they own, with `direction` stated from their side — read
+            literally by another member of the group it reports the author's
+            payments and lendings as the reader's own.
+          items:
+            $ref: "#/components/schemas/SplitBillViewerShare"
         created_at:
           type: string
           format: date-time

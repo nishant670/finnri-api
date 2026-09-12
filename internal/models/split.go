@@ -121,6 +121,15 @@ type SplitGroup struct {
 	// Response-only, and filled on the groups list.
 	ViewerBalances      []SplitGroupFriendBalance `gorm:"-" json:"viewer_balances,omitempty"`
 	ViewerNetBalance    Money                     `gorm:"-" json:"viewer_net_balance"`
+	// The whole roster written the way the reader writes it — themselves
+	// included. Response-only.
+	//
+	// `Members` is the owner's list of the owner's own friend rows, so every
+	// screen that read it directly was reading somebody else's address book: a
+	// member saw her own row labelled as the only person in the group, and the
+	// owner — who is in no friend row of his own — was missing from it
+	// entirely. This is the one list every viewer can render.
+	ViewerMembers []SplitGroupViewerMember `gorm:"-" json:"viewer_members,omitempty"`
 	ViewerRole          string                    `gorm:"-" json:"viewer_role,omitempty"`
 	ViewerCanAddExpense bool                      `gorm:"-" json:"viewer_can_add_expense,omitempty"`
 	ViewerCanManage     bool                      `gorm:"-" json:"viewer_can_manage,omitempty"`
@@ -241,6 +250,25 @@ type SplitGroupMemberLink struct {
 
 func (SplitGroupMemberLink) TableName() string { return "split_group_member_links" }
 
+// SplitGroupViewerMember is one person in a group, named the way the reader
+// names them.
+//
+// FriendID is the reader's *own* friend row for that person, which is what the
+// settle-up and balance screens need: they can only act on a row the caller
+// owns. It is zero for the reader themselves, and zero for anybody the reader
+// has no row for yet — Name still carries who they are, so the roster stays
+// complete even where it is not yet actionable.
+type SplitGroupViewerMember struct {
+	// Slot names the person in the owner's namespace, the same way a default
+	// split and a member link do.
+	Slot     string `json:"slot"`
+	FriendID uint   `json:"friend_id"`
+	Name     string `json:"name"`
+	Email    string `json:"email,omitempty"`
+	Phone    string `json:"phone,omitempty"`
+	IsViewer bool   `json:"is_viewer"`
+}
+
 // SplitGroupFriendBalance is one person's net inside one group, from the
 // viewer's side: positive means that person owes the viewer.
 //
@@ -268,9 +296,42 @@ type SplitBill struct {
 	Participants    []SplitParticipant `json:"participants,omitempty" gorm:"foreignKey:BillID"`
 	ViewerCanEdit   bool               `gorm:"-" json:"viewer_can_edit,omitempty"`
 	ViewerCanDelete bool               `gorm:"-" json:"viewer_can_delete,omitempty"`
+	// This bill restated for whoever is reading it. Response-only.
+	//
+	// `Participants` is unreadable by anybody but the person who wrote it: the
+	// rows name that author's friend ids, and `Direction` is stated from their
+	// side. Read literally by somebody else, every expense the owner entered
+	// said "You paid" on the member's phone and counted her borrowings as
+	// lendings. ViewerShares is the same bill with the names and the signs
+	// turned round to face the reader.
+	ViewerShares []SplitBillViewerShare `gorm:"-" json:"viewer_shares,omitempty"`
 	CreatedAt       time.Time          `json:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"`
 }
+
+// SplitBillViewerShare is one person's part in one bill, from the reader's
+// side: what they put in, and what the bill says is theirs to carry.
+//
+// Net is Paid minus Share, so a reader's own row answers "you lent" and "you
+// borrowed" without the client having to know who wrote the bill.
+type SplitBillViewerShare struct {
+	// Slot names the person in the group owner's namespace. For a bill with no
+	// group it is the reader's own friend id, or SplitBillViewerSelfSlot.
+	Slot string `json:"slot"`
+	// The reader's own friend row for this person; zero for the reader, and
+	// zero for anybody they have no row for.
+	FriendID uint   `json:"friend_id"`
+	Name     string `json:"name"`
+	IsViewer bool   `json:"is_viewer"`
+	// What this person laid out. Only the payer has a non-zero Paid.
+	Paid Money `json:"paid"`
+	// What this bill makes theirs to carry.
+	Share Money `json:"share"`
+}
+
+// SplitBillViewerSelfSlot stands for the reader on a bill that has no group,
+// where there is no shared slot namespace to name them in.
+const SplitBillViewerSelfSlot = "self"
 
 type SplitParticipant struct {
 	ID          uint        `gorm:"primaryKey" json:"id"`
