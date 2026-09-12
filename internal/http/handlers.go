@@ -30,6 +30,7 @@ import (
 	"finnri/internal/database"
 	"finnri/internal/mailer"
 	"finnri/internal/models"
+	"finnri/internal/monitoring"
 	"finnri/internal/payments"
 )
 
@@ -65,6 +66,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		log.Fatalf("invalid TRUSTED_PROXIES: %v", err)
 	}
 	r.Use(gin.Recovery())
+	// Sentry sits inside Recovery: it records and repanics, then the existing
+	// recovery layer owns the safe 500 response. With no DSN it is not mounted.
+	if monitoring.Configured() {
+		r.Use(monitoring.GinMiddleware())
+	}
 	// Before anything that keys on the caller: the rate limiters, the guest
 	// trial grant, and the admin audit log all read what this settles.
 	r.Use(resolveClientIP(cfg))
@@ -330,17 +336,16 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 		// Financial tools
 		authorized.POST("/tools/emi/calculate", s.calculateEMI)
+
+		// Stored attachment paths stay stable in entry records. Clients exchange
+		// one for a short-lived, session-bound URL immediately before display.
+		authorized.GET("/uploads/:name/url", s.createSignedUploadURL)
 	}
 
-	// Receipts are user-supplied bytes served from our own origin. The upload
-	// handler already restricts them to images and PDFs, but pin the type down
-	// so a browser cannot be talked into re-interpreting one as markup.
-	uploads := r.Group("/"+uploadDir, func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("Content-Security-Policy", "default-src 'none'; img-src 'self'; object-src 'none'; sandbox")
-		c.Next()
-	})
-	uploads.Static("/", "./"+uploadDir)
+	// The bytes route is public only in the routing sense: every request needs
+	// an expiring signature tied to a live owner session. Keep these response
+	// headers even though uploads are already restricted by content sniffing.
+	r.GET("/"+uploadDir+"/:name", s.serveSignedUpload)
 	// Railway gates deploys on this route, so it has to fail when Postgres is
 	// gone. A static 200 reports the service healthy while every data route
 	// returns 500, which hides an outage instead of surfacing it.
@@ -404,7 +409,14 @@ func skipsStaticBearer(path string) bool {
 		// so every push the server has tried to send had nobody to send it to
 		// — including the monthly review this list was widened for.
 		strings.HasPrefix(path, "/v1/push-devices") ||
+		// Covers both POST /v1/upload and GET /v1/uploads/:name/url.
 		strings.HasPrefix(path, "/v1/upload") ||
+		// The bytes route. It carries its own authentication — an HMAC over the
+		// filename and expiry, keyed on a live session's token hash — and the
+		// clients that fetch it cannot send a header at all: expo-image and an
+		// <img> tag issue a plain GET. Gating it on the static bearer made every
+		// receipt a broken image while the signature did the real work.
+		strings.HasPrefix(path, "/"+uploadDir+"/") ||
 		strings.HasPrefix(path, "/v1/reports") ||
 		strings.HasPrefix(path, "/v1/monthly-review") ||
 		strings.HasPrefix(path, "/v1/split") ||

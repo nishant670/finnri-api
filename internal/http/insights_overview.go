@@ -114,13 +114,14 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 		AddDate(0, -(overviewMonths - 1), 0)
 
 	var rows []overviewMonthRow
+	monthExpression := sqlDateMonth(database.DB, "date")
 	if err := database.DB.Model(&models.Entry{}).
-		Select(`SUBSTR(date, 1, 7) AS month,
+		Select(monthExpression+` AS month,
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS spent,
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS income,
 			COUNT(*) AS count`).
 		Where("user_id = ? AND date >= ?"+notCardPaymentClause, userID, windowStart.Format("2006-01-02")).
-		Group("SUBSTR(date, 1, 7)").
+		Group(monthExpression).
 		Order("month asc").
 		Scan(&rows).Error; err != nil {
 		return DashboardOverview{}, err
@@ -159,11 +160,17 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 		Count  int
 		First  string
 	}
+	// `date` is a real DATE column, so the empty-string fallback has to be
+	// applied to text, not to the date itself: COALESCE(MIN(date), '') asks
+	// PostgreSQL to read '' as a date and fails the whole query with
+	// SQLSTATE 22007 — which took the dashboard down for every user, including
+	// ones with no entries at all. Project first, then fall back.
+	firstExpression := sqlDateDay(database.DB, "MIN(date)")
 	if err := database.DB.Model(&models.Entry{}).
 		Select(`COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS spent,
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS income,
 			COUNT(*) AS count,
-			COALESCE(MIN(date), '') AS first`).
+			COALESCE(` + firstExpression + `, '') AS first`).
 		Where("user_id = ?"+notCardPaymentClause, userID).
 		Scan(&lifetime).Error; err != nil {
 		return DashboardOverview{}, err

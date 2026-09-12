@@ -9,6 +9,7 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/migrate ./cmd/migrate
 
 FROM alpine:3.20
 
@@ -19,6 +20,7 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=build /out/server /app/server
+COPY --from=build /out/migrate /app/migrate
 COPY schemas /app/schemas
 COPY migrations /app/migrations
 

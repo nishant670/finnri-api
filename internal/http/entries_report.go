@@ -240,13 +240,13 @@ func loadTransactionReportAccounts(query *gorm.DB, totalExpense float64) ([]Tran
 
 func loadTransactionReportMonths(query *gorm.DB) ([]TransactionMonthlyBreakdown, error) {
 	var rows []transactionMonthlyReportRow
+	monthExpression := sqlDateMonth(query, "entries.date")
 	if err := query.Session(&gorm.Session{}).
-		Select(`SUBSTR(entries.date, 1, 7) AS month,
+		Select(monthExpression + ` AS month,
 			COALESCE(SUM(CASE WHEN LOWER(entries.type) = 'expense' THEN entries.amount ELSE 0 END), 0) AS expense,
 			COALESCE(SUM(CASE WHEN LOWER(entries.type) = 'income' THEN entries.amount ELSE 0 END), 0) AS income,
 			COUNT(*) AS transaction_count`).
-		Where("TRIM(entries.date) <> ''").
-		Group("SUBSTR(entries.date, 1, 7)").
+		Group(monthExpression).
 		Order("month ASC").
 		Scan(&rows).Error; err != nil {
 		return nil, err
