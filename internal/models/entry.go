@@ -45,14 +45,10 @@ type Entry struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// SQLite (used by the test suite) exposes DATE values as RFC3339 timestamps
-// when scanning into a string. PostgreSQL returns the canonical date directly.
-// Normalize at the model boundary so the public JSON contract is identical on
-// both dialects and remains YYYY-MM-DD after the storage migration.
+// See CalendarDay. Both dialects hand a DATE back as an RFC3339 timestamp, so
+// the JSON contract is only YYYY-MM-DD because this puts it back.
 func (entry *Entry) AfterFind(_ *gorm.DB) error {
-	if len(entry.Date) >= len("2006-01-02") {
-		entry.Date = entry.Date[:len("2006-01-02")]
-	}
+	entry.Date = CalendarDay(entry.Date)
 	return nil
 }
 

@@ -234,6 +234,10 @@ var unsupportedReasons = map[string]string{
 	"splits":      "Split balances live on the Splits screen — this channel reads your transactions, not who owes whom.",
 	"budgets":     "Budget progress lives on the Budgets screen — this channel reads your transactions, not your limits.",
 	"too_complex": "That is more than Finnri can work out in one question yet. Try asking for one thing at a time.",
+	// Server-set only, never sent by the model. See parse_question_subject.go:
+	// the question named something, and the query came back filtering on
+	// nothing, so the only honest answer is that it was not understood.
+	"unfiltered_subject": "Finnri totals by category, merchant or payment mode — not by the individual item. Try the category it falls under, or the shop you bought it from.",
 }
 
 func normalizeUnsupportedReason(raw any) string {
@@ -699,6 +703,15 @@ type answeredQuestionRequest struct {
 // well enough to decline is not an error of that kind.
 func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRequest) {
 	question := normalizeLedgerQuestion(request.rawQuery, timepkg.Now().In(s.questionLocation(request.tz)))
+
+	// The last check before the number is computed, and the only one with the
+	// user's own words to hand. A query that filters on nothing, for a question
+	// that plainly named something, is not an answer to what was asked — it is
+	// the whole ledger wearing that question as a caption.
+	if questionSubjectWasDropped(request.transcript, question) {
+		question.Metric = metricUnsupported
+		question.UnsupportedReason = "unfiltered_subject"
+	}
 
 	questionPrompt, questionCompletion, questionTotal := tokenPointers(request.reported)
 

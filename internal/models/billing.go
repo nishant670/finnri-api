@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type Plan struct {
 	ID                      uint      `gorm:"primaryKey" json:"id"`
@@ -198,4 +202,11 @@ type LifetimeQuoteRequest struct {
 	Notes                       string    `gorm:"type:text;not null;default:''" json:"notes"`
 	CreatedAt                   time.Time `json:"created_at"`
 	UpdatedAt                   time.Time `json:"updated_at"`
+}
+
+// See CalendarDay: a DATE column comes back as an RFC3339 timestamp, and
+// these fields are published as calendar days.
+func (usage *DailyCreditUsage) AfterFind(_ *gorm.DB) error {
+	usage.UsageDate = CalendarDay(usage.UsageDate)
+	return nil
 }

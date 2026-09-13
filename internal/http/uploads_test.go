@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"log"
 	"mime/multipart"
 	nethttp "net/http"
 	"net/http/httptest"
@@ -335,5 +336,55 @@ func TestUploadBytesRouteSkipsStaticBearer(t *testing.T) {
 	}
 	if skipsStaticBearer("/v1/admin/overview") {
 		t.Fatal("admin must stay behind the static bearer")
+	}
+}
+
+// The reported bug: attaching a receipt failed with "failed to save file". The
+// cause was a volume mounted over the upload directory, arriving owned by root
+// and shadowing the image's own chown, so the unprivileged server could not
+// write into it. Nothing checked, so nothing said so until a user tried.
+func TestEnsureUploadStorageReportsAnUnwritableDirectory(t *testing.T) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(workingDir) })
+
+	sandbox := t.TempDir()
+	if err := os.Chdir(sandbox); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var logged strings.Builder
+	previous := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	// A writable mount is the normal case and must stay quiet about problems.
+	EnsureUploadStorage()
+	if !strings.Contains(logged.String(), "upload_storage_ready") {
+		t.Fatalf("a writable upload directory did not report ready: %q", logged.String())
+	}
+	if entries, err := os.ReadDir(uploadDir); err != nil {
+		t.Fatalf("read upload dir: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("the write probe left files behind: %#v", entries)
+	}
+
+	// Root ignores permission bits, so the unwritable half of this test can
+	// only be meaningful as an ordinary user.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which can write to a 0555 directory anyway")
+	}
+
+	logged.Reset()
+	if err := os.Chmod(uploadDir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(sandbox, uploadDir), 0o755) })
+
+	EnsureUploadStorage()
+	if !strings.Contains(logged.String(), "upload_storage_not_writable") {
+		t.Fatalf("a read-only upload directory was reported as healthy: %q", logged.String())
 	}
 }

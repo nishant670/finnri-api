@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // CardStatement is one billing cycle on a credit card, as the bank reported
 // it. It is a second source of truth alongside the ledger: the statement is
@@ -93,4 +97,19 @@ type CardStatementReminder struct {
 	NotificationID *uint         `gorm:"index" json:"notification_id,omitempty"`
 	Notification   *Notification `json:"-" gorm:"foreignKey:NotificationID"`
 	CreatedAt      time.Time     `json:"created_at"`
+}
+
+// See CalendarDay: a DATE column comes back as an RFC3339 timestamp, and
+// these fields are published as calendar days.
+func (statement *CardStatement) AfterFind(_ *gorm.DB) error {
+	statement.CycleStart = CalendarDay(statement.CycleStart)
+	statement.CycleEnd = CalendarDay(statement.CycleEnd)
+	statement.StatementDate = CalendarDay(statement.StatementDate)
+	statement.DueDate = CalendarDay(statement.DueDate)
+	return nil
+}
+
+func (payment *CardStatementPayment) AfterFind(_ *gorm.DB) error {
+	payment.PaidOn = CalendarDay(payment.PaidOn)
+	return nil
 }

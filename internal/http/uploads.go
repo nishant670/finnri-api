@@ -23,9 +23,48 @@ import (
 	"finnri/internal/models"
 )
 
-// uploadDir is the on-disk root for receipts. Deployments mount a persistent
-// volume here; without one the files vanish on redeploy.
+// uploadDir is the on-disk root for receipts, and the URL path they are served
+// back under. Deployments mount a persistent volume here; without one the files
+// vanish on redeploy.
+//
+// Deliberately one constant for both. Splitting the disk location from the
+// public path would mean two things that must agree and no compiler to make
+// them, and every read, write and delete below would have to remember which of
+// the two it wanted.
 const uploadDir = "uploads"
+
+// EnsureUploadStorage fails loudly at boot when receipts have nowhere to go.
+//
+// This used to be discovered by a user: a volume mounted at the upload path
+// arrives owned by root and shadows the image's own directory, so a server
+// running unprivileged could not write into it — and the only symptom was a
+// 500 and "Failed to save file" under a receipt somebody had just chosen. A
+// storage problem should be visible in the deploy log, not in an attachment
+// that silently refuses to save weeks later.
+func EnsureUploadStorage() {
+	absolute, err := filepath.Abs(uploadDir)
+	if err != nil {
+		absolute = uploadDir
+	}
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		log.Printf("upload_storage_unusable path=%s err=%v (receipts cannot be saved; "+
+			"check the volume mounted here is writable by the server's user)", absolute, err)
+		return
+	}
+	// Creating a file is the only honest test. A directory can be present,
+	// listable and still refuse writes, which is precisely the failure mode
+	// this exists to catch.
+	probe := filepath.Join(uploadDir, ".write-probe")
+	file, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		log.Printf("upload_storage_not_writable path=%s err=%v (receipts cannot be saved; "+
+			"check the volume mounted here is writable by the server's user)", absolute, err)
+		return
+	}
+	_ = file.Close()
+	_ = os.Remove(probe)
+	log.Printf("upload_storage_ready path=%s", absolute)
+}
 
 // sniffLength is what http.DetectContentType reads, and is also enough to cover
 // the ISO base media file format header used by HEIC.
@@ -82,18 +121,23 @@ func (s *Server) handleUpload(c *gin.Context) {
 
 	name, err := randomUploadName(extension)
 	if err != nil {
+		log.Printf("failed_save_upload stage=name err=%v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file"})
 		return
 	}
 
+	// Logged with the path, because the two ways this fails in production are a
+	// volume the server's user does not own and a volume that is not mounted at
+	// all — and the error alone cannot tell them apart.
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		log.Printf("failed_save_upload stage=mkdir path=%s err=%v", uploadDir, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file"})
 		return
 	}
 
 	path := filepath.Join(uploadDir, name)
 	if err := c.SaveUploadedFile(file, path); err != nil {
-		log.Printf("failed_save_upload err=%v", err)
+		log.Printf("failed_save_upload stage=write path=%s err=%v", path, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file"})
 		return
 	}
