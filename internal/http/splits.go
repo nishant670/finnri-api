@@ -121,7 +121,11 @@ type splitActivityItem struct {
 	Notes            string                    `json:"notes,omitempty"`
 	// Set only when somebody else recorded this, named the way the viewer names
 	// them. A shared group's feed is otherwise silent about who did what.
-	ActorName string    `json:"actor_name,omitempty"`
+	ActorName string `json:"actor_name,omitempty"`
+	// A settlement's standing, on settlement rows only. The feed carried
+	// claimed payments and agreed ones under the same wording, which is the
+	// difference the person being asked to agree most needs to see.
+	Status    string    `json:"status,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -1780,11 +1784,30 @@ func (s *Server) createSplitSettlement(c *gin.Context) {
 	}
 
 	settlement := input.toModel(userID)
+	// Who, if anybody, has to agree this payment happened. A settlement moves
+	// somebody else's ledger as well as the caller's, and until this lookup
+	// existed that person was neither asked nor told.
+	counterpartyID, err := splitSettlementCounterparty(database.DB, userID, input.FriendID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
+		return
+	}
+	settlement.CounterpartyUserID = counterpartyID
+	settlement.Status = models.SplitSettlementConfirmed
+	if counterpartyID != nil {
+		settlement.Status = models.SplitSettlementPending
+	}
 	if err := database.DB.Create(&settlement).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_settlement"})
 		return
 	}
 	_ = database.DB.Preload("Friend").First(&settlement, settlement.ID).Error
+	if settlement.CounterpartyUserID != nil {
+		var recorder models.User
+		if err := database.DB.First(&recorder, userID).Error; err == nil {
+			notifySettlementRecorded(database.DB, settlement, recorder)
+		}
+	}
 	c.JSON(http.StatusCreated, settlement)
 }
 
@@ -1837,8 +1860,12 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
 	}
+	// Scoped to the ledger that still exists, but *not* filtered by status: a
+	// settlement somebody denied is the one row the person who recorded it most
+	// needs to find again, and dropping it would leave a balance that sprang
+	// back with nothing anywhere to explain why.
 	var settlements []models.SplitSettlement
-	if err := activeLedgerSettlements(database.DB, userID).Preload("Friend").
+	if err := splitSettlementHistory(database.DB, userID).Preload("Friend").
 		Find(&settlements).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
 		return
@@ -1995,6 +2022,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			Direction: direction,
 			Notes:     settlement.Notes,
 			ActorName: actorName(settlement.GroupID, settlement.UserID),
+			Status:    settlementStatusOrDefault(settlement.Status),
 			CreatedAt: settlement.CreatedAt,
 		})
 	}
@@ -2039,6 +2067,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			FriendID:  &friendID,
 			Direction: settlement.Direction,
 			Notes:     settlement.Notes,
+			Status:    settlementStatusOrDefault(settlement.Status),
 			CreatedAt: settlement.CreatedAt,
 		}
 		if settlement.Friend.ID != 0 {
@@ -2554,6 +2583,7 @@ func foldForeignSplitLedger(db *gorm.DB, userID uint) (
 		Select("user_id, friend_id, amount, direction, group_id").
 		Where("group_id IN ?", groupIDs).
 		Where("user_id <> ?", userID).
+		Where("status <> ?", models.SplitSettlementDenied).
 		Scan(&settlementRows).Error; err != nil {
 		return nil, nil, err
 	}
@@ -2620,6 +2650,7 @@ func buildSplitGroupBalances(db *gorm.DB, userID uint) (map[uint]map[uint]models
 		Select("split_settlements.friend_id, split_settlements.group_id, split_settlements.amount, split_settlements.direction").
 		Joins("JOIN split_groups ON split_groups.id = split_settlements.group_id").
 		Where("split_settlements.user_id = ?", userID).
+		Where("split_settlements.status <> ?", models.SplitSettlementDenied).
 		Where("split_groups.archived = ?", false).
 		Scan(&ownSettlements).Error; err != nil {
 		return nil, err
@@ -2710,6 +2741,7 @@ func buildSplitBalances(db *gorm.DB, userID uint) ([]splitBalance, error) {
 	if err := db.Model(&models.SplitSettlement{}).
 		Joins("LEFT JOIN split_groups ON split_groups.id = split_settlements.group_id").
 		Where("split_settlements.user_id = ?", userID).
+		Where("split_settlements.status <> ?", models.SplitSettlementDenied).
 		Where("split_settlements.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false).
 		Find(&settlements).Error; err != nil {
 		return nil, err
@@ -3914,6 +3946,21 @@ func userOwnsEntry(userID, entryID uint) (bool, error) {
 // applying its full amount against nothing is what made a Splits screen with no
 // groups on it report an outstanding balance.
 func activeLedgerSettlements(db *gorm.DB, userID uint) *gorm.DB {
+	return db.Model(&models.SplitSettlement{}).
+		Joins("LEFT JOIN split_groups ON split_groups.id = split_settlements.group_id").
+		Where("split_settlements.user_id = ?", userID).
+		Where("split_settlements.status <> ?", models.SplitSettlementDenied).
+		Where("split_settlements.group_id IS NULL OR (split_groups.id IS NOT NULL AND split_groups.archived = ?)", false)
+}
+
+// splitSettlementHistory is the same scope as activeLedgerSettlements without
+// the status filter.
+//
+// The ledger must not count a denied payment; the feed must still show it. A
+// denial moves a balance back, and the row is the only thing on any screen that
+// says why — dropping it from history too would leave the person who recorded
+// the payment with a number that changed and no account of it anywhere.
+func splitSettlementHistory(db *gorm.DB, userID uint) *gorm.DB {
 	return db.Model(&models.SplitSettlement{}).
 		Joins("LEFT JOIN split_groups ON split_groups.id = split_settlements.group_id").
 		Where("split_settlements.user_id = ?", userID).

@@ -1061,6 +1061,15 @@ paths:
   /v1/notifications/unread-count:
     get:
       summary: Return the authenticated user's unread notification count
+      parameters:
+        - in: query
+          name: type_prefix
+          description: >-
+            Narrow to one family of notification types, e.g. "split.". Only an
+            exact prefix match; the caller's own LIKE wildcards are escaped.
+          schema:
+            type: string
+            maxLength: 40
       responses:
         "200":
           description: Unread count
@@ -1075,6 +1084,15 @@ paths:
   /v1/notifications/read-all:
     patch:
       summary: Mark all notifications read for the authenticated user
+      parameters:
+        - in: query
+          name: type_prefix
+          description: >-
+            Narrow to one family of notification types, e.g. "split.". Only an
+            exact prefix match; the caller's own LIKE wildcards are escaped.
+          schema:
+            type: string
+            maxLength: 40
       responses:
         "200":
           description: Updated count
@@ -1609,6 +1627,61 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SplitSettlement"
+  /v1/split/settlements/pending:
+    get:
+      summary: Settlements somebody else recorded that the caller must confirm or deny
+      responses:
+        "200":
+          description: Settlements awaiting the caller's decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settlements:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SplitSettlement"
+  /v1/split/settlements/{id}/confirm:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Confirm a settlement recorded against the caller
+      responses:
+        "200":
+          description: Settlement confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitSettlement"
+        "404":
+          description: No pending settlement addressed to the caller
+        "409":
+          description: Settlement has already been confirmed or denied
+  /v1/split/settlements/{id}/deny:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Deny a settlement recorded against the caller
+      responses:
+        "200":
+          description: Settlement denied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SplitSettlement"
+        "404":
+          description: No pending settlement addressed to the caller
+        "409":
+          description: Settlement has already been confirmed or denied
   /v1/split/balances:
     get:
       summary: Return friend balances after bills and settlements
@@ -4163,6 +4236,28 @@ components:
               type: integer
             friend:
               $ref: "#/components/schemas/SplitFriend"
+            status:
+              type: string
+              enum: [pending, confirmed, denied]
+              description: >-
+                Whether the other side agrees this payment happened. Recorded
+                against a friend with no Finnri account there is nobody to ask,
+                so the settlement is created confirmed. Pending settlements
+                still count in every balance; a denial reverses them.
+            counterparty_user_id:
+              type: integer
+              nullable: true
+              description: The Finnri account that must confirm or deny this settlement.
+            responded_at:
+              type: string
+              format: date-time
+              nullable: true
+            recorded_by_name:
+              type: string
+              description: Response-only. Who recorded the settlement, for a decision prompt.
+            group_name:
+              type: string
+              description: Response-only. The group the settlement was recorded in.
             created_at:
               type: string
               format: date-time

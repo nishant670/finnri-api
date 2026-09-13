@@ -376,9 +376,45 @@ type SplitSettlement struct {
 	Direction string    `gorm:"type:varchar(24);not null" json:"direction"`
 	Date      string    `gorm:"not null" json:"date"`
 	Notes     string    `json:"notes"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// Status is whether the other side agrees this payment happened.
+	//
+	// A settlement is one person's account of a transfer that took place off
+	// Finnri, and it moves both ledgers. Recording it used to be enough on its
+	// own: the friend it named was neither asked nor told, and the only trace
+	// was a line in an activity feed that says nothing about who wrote it.
+	//
+	// Pending still counts in every balance. The payment is being asserted to
+	// have happened, and holding the ledger still until somebody taps a button
+	// would mean the app disagreed with the money. A denial reverses it.
+	Status string `gorm:"type:varchar(16);not null;default:confirmed" json:"status"`
+	// Who has to agree. Nil when the friend row stands for somebody without a
+	// Finnri account — there is nobody to ask, so the row is born confirmed.
+	//
+	// Carries no `index` tag and no association: the partial index and the
+	// foreign key are `EnsureRuntimeSchema`'s, for the naming reason spelled
+	// out on GroupID above.
+	CounterpartyUserID *uint      `json:"counterparty_user_id,omitempty"`
+	RespondedAt        *time.Time `json:"responded_at,omitempty"`
+	// Whose payment this is, named the way the reader names them. Response-only
+	// and filled for settlements the reader did not write — without it a
+	// decision prompt could only say that "a settlement" needs answering.
+	RecordedByName string    `gorm:"-" json:"recorded_by_name,omitempty"`
+	GroupName      string    `gorm:"-" json:"group_name,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
+
+// SplitSettlement.Status values.
+const (
+	// Recorded, and waiting on the other side to confirm or deny it.
+	SplitSettlementPending = "pending"
+	// Agreed — or never needed agreeing, because the friend has no account.
+	SplitSettlementConfirmed = "confirmed"
+	// The other side says this payment did not happen. Excluded from every
+	// balance, but kept: deleting it would erase the disagreement along with
+	// the claim, and leave the person who recorded it with nothing to look at.
+	SplitSettlementDenied = "denied"
+)
 
 // SplitFriendMerge remembers that one friend row was folded into another.
 //
