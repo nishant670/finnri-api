@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type Budget struct {
 	ID                    uint      `gorm:"primaryKey" json:"id"`
@@ -30,4 +34,11 @@ type BudgetAlert struct {
 	NotificationID *uint        `gorm:"index" json:"notification_id"`
 	Notification   Notification `json:"-" gorm:"foreignKey:NotificationID"`
 	CreatedAt      time.Time    `json:"created_at"`
+}
+
+// See CalendarDay: a DATE column comes back as an RFC3339 timestamp, and
+// these fields are published as calendar days.
+func (alert *BudgetAlert) AfterFind(_ *gorm.DB) error {
+	alert.PeriodStart = CalendarDay(alert.PeriodStart)
+	return nil
 }

@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 const (
 	AdminRoleViewer  = "viewer"
@@ -48,4 +52,11 @@ type AdminDailyMetric struct {
 	SuccessfulAIEvents int       `gorm:"not null;default:0" json:"successful_ai_events"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// See CalendarDay: a DATE column comes back as an RFC3339 timestamp, and
+// these fields are published as calendar days.
+func (metric *AdminDailyMetric) AfterFind(_ *gorm.DB) error {
+	metric.MetricDate = CalendarDay(metric.MetricDate)
+	return nil
 }

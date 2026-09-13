@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // CardEMIPlan is a purchase converted to instalments on a credit card.
 //
@@ -97,3 +101,16 @@ type CardEMIInstallment struct {
 }
 
 func (CardEMIInstallment) TableName() string { return "card_emi_installments" }
+
+// See CalendarDay: a DATE column comes back as an RFC3339 timestamp, and
+// these fields are published as calendar days.
+func (plan *CardEMIPlan) AfterFind(_ *gorm.DB) error {
+	plan.PurchasedOn = CalendarDay(plan.PurchasedOn)
+	plan.FirstInstallment = CalendarDay(plan.FirstInstallment)
+	return nil
+}
+
+func (installment *CardEMIInstallment) AfterFind(_ *gorm.DB) error {
+	installment.DueDate = CalendarDay(installment.DueDate)
+	return nil
+}

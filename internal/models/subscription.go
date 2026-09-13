@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 type Subscription struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
@@ -56,4 +60,21 @@ type SubscriptionReminder struct {
 	NotificationID *uint        `gorm:"index" json:"notification_id"`
 	Notification   Notification `json:"-" gorm:"foreignKey:NotificationID"`
 	CreatedAt      time.Time    `json:"created_at"`
+}
+
+// See CalendarDay: a DATE column comes back as an RFC3339 timestamp, and
+// these fields are published as calendar days.
+func (subscription *Subscription) AfterFind(_ *gorm.DB) error {
+	subscription.NextDueDate = CalendarDay(subscription.NextDueDate)
+	return nil
+}
+
+func (occurrence *SubscriptionOccurrence) AfterFind(_ *gorm.DB) error {
+	occurrence.DueDate = CalendarDay(occurrence.DueDate)
+	return nil
+}
+
+func (reminder *SubscriptionReminder) AfterFind(_ *gorm.DB) error {
+	reminder.DueDate = CalendarDay(reminder.DueDate)
+	return nil
 }
