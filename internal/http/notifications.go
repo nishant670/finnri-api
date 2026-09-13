@@ -57,15 +57,38 @@ func parseNotificationPagination(pageParam, pageSizeParam string) (int, int, gin
 	return page, pageSize, fields
 }
 
+// escapeNotificationTypePrefix neutralises the caller's own LIKE wildcards, so
+// a prefix can only ever be a prefix.
+func escapeNotificationTypePrefix(typePrefix string) string {
+	return strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(typePrefix)
+}
+
 func notificationScope(db *gorm.DB, userID uint) *gorm.DB {
 	return db.Where("user_id = ?", userID)
 }
 
 func unreadNotificationCount(userID uint) (int64, error) {
+	return unreadNotificationCountByPrefix(userID, "")
+}
+
+// unreadNotificationCountByPrefix narrows the count to one family of
+// notifications — "split." being the one the app asks for.
+//
+// The Splits screen needed a way to say "something in here wants you" without
+// claiming it every time you yourself added an expense. Activity records
+// everything, so a dot driven by activity would never go out; unread
+// notifications are only ever written *about* the reader by somebody else, and
+// clear when read, which is the signal the dot actually wanted.
+func unreadNotificationCountByPrefix(userID uint, typePrefix string) (int64, error) {
 	var unreadCount int64
-	err := notificationScope(database.DB.Model(&models.Notification{}), userID).
-		Where("read_at IS NULL").
-		Count(&unreadCount).Error
+	query := notificationScope(database.DB.Model(&models.Notification{}), userID).
+		Where("read_at IS NULL")
+	if typePrefix != "" {
+		// LIKE, with the caller's own wildcards escaped, so a prefix is only
+		// ever a prefix.
+		query = query.Where("type LIKE ?", escapeNotificationTypePrefix(typePrefix)+"%")
+	}
+	err := query.Count(&unreadCount).Error
 	return unreadCount, err
 }
 
@@ -127,7 +150,15 @@ func (s *Server) listNotifications(c *gin.Context) {
 
 func (s *Server) getUnreadNotificationCount(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
-	unreadCount, err := unreadNotificationCount(userID)
+	typePrefix := strings.TrimSpace(c.Query("type_prefix"))
+	if len(typePrefix) > 40 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":  "invalid_filters",
+			"fields": gin.H{"type_prefix": "must be at most 40 characters"},
+		})
+		return
+	}
+	unreadCount, err := unreadNotificationCountByPrefix(userID, typePrefix)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_count_unread_notifications"})
 		return
@@ -163,10 +194,25 @@ func (s *Server) markNotificationRead(c *gin.Context) {
 
 func (s *Server) markAllNotificationsRead(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
+	typePrefix := strings.TrimSpace(c.Query("type_prefix"))
+	if len(typePrefix) > 40 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":  "invalid_filters",
+			"fields": gin.H{"type_prefix": "must be at most 40 characters"},
+		})
+		return
+	}
 	now := time.Now().UTC()
-	result := notificationScope(database.DB.Model(&models.Notification{}), userID).
-		Where("read_at IS NULL").
-		Update("read_at", now)
+	query := notificationScope(database.DB.Model(&models.Notification{}), userID).
+		Where("read_at IS NULL")
+	// Narrowed so opening one screen clears only what that screen shows. The
+	// Splits activity dot is fed by unread `split.` notifications, and clearing
+	// it by marking *everything* read would silently dismiss an unrelated
+	// budget alert the user has never opened.
+	if typePrefix != "" {
+		query = query.Where("type LIKE ?", escapeNotificationTypePrefix(typePrefix)+"%")
+	}
+	result := query.Update("read_at", now)
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_mark_notifications_read"})
 		return

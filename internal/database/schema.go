@@ -1303,6 +1303,23 @@ func runtimeSchemaStatements() []string {
 			ADD COLUMN IF NOT EXISTS group_id BIGINT REFERENCES split_groups(id) ON DELETE CASCADE`,
 		`CREATE INDEX IF NOT EXISTS idx_split_settlements_group
 			ON split_settlements (group_id) WHERE group_id IS NOT NULL`,
+		// A settlement's second side. See
+		// migrations/0048_add_split_settlement_confirmation.sql for why the
+		// default is 'confirmed' rather than 'pending'.
+		`ALTER TABLE split_settlements
+			ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'confirmed'`,
+		`ALTER TABLE split_settlements
+			ADD COLUMN IF NOT EXISTS counterparty_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL`,
+		`ALTER TABLE split_settlements
+			ADD COLUMN IF NOT EXISTS responded_at TIMESTAMPTZ`,
+		`ALTER TABLE split_settlements
+			DROP CONSTRAINT IF EXISTS split_settlements_status_check`,
+		`ALTER TABLE split_settlements
+			ADD CONSTRAINT split_settlements_status_check
+			CHECK (status IN ('pending', 'confirmed', 'denied'))`,
+		`CREATE INDEX IF NOT EXISTS idx_split_settlements_counterparty_status
+			ON split_settlements (counterparty_user_id, status)
+			WHERE counterparty_user_id IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS split_friend_merges (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

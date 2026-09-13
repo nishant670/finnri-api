@@ -119,8 +119,8 @@ type SplitGroup struct {
 	ViewerSlotFriends map[string]uint `gorm:"-" json:"viewer_slot_friends,omitempty"`
 	// This group's ledger as the viewer sees it, in their own friend rows.
 	// Response-only, and filled on the groups list.
-	ViewerBalances      []SplitGroupFriendBalance `gorm:"-" json:"viewer_balances,omitempty"`
-	ViewerNetBalance    Money                     `gorm:"-" json:"viewer_net_balance"`
+	ViewerBalances   []SplitGroupFriendBalance `gorm:"-" json:"viewer_balances,omitempty"`
+	ViewerNetBalance Money                     `gorm:"-" json:"viewer_net_balance"`
 	// The whole roster written the way the reader writes it — themselves
 	// included. Response-only.
 	//
@@ -129,12 +129,12 @@ type SplitGroup struct {
 	// member saw her own row labelled as the only person in the group, and the
 	// owner — who is in no friend row of his own — was missing from it
 	// entirely. This is the one list every viewer can render.
-	ViewerMembers []SplitGroupViewerMember `gorm:"-" json:"viewer_members,omitempty"`
-	ViewerRole          string                    `gorm:"-" json:"viewer_role,omitempty"`
-	ViewerCanAddExpense bool                      `gorm:"-" json:"viewer_can_add_expense,omitempty"`
-	ViewerCanManage     bool                      `gorm:"-" json:"viewer_can_manage,omitempty"`
-	CreatedAt           time.Time                 `json:"created_at"`
-	UpdatedAt           time.Time                 `json:"updated_at"`
+	ViewerMembers       []SplitGroupViewerMember `gorm:"-" json:"viewer_members,omitempty"`
+	ViewerRole          string                   `gorm:"-" json:"viewer_role,omitempty"`
+	ViewerCanAddExpense bool                     `gorm:"-" json:"viewer_can_add_expense,omitempty"`
+	ViewerCanManage     bool                     `gorm:"-" json:"viewer_can_manage,omitempty"`
+	CreatedAt           time.Time                `json:"created_at"`
+	UpdatedAt           time.Time                `json:"updated_at"`
 }
 
 // SplitGroupMemberInviteStatus values.
@@ -305,8 +305,8 @@ type SplitBill struct {
 	// lendings. ViewerShares is the same bill with the names and the signs
 	// turned round to face the reader.
 	ViewerShares []SplitBillViewerShare `gorm:"-" json:"viewer_shares,omitempty"`
-	CreatedAt       time.Time          `json:"created_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
+	CreatedAt    time.Time              `json:"created_at"`
+	UpdatedAt    time.Time              `json:"updated_at"`
 }
 
 // SplitBillViewerShare is one person's part in one bill, from the reader's
@@ -371,14 +371,50 @@ type SplitSettlement struct {
 	// `split_settlements_group_id_fkey`, and AutoMigrate then tries to drop a
 	// constraint that does not exist under the name it looked for and aborts
 	// boot. Nothing preloads the group, so the association bought nothing.
-	GroupID   *uint     `json:"group_id,omitempty"`
-	Amount    Money     `gorm:"type:numeric(19,2);not null" json:"amount"`
-	Direction string    `gorm:"type:varchar(24);not null" json:"direction"`
-	Date      string    `gorm:"not null" json:"date"`
-	Notes     string    `json:"notes"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	GroupID   *uint  `json:"group_id,omitempty"`
+	Amount    Money  `gorm:"type:numeric(19,2);not null" json:"amount"`
+	Direction string `gorm:"type:varchar(24);not null" json:"direction"`
+	Date      string `gorm:"not null" json:"date"`
+	Notes     string `json:"notes"`
+	// Status is whether the other side agrees this payment happened.
+	//
+	// A settlement is one person's account of a transfer that took place off
+	// Finnri, and it moves both ledgers. Recording it used to be enough on its
+	// own: the friend it named was neither asked nor told, and the only trace
+	// was a line in an activity feed that says nothing about who wrote it.
+	//
+	// Pending still counts in every balance. The payment is being asserted to
+	// have happened, and holding the ledger still until somebody taps a button
+	// would mean the app disagreed with the money. A denial reverses it.
+	Status string `gorm:"type:varchar(16);not null;default:confirmed" json:"status"`
+	// Who has to agree. Nil when the friend row stands for somebody without a
+	// Finnri account — there is nobody to ask, so the row is born confirmed.
+	//
+	// Carries no `index` tag and no association: the partial index and the
+	// foreign key are `EnsureRuntimeSchema`'s, for the naming reason spelled
+	// out on GroupID above.
+	CounterpartyUserID *uint      `json:"counterparty_user_id,omitempty"`
+	RespondedAt        *time.Time `json:"responded_at,omitempty"`
+	// Whose payment this is, named the way the reader names them. Response-only
+	// and filled for settlements the reader did not write — without it a
+	// decision prompt could only say that "a settlement" needs answering.
+	RecordedByName string    `gorm:"-" json:"recorded_by_name,omitempty"`
+	GroupName      string    `gorm:"-" json:"group_name,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
+
+// SplitSettlement.Status values.
+const (
+	// Recorded, and waiting on the other side to confirm or deny it.
+	SplitSettlementPending = "pending"
+	// Agreed — or never needed agreeing, because the friend has no account.
+	SplitSettlementConfirmed = "confirmed"
+	// The other side says this payment did not happen. Excluded from every
+	// balance, but kept: deleting it would erase the disagreement along with
+	// the claim, and leave the person who recorded it with nothing to look at.
+	SplitSettlementDenied = "denied"
+)
 
 // SplitFriendMerge remembers that one friend row was folded into another.
 //

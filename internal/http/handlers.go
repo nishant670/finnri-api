@@ -330,6 +330,12 @@ func NewServer(cfg *config.Config) *gin.Engine {
 			split.DELETE("/bills/:id", s.deleteSplitBill)
 			split.POST("/settlements", s.createSplitSettlement)
 			split.GET("/settlements", s.listSplitSettlements)
+			// Declared before the `:id` routes so "pending" is never read as an
+			// id. Gin's router rejects that overlap outright rather than
+			// picking a winner.
+			split.GET("/settlements/pending", s.listPendingSplitSettlements)
+			split.POST("/settlements/:id/confirm", s.confirmSplitSettlement)
+			split.POST("/settlements/:id/deny", s.denySplitSettlement)
 			split.GET("/activity", s.listSplitActivity)
 			split.GET("/balances", s.listSplitBalances)
 		}
