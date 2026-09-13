@@ -23,6 +23,10 @@ func main() {
 	database.Connect()
 
 	cfg := config.Load()
+	// Before anything serves. A volume the server cannot write to used to be
+	// discovered by whichever user next attached a receipt; it now says so in
+	// the deploy log.
+	httpserver.EnsureUploadStorage()
 	if err := httpserver.BootstrapAdminUsers(cfg); err != nil {
 		log.Printf("admin bootstrap failed, console has no bootstrapped owner: %v", err)
 	}
