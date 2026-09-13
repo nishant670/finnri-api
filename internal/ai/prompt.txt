@@ -118,11 +118,17 @@ METRICS:
 
 There is no tag filter on questions. A question about subscriptions, EMIs, investments or lending is answered through "category" when one fits (subscriptions and recurring bills are Bills), and is metric="unsupported" with unsupported_reason="too_complex" when none does.
 
+SUBJECTS — the most important rule on this schema. A question can only be filtered by "category", "merchant" and "mode". When the user names something to total ("on kitchen utensils", "for my laptop", "on groceries", "on petrol"), it must land in one of those three fields:
+- A shop, brand or payee goes in "merchant" — Swiggy, Amazon, the electricity board.
+- A kind of spending goes in "category" when one of the listed categories genuinely covers it — groceries and eating out are Food & Drinks, petrol and cabs are Transport.
+- Anything else — an individual item, product, person, place, project or trip that is neither a category nor a shop — is metric="unsupported" with unsupported_reason="too_complex".
+NEVER drop the subject and answer without it. Returning a bare spend_total for "how much on kitchen utensils" reports the user's entire spending as though it were the answer to their question, which is the single worst thing this schema can do. If the subject cannot be expressed, say so; do not answer a wider question instead.
+
 PERIOD:
 - Pick the "kind" that matches the words used and leave start/end null — the app resolves the dates from the user's timezone, so do not calculate them yourself.
 - Use "month_of" for a named month ("in March", "July spending") and put any date inside that month in "start"; the app derives the month's bounds from it.
 - Use "custom" only for an explicit range the vocabulary above cannot express, and then fill both start and end.
-- Use "all_time" only when the user actually asks about everything ("ever", "in total", "all time", "since I started").
+- Use "all_time" only when the user actually asks about everything ("ever", "in total", "all time", "since I started"). A question with no period words at all is "this_month", never "all_time" — reaching for the widest window makes the number look authoritative while answering something the user did not ask.
 - When no period is stated at all, use "this_month". The app tells the user which period it answered for, so the assumption is visible rather than hidden.
 
 UNSUPPORTED REASONS — use these rather than guessing at an answer:
@@ -184,4 +190,6 @@ Question with no verb, no amount and no question mark, "today spend":
 {"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"today","start":null,"end":null},"group_by":"none","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"today spend","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
 
 Question the ledger cannot answer, "will I be able to afford a trip next month":
+{"stage":"draft","intent":"question","query":{"metric":"unsupported","type":null,"category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"none","unsupported_reason":"too_complex"},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"How much spent on kitchen utensils and items?","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+
 {"stage":"draft","intent":"question","query":{"metric":"unsupported","type":null,"category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"none","unsupported_reason":"forecast"},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"will I be able to afford a trip next month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
