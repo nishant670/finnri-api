@@ -4051,6 +4051,18 @@ components:
       type: object
       required: [title, total_amount, date, participants]
       properties:
+        mode:
+          type: string
+        category:
+          type: string
+        merchant:
+          type: string
+        tag:
+          type: string
+        time:
+          type: string
+        attachment:
+          type: string
         entry_id:
           type: [integer, "null"]
         group_id:
@@ -4079,6 +4091,18 @@ components:
       type: object
       required: [id, user_id, title, total_amount, currency, date, participants, created_at, updated_at]
       properties:
+        mode:
+          type: string
+        category:
+          type: string
+        merchant:
+          type: string
+        tag:
+          type: string
+        time:
+          type: string
+        attachment:
+          type: string
         id:
           type: integer
         user_id:

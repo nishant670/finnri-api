@@ -119,8 +119,8 @@ type SplitGroup struct {
 	ViewerSlotFriends map[string]uint `gorm:"-" json:"viewer_slot_friends,omitempty"`
 	// This group's ledger as the viewer sees it, in their own friend rows.
 	// Response-only, and filled on the groups list.
-	ViewerBalances      []SplitGroupFriendBalance `gorm:"-" json:"viewer_balances,omitempty"`
-	ViewerNetBalance    Money                     `gorm:"-" json:"viewer_net_balance"`
+	ViewerBalances   []SplitGroupFriendBalance `gorm:"-" json:"viewer_balances,omitempty"`
+	ViewerNetBalance Money                     `gorm:"-" json:"viewer_net_balance"`
 	// The whole roster written the way the reader writes it — themselves
 	// included. Response-only.
 	//
@@ -129,12 +129,12 @@ type SplitGroup struct {
 	// member saw her own row labelled as the only person in the group, and the
 	// owner — who is in no friend row of his own — was missing from it
 	// entirely. This is the one list every viewer can render.
-	ViewerMembers []SplitGroupViewerMember `gorm:"-" json:"viewer_members,omitempty"`
-	ViewerRole          string                    `gorm:"-" json:"viewer_role,omitempty"`
-	ViewerCanAddExpense bool                      `gorm:"-" json:"viewer_can_add_expense,omitempty"`
-	ViewerCanManage     bool                      `gorm:"-" json:"viewer_can_manage,omitempty"`
-	CreatedAt           time.Time                 `json:"created_at"`
-	UpdatedAt           time.Time                 `json:"updated_at"`
+	ViewerMembers       []SplitGroupViewerMember `gorm:"-" json:"viewer_members,omitempty"`
+	ViewerRole          string                   `gorm:"-" json:"viewer_role,omitempty"`
+	ViewerCanAddExpense bool                     `gorm:"-" json:"viewer_can_add_expense,omitempty"`
+	ViewerCanManage     bool                     `gorm:"-" json:"viewer_can_manage,omitempty"`
+	CreatedAt           time.Time                `json:"created_at"`
+	UpdatedAt           time.Time                `json:"updated_at"`
 }
 
 // SplitGroupMemberInviteStatus values.
@@ -282,6 +282,13 @@ type SplitGroupFriendBalance struct {
 }
 
 type SplitBill struct {
+	Mode       string `json:"mode"`
+	Category   string `json:"category"`
+	Merchant   string `json:"merchant"`
+	Tag        string `json:"tag"`
+	Time       string `json:"time"`
+	Attachment string `json:"attachment"`
+
 	ID              uint               `gorm:"primaryKey" json:"id"`
 	UserID          uint               `gorm:"index;not null" json:"user_id"`
 	EntryID         *uint              `gorm:"index" json:"entry_id"`
@@ -305,8 +312,8 @@ type SplitBill struct {
 	// lendings. ViewerShares is the same bill with the names and the signs
 	// turned round to face the reader.
 	ViewerShares []SplitBillViewerShare `gorm:"-" json:"viewer_shares,omitempty"`
-	CreatedAt       time.Time          `json:"created_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
+	CreatedAt    time.Time              `json:"created_at"`
+	UpdatedAt    time.Time              `json:"updated_at"`
 }
 
 // SplitBillViewerShare is one person's part in one bill, from the reader's

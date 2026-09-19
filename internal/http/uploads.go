@@ -306,7 +306,7 @@ func safeUploadName(raw string) (string, bool) {
 // drawn by every member — so gating uploads on ownership alone turned every
 // group photo into a broken image, including for the member who chose it.
 func userCanReadUpload(userID uint, name string) bool {
-	return userOwnsEntryUpload(userID, name) || userCanReadSplitGroupPhoto(userID, name)
+	return userOwnsEntryUpload(userID, name) || userCanReadSplitBillReceipt(userID, name) || userCanReadSplitGroupPhoto(userID, name)
 }
 
 func userOwnsEntryUpload(userID uint, name string) bool {
@@ -341,6 +341,31 @@ func userCanReadSplitGroupPhoto(userID uint, name string) bool {
 		}
 		allowed, err := viewerCanAccessSplitGroup(database.DB, group, userID)
 		if err == nil && allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// A shared expense's receipt is readable by the same people as the bill.
+func userCanReadSplitBillReceipt(userID uint, name string) bool {
+	groupIDs, err := accessibleActiveSplitGroupIDs(database.DB, userID)
+	if err != nil {
+		return false
+	}
+	query := database.DB.Model(&models.SplitBill{}).Where("attachment <> ?", "")
+	if len(groupIDs) > 0 {
+		query = query.Where("(user_id = ? AND group_id IS NULL) OR group_id IN ?", userID, groupIDs)
+	} else {
+		query = query.Where("user_id = ? AND group_id IS NULL", userID)
+	}
+	var attachments []string
+	if err := query.Pluck("attachment", &attachments).Error; err != nil {
+		return false
+	}
+	for _, attachment := range attachments {
+		path, ok := localUploadPathFromAttachment(attachment)
+		if ok && filepath.Base(path) == name {
 			return true
 		}
 	}

@@ -1391,7 +1391,9 @@ func (s *Server) updateEntry(c *gin.Context) {
 		if input.Split.Set {
 			return replaceEntrySplitBill(tx, userID, entry, input.Split.Value)
 		}
-		return nil
+		return tx.Model(&models.SplitBill{}).Where("user_id = ? AND entry_id = ?", userID, entry.ID).
+			Updates(map[string]any{"mode": entry.Mode, "category": entry.Category,
+				"merchant": entry.Merchant, "tag": entry.Tag, "time": entry.Time, "attachment": entry.Attachment}).Error
 	}); err != nil {
 		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
@@ -1680,6 +1682,12 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			Pluck("attachment", &attachments).Error; err != nil {
 			return err
 		}
+
+		var splitAttachments []string
+		if err := tx.Model(&models.SplitBill{}).Where("user_id = ? AND attachment <> ?", user.ID, "").Pluck("attachment", &splitAttachments).Error; err != nil {
+			return err
+		}
+		attachments = append(attachments, splitAttachments...)
 
 		guestDeviceHash := ""
 		if user.DeviceID != nil {
