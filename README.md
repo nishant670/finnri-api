@@ -73,6 +73,12 @@ it deletes settlements for friends with no expense history, which is right for a
 leftover from a deleted group and wrong for a settlement somebody records before
 their first expense.
 
+Deploy the shared transaction details API before releasing the app's shared
+composer. Migration `0049_add_split_transaction_details` adds the shared fields
+and backfills linked bills once through the migration command. It was originally
+numbered `0048` in the app's release notes; `0048` is now reserved for settlement
+confirmation.
+
 ## Auth verification
 
 OTP codes are randomly generated and stored only as hashes. Verified OTPs issue
