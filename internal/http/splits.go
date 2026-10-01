@@ -76,6 +76,14 @@ type splitGroupDirectInviteInput struct {
 }
 
 type splitBillInput struct {
+	// Pointers preserve details when older clients omit the new fields.
+	Mode       *string `json:"mode"`
+	Category   *string `json:"category"`
+	Merchant   *string `json:"merchant"`
+	Tag        *string `json:"tag"`
+	Time       *string `json:"time"`
+	Attachment *string `json:"attachment"`
+
 	EntryID      *uint                   `json:"entry_id"`
 	GroupID      *uint                   `json:"group_id"`
 	Title        string                  `json:"title"`
@@ -1647,13 +1655,50 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 		if err := tx.Where("user_id = ? AND id = ?", userID, id).First(&bill).Error; err != nil {
 			return err
 		}
-		bill.EntryID = input.EntryID
+		// Omission from an older split client must not detach its transaction.
+		if input.EntryID != nil {
+			bill.EntryID = input.EntryID
+		}
 		bill.GroupID = input.GroupID
 		bill.Title = strings.TrimSpace(input.Title)
 		bill.TotalAmount = input.TotalAmount
 		bill.Currency = normalizedSplitCurrency(input.Currency)
 		bill.Date = input.Date
 		bill.Notes = strings.TrimSpace(input.Notes)
+		input.applyDetails(&bill)
+		if bill.EntryID != nil {
+			var entry models.Entry
+			if err := tx.Where("user_id = ? AND id = ?", userID, *bill.EntryID).First(&entry).Error; err != nil {
+				return err
+			}
+			entry.Title, entry.Amount, entry.Currency, entry.Date, entry.Notes = bill.Title, bill.TotalAmount, bill.Currency, bill.Date, bill.Notes
+			if input.Mode != nil {
+				entry.Mode = bill.Mode
+			}
+			if input.Category != nil {
+				entry.Category = bill.Category
+			}
+			if input.Merchant != nil {
+				entry.Merchant = bill.Merchant
+			}
+			if input.Tag != nil {
+				entry.Tag = bill.Tag
+			}
+			if input.Time != nil {
+				entry.Time = bill.Time
+			}
+			if input.Attachment != nil {
+				entry.Attachment = bill.Attachment
+			}
+			// Refund tracking needs the full transaction editor to change safely.
+			if len(validateRefundableFields(entry.Type, entry.Tag, entry.Amount, entry.RefundableAmount, entry.RefundExpectedOn, entry.RefundReminderAt, entry.RefundStatus)) > 0 {
+				return errSplitLinkedRefund
+			}
+			if err := tx.Save(&entry).Error; err != nil {
+				return err
+			}
+			copyEntryDetailsToSplitBill(&bill, entry)
+		}
 		if err := tx.Save(&bill).Error; err != nil {
 			return err
 		}
@@ -1669,6 +1714,10 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 		}
 		return tx.Preload("Group").Preload("Participants.Friend").First(&bill, bill.ID).Error
 	}); err != nil {
+		if err == errSplitLinkedRefund {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": gin.H{"total_amount": "update refund details in the linked transaction first"}})
+			return
+		}
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "split_bill_not_found"})
 			return
@@ -2216,6 +2265,26 @@ func (input splitGroupInput) validate() map[string]string {
 
 func (input splitBillInput) validate() map[string]string {
 	fields := map[string]string{}
+	if input.Mode != nil {
+		if _, ok := canonicalMode(*input.Mode); !ok {
+			fields["mode"] = modeMessage()
+		}
+	}
+	if input.Category != nil {
+		if _, ok := categoryForSave(*input.Category, "expense"); !ok {
+			fields["category"] = categoryLengthMessage()
+		}
+	}
+	if input.Time != nil && *input.Time != "" {
+		if _, err := time.Parse("15:04", *input.Time); err != nil {
+			fields["time"] = "must use HH:MM"
+		}
+	}
+	if input.Attachment != nil && *input.Attachment != "" {
+		if _, ok := localUploadPathFromAttachment(*input.Attachment); !ok {
+			fields["attachment"] = "must be an uploaded receipt"
+		}
+	}
 	if strings.TrimSpace(input.Title) == "" {
 		fields["title"] = "is required"
 	}
@@ -2265,8 +2334,37 @@ func (input splitBillInput) validate() map[string]string {
 	return fields
 }
 
+var errSplitLinkedRefund = fmt.Errorf("linked split refund details need updating")
+
+func (input splitBillInput) applyDetails(bill *models.SplitBill) {
+	if input.Mode != nil {
+		bill.Mode, _ = canonicalMode(*input.Mode)
+	}
+	if input.Category != nil {
+		bill.Category, _ = categoryForSave(*input.Category, "expense")
+	}
+	if input.Merchant != nil {
+		bill.Merchant = strings.TrimSpace(*input.Merchant)
+	}
+	if input.Tag != nil {
+		bill.Tag = strings.TrimSpace(*input.Tag)
+	}
+	if input.Time != nil {
+		bill.Time = *input.Time
+	}
+	if input.Attachment != nil {
+		bill.Attachment = *input.Attachment
+	}
+}
+
+// Share payment details, never the owner's account or private reminder settings.
+func copyEntryDetailsToSplitBill(bill *models.SplitBill, entry models.Entry) {
+	bill.Mode, bill.Category, bill.Merchant, bill.Tag = entry.Mode, entry.Category, entry.Merchant, entry.Tag
+	bill.Time, bill.Attachment = entry.Time, entry.Attachment
+}
+
 func (input splitBillInput) toModel(userID uint) models.SplitBill {
-	return models.SplitBill{
+	bill := models.SplitBill{
 		UserID:      userID,
 		EntryID:     input.EntryID,
 		GroupID:     input.GroupID,
@@ -2276,6 +2374,8 @@ func (input splitBillInput) toModel(userID uint) models.SplitBill {
 		Date:        input.Date,
 		Notes:       strings.TrimSpace(input.Notes),
 	}
+	input.applyDetails(&bill)
+	return bill
 }
 
 func (input splitParticipantInput) toModel(userID, billID uint) models.SplitParticipant {
@@ -3437,13 +3537,28 @@ func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *e
 		Date:        entry.Date,
 		Notes:       strings.TrimSpace(input.Notes),
 	}
+	copyEntryDetailsToSplitBill(&bill, entry)
 	if bill.Title == "" {
 		bill.Title = "Split transaction"
 	}
 	if bill.Currency == "" {
 		bill.Currency = "INR"
 	}
-	if err := tx.Create(&bill).Error; err != nil {
+	var existing models.SplitBill
+	err := tx.Where("user_id = ? AND entry_id = ?", userID, entry.ID).First(&existing).Error
+	if err == nil {
+		bill.ID, bill.CreatedAt = existing.ID, existing.CreatedAt
+		if err := tx.Where("user_id = ? AND bill_id = ?", userID, bill.ID).Delete(&models.SplitParticipant{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Save(&bill).Error; err != nil {
+			return err
+		}
+	} else if err == gorm.ErrRecordNotFound {
+		if err := tx.Create(&bill).Error; err != nil {
+			return err
+		}
+	} else {
 		return err
 	}
 	for index := range participants {
@@ -3453,8 +3568,8 @@ func createEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *e
 }
 
 func replaceEntrySplitBill(tx *gorm.DB, userID uint, entry models.Entry, input *entrySplitInput) error {
-	if err := deleteEntrySplitBills(tx, userID, entry.ID); err != nil {
-		return err
+	if input == nil {
+		return deleteEntrySplitBills(tx, userID, entry.ID)
 	}
 	return createEntrySplitBill(tx, userID, entry, input)
 }

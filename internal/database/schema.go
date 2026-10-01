@@ -1415,6 +1415,22 @@ func runtimeSchemaStatements() []string {
 			INSERT INTO schema_repairs (name) VALUES ('0043_repair_split_ledger');
 		END
 		$$`,
+		// AutoMigrate adds the shared detail columns. Backfill linked bills once;
+		// later deployments must not overwrite explicit edits or cleared fields.
+		// See migrations/0049_add_split_transaction_details.sql.
+		`DO $$
+		BEGIN
+			IF EXISTS (SELECT 1 FROM schema_repairs WHERE name = '0049_add_split_transaction_details') THEN
+				RETURN;
+			END IF;
+			UPDATE split_bills AS bill SET
+				mode = COALESCE(entry.mode, ''), category = COALESCE(entry.category, ''),
+				merchant = COALESCE(entry.merchant, ''), tag = COALESCE(entry.tag, ''),
+				time = COALESCE(entry.time, ''), attachment = COALESCE(entry.attachment, '')
+			FROM entries AS entry WHERE bill.entry_id = entry.id AND bill.user_id = entry.user_id;
+			INSERT INTO schema_repairs (name) VALUES ('0049_add_split_transaction_details');
+		END
+		$$`,
 		// The monthly review's once-per-month guarantee lives in this index
 		// rather than in the job that writes through it.
 		`CREATE TABLE IF NOT EXISTS monthly_reviews (

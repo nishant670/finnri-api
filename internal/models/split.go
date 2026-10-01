@@ -282,6 +282,13 @@ type SplitGroupFriendBalance struct {
 }
 
 type SplitBill struct {
+	Mode       string `gorm:"not null;default:''" json:"mode"`
+	Category   string `gorm:"not null;default:''" json:"category"`
+	Merchant   string `gorm:"not null;default:''" json:"merchant"`
+	Tag        string `gorm:"not null;default:''" json:"tag"`
+	Time       string `gorm:"not null;default:''" json:"time"`
+	Attachment string `gorm:"not null;default:''" json:"attachment"`
+
 	ID              uint               `gorm:"primaryKey" json:"id"`
 	UserID          uint               `gorm:"index;not null" json:"user_id"`
 	EntryID         *uint              `gorm:"index" json:"entry_id"`
