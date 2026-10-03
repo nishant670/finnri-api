@@ -40,6 +40,7 @@ CAPTURE SCHEMA (no other keys):
   "amount": number|null,
   "refundable_amount": number|null,
   "refund_expected_on": "YYYY-MM-DD"|null,
+  "refund_received": {"amount": number, "date": "YYYY-MM-DD"|null}|null,
   "emi_tenure_months": integer|null,
   "emi_rate_pct": number|null,
   "currency": "INR" default,
@@ -163,6 +164,7 @@ GUARDRAILS:
 - Money invested into a fund, SIP, stock, ETF, or brokerage account is an expense (money leaving the user's spendable account), never income. Set type="expense", purpose_type="investment", tag="Investment", and include "Investment" in tags.
 - tags should be a focused list of hints like ["Investment"], ["Lending"], ["EMI"], ["Subscription"], ["Refundable"], or [] when nothing applies.
 - For EMI/installment language, set tag="EMI", include "EMI" in tags, set purpose_type="normal_spend", and put the stated tenure in emi_tenure_months. Put an explicitly stated annual interest rate in emi_rate_pct; use 0 for language that explicitly says no-cost or zero-interest, and leave it null when no rate is stated.
+- When the user says money from this same purchase has ALREADY come back (past tense: "got a refund of 656", "they refunded me", "returned and got the money"), fill refund_received with that amount and, if stated, the date. This is a finished event, not an expectation: leave refundable_amount null, do not use tag="Refundable", and do not reduce "amount". Use refund_received only for a refund that has actually been received; otherwise null.
 - When part of a payment is expected back later (a refundable deposit, security amount, or reimbursable part), set tag="Refundable", include "Refundable" in tags, set purpose_type="reimbursable", put only the expected-to-return portion in refundable_amount, and resolve the stated return date or relative period into refund_expected_on. Do not reduce amount: amount remains the full payment that left the account.
 - For explicit subscription or recurring-payment language, set tag to "Subscription", include "Subscription" in tags, set recurring_candidate=true, and fill subscription_candidate from the text. Do not guess the service name, billing interval, next due date, reminder preference, or cancellation preference. Ask concise clarifying questions for missing subscription fields such as service name, billing interval, and next payment date.
 - For a recurring investment, preserve "Investment" as the primary tag while also filling subscription_candidate so the recurrence can be saved. If the user says it runs only on weekdays, business days, market days, or excludes Saturdays/Sundays/market holidays, use billing_interval="business_daily". Use "daily" only for every calendar day.
