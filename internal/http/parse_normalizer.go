@@ -18,7 +18,7 @@ var allowedParseRootFields = map[string]bool{
 	"merchant": true, "tag": true, "purpose_type": true, "tags": true, "note": true,
 	"date": true, "time": true, "source_text": true, "recurring_candidate": true,
 	"subscription_candidate": true, "split_candidate": true, "split_candidate_details": true,
-	"refundable_amount": true, "refund_expected_on": true,
+	"refundable_amount": true, "refund_expected_on": true, "refund_received": true,
 	"emi_tenure_months": true, "emi_rate_pct": true,
 	"confidence": true, "needs_confirmation": true, "missing_fields": true,
 	"clarifications": true,
@@ -113,6 +113,7 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 
 	normalizeSubscriptionDraft(entry)
 	normalizeSplitDraft(entry)
+	normalizeRefundReceived(entry)
 	pruneKeys(entry, allowedParseRootFields)
 }
 
@@ -669,4 +670,42 @@ func pruneKeys(entry map[string]any, allowed map[string]bool) {
 			delete(entry, field)
 		}
 	}
+}
+
+// normalizeRefundReceived keeps a refund the user says they have already been
+// paid back, as { amount, date }, or drops it.
+//
+// It is a different thing from refundable_amount, which is money still
+// expected. This one is a second, finished event — an income for the purchase —
+// so it only survives when it is a positive amount that could plausibly belong
+// to the purchase: a "refund" larger than the payment is a misheard number or
+// a different story, and offering to record it would put a wrong income in the
+// ledger.
+func normalizeRefundReceived(entry map[string]any) {
+	raw, present := entry["refund_received"]
+	if !present || raw == nil {
+		entry["refund_received"] = nil
+		return
+	}
+	refund, ok := raw.(map[string]any)
+	if !ok {
+		entry["refund_received"] = nil
+		return
+	}
+	amount, ok := refund["amount"].(float64)
+	if !ok || amount <= 0 {
+		entry["refund_received"] = nil
+		return
+	}
+	if purchase, ok := entry["amount"].(float64); ok && purchase > 0 && amount > purchase {
+		entry["refund_received"] = nil
+		return
+	}
+	cleaned := map[string]any{"amount": amount}
+	if date, ok := refund["date"].(string); ok {
+		if _, err := parseStrictAPIDate(strings.TrimSpace(date)); err == nil {
+			cleaned["date"] = strings.TrimSpace(date)
+		}
+	}
+	entry["refund_received"] = cleaned
 }

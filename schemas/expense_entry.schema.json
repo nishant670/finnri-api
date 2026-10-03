@@ -50,6 +50,15 @@
       "type": ["string", "null"],
       "format": "date"
     },
+    "refund_received": {
+      "type": ["object", "null"],
+      "required": ["amount"],
+      "additionalProperties": false,
+      "properties": {
+        "amount": { "type": "number", "exclusiveMinimum": 0 },
+        "date": { "type": ["string", "null"], "format": "date" }
+      }
+    },
     "emi_tenure_months": {
       "type": ["integer", "null"],
       "minimum": 1,

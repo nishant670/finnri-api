@@ -144,3 +144,40 @@ func mustDate(t *testing.T, value string) time.Time {
 	}
 	return parsed
 }
+
+func TestFinalInstalmentClosesTheSchedule(t *testing.T) {
+	useSmokeDatabase(t)
+	if err := database.DB.AutoMigrate(&models.Subscription{}, &models.SubscriptionOccurrence{}, &models.PushDevice{}); err != nil {
+		t.Fatal(err)
+	}
+	user := createBudgetTestUser(t)
+	account := models.Account{UserID: user.ID, Type: "bank", Name: "Savings account", Color: "#123456"}
+	if err := database.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Three payments in all, one already logged by the user: two left.
+	subscription := models.Subscription{
+		UserID: user.ID, AccountID: &account.ID, Name: "Bajaj PL EMI", Amount: testMoney("1938"), Currency: "INR",
+		BillingInterval: "monthly", NextDueDate: "2026-11-02", Status: "active", ReminderDays: 3,
+		AutoPay: true, PaymentMode: "Bank Account", TransactionTag: "EMI", PurposeType: "normal_spend",
+		TotalInstalments: 3, InstalmentsPaid: 1,
+	}
+	if err := database.DB.Create(&subscription).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Four months overdue: only the two remaining instalments may be created.
+	created, err := syncSubscriptionAutomation(user.ID, mustDate(t, "2027-02-05"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created %d occurrences, want 2", len(created))
+	}
+	var stored models.Subscription
+	if err := database.DB.First(&stored, subscription.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.InstalmentsPaid != 3 || stored.Status != "cancelled" {
+		t.Fatalf("paid = %d, status = %q", stored.InstalmentsPaid, stored.Status)
+	}
+}

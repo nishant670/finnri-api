@@ -267,3 +267,27 @@ func TestNormalizeSplitCandidateDetailsSetsLegacyFlag(t *testing.T) {
 		t.Fatalf("split candidate flag was not normalized: %#v", entry)
 	}
 }
+
+func TestRefundReceivedIsKeptOnlyWhenItCouldBelongToThePurchase(t *testing.T) {
+	cases := []struct {
+		name   string
+		refund any
+		want   any
+	}{
+		{"valid", map[string]any{"amount": 656.0, "date": "2026-10-02"}, map[string]any{"amount": 656.0, "date": "2026-10-02"}},
+		{"bad date is dropped, amount kept", map[string]any{"amount": 656.0, "date": "yesterday"}, map[string]any{"amount": 656.0}},
+		{"larger than the purchase", map[string]any{"amount": 2000.0}, nil},
+		{"not positive", map[string]any{"amount": 0.0}, nil},
+		{"not an object", "656", nil},
+		{"absent", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := map[string]any{"amount": 1510.0, "refund_received": tc.refund}
+			normalizeRefundReceived(entry)
+			if !reflect.DeepEqual(entry["refund_received"], tc.want) {
+				t.Fatalf("refund_received = %#v, want %#v", entry["refund_received"], tc.want)
+			}
+		})
+	}
+}
