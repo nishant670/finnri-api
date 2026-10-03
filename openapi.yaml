@@ -3751,6 +3751,15 @@ components:
               multipleOf: 0.01
             - type: string
               pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+        total_instalments:
+          type: integer
+          minimum: 0
+          maximum: 600
+          description: Payments in the schedule; 0 (default) is open-ended. The last one closes the schedule.
+        instalments_paid:
+          type: integer
+          minimum: 0
+          description: Payments already taken, including the entry logged at set-up.
         currency:
           type: string
           const: INR

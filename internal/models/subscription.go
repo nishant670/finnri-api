@@ -7,30 +7,35 @@ import (
 )
 
 type Subscription struct {
-	ID              uint      `gorm:"primaryKey" json:"id"`
-	UserID          uint      `gorm:"index;not null" json:"user_id"`
-	User            User      `json:"-" gorm:"foreignKey:UserID"`
-	AccountID       *uint     `gorm:"index" json:"account_id"`
-	Account         *Account  `json:"account,omitempty" gorm:"foreignKey:AccountID"`
-	Name            string    `gorm:"type:varchar(120);not null" json:"name"`
-	Merchant        string    `gorm:"type:varchar(120);index" json:"merchant"`
-	Category        string    `gorm:"type:varchar(80);index" json:"category"`
-	Amount          Money     `gorm:"type:numeric(19,2);not null" json:"amount"`
-	Currency        string    `gorm:"type:char(3);not null;default:INR" json:"currency"`
-	BillingInterval string    `gorm:"type:varchar(16);not null;default:monthly" json:"billing_interval"`
-	NextDueDate     string    `gorm:"type:date;index;not null" json:"next_due_date"`
-	LastChargedDate string    `gorm:"type:varchar(10)" json:"last_charged_date"`
-	Status          string    `gorm:"type:varchar(16);not null;default:active;index" json:"status"`
-	ReminderDays    int       `gorm:"not null;default:3" json:"reminder_days"`
-	CancelBeforeDue bool      `gorm:"not null;default:false" json:"cancel_before_due"`
-	CancelOnDate    string    `gorm:"type:varchar(10)" json:"cancel_on_date"`
-	AutoPay         bool      `gorm:"column:autopay;not null;default:false;index" json:"autopay"`
-	PaymentMode     string    `gorm:"type:varchar(24);not null;default:Cash" json:"payment_mode"`
-	TransactionTag  string    `gorm:"type:varchar(40);not null;default:Subscription" json:"transaction_tag"`
-	PurposeType     string    `gorm:"type:varchar(40);not null;default:normal_spend" json:"purpose_type"`
-	Notes           string    `gorm:"type:text" json:"notes"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              uint     `gorm:"primaryKey" json:"id"`
+	UserID          uint     `gorm:"index;not null" json:"user_id"`
+	User            User     `json:"-" gorm:"foreignKey:UserID"`
+	AccountID       *uint    `gorm:"index" json:"account_id"`
+	Account         *Account `json:"account,omitempty" gorm:"foreignKey:AccountID"`
+	Name            string   `gorm:"type:varchar(120);not null" json:"name"`
+	Merchant        string   `gorm:"type:varchar(120);index" json:"merchant"`
+	Category        string   `gorm:"type:varchar(80);index" json:"category"`
+	Amount          Money    `gorm:"type:numeric(19,2);not null" json:"amount"`
+	Currency        string   `gorm:"type:char(3);not null;default:INR" json:"currency"`
+	BillingInterval string   `gorm:"type:varchar(16);not null;default:monthly" json:"billing_interval"`
+	NextDueDate     string   `gorm:"type:date;index;not null" json:"next_due_date"`
+	LastChargedDate string   `gorm:"type:varchar(10)" json:"last_charged_date"`
+	Status          string   `gorm:"type:varchar(16);not null;default:active;index" json:"status"`
+	ReminderDays    int      `gorm:"not null;default:3" json:"reminder_days"`
+	CancelBeforeDue bool     `gorm:"not null;default:false" json:"cancel_before_due"`
+	CancelOnDate    string   `gorm:"type:varchar(10)" json:"cancel_on_date"`
+	AutoPay         bool     `gorm:"column:autopay;not null;default:false;index" json:"autopay"`
+	PaymentMode     string   `gorm:"type:varchar(24);not null;default:Cash" json:"payment_mode"`
+	TransactionTag  string   `gorm:"type:varchar(40);not null;default:Subscription" json:"transaction_tag"`
+	PurposeType     string   `gorm:"type:varchar(40);not null;default:normal_spend" json:"purpose_type"`
+	Notes           string   `gorm:"type:text" json:"notes"`
+	// A loan EMI ends; a streaming plan does not. TotalInstalments is how many
+	// payments the schedule has (0 = open-ended) and InstalmentsPaid how many
+	// have been taken, counting the entry the user logged when they set it up.
+	TotalInstalments int       `gorm:"not null;default:0" json:"total_instalments"`
+	InstalmentsPaid  int       `gorm:"not null;default:0" json:"instalments_paid"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type SubscriptionOccurrence struct {

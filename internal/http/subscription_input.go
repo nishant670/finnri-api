@@ -23,6 +23,7 @@ const (
 	defaultSubscriptionReminderDays = 3
 	maxSubscriptionReminderDays     = 30
 	maxSubscriptionNameLength       = 120
+	maxSubscriptionInstalments      = 600
 )
 
 type subscriptionInput struct {
@@ -44,6 +45,9 @@ type subscriptionInput struct {
 	TransactionTag  string       `json:"transaction_tag"`
 	PurposeType     string       `json:"purpose_type"`
 	Notes           string       `json:"notes"`
+	// Both optional. Left out, an update keeps what is stored.
+	TotalInstalments *int `json:"total_instalments"`
+	InstalmentsPaid  *int `json:"instalments_paid"`
 }
 
 type markSubscriptionPaidInput struct {
@@ -100,6 +104,16 @@ func (input subscriptionInput) validate() map[string]string {
 	if input.AccountID != nil && *input.AccountID == 0 {
 		fields["account_id"] = "must be a positive integer"
 	}
+	if input.TotalInstalments != nil && (*input.TotalInstalments < 0 || *input.TotalInstalments > maxSubscriptionInstalments) {
+		fields["total_instalments"] = "must be between 0 and 600"
+	}
+	if input.InstalmentsPaid != nil {
+		if *input.InstalmentsPaid < 0 {
+			fields["instalments_paid"] = "must not be negative"
+		} else if input.TotalInstalments != nil && *input.TotalInstalments > 0 && *input.InstalmentsPaid > *input.TotalInstalments {
+			fields["instalments_paid"] = "must not exceed total_instalments"
+		}
+	}
 	return fields
 }
 
@@ -146,6 +160,12 @@ func (input subscriptionInput) apply(subscription *models.Subscription) {
 		subscription.ReminderDays = 0
 	}
 	subscription.Notes = strings.TrimSpace(input.Notes)
+	if input.TotalInstalments != nil {
+		subscription.TotalInstalments = *input.TotalInstalments
+	}
+	if input.InstalmentsPaid != nil {
+		subscription.InstalmentsPaid = *input.InstalmentsPaid
+	}
 }
 
 func normalizeSubscriptionPaymentMode(value string) string {

@@ -113,11 +113,26 @@ func syncSubscriptionAutomation(userID uint, today time.Time) ([]models.Subscrip
 			}
 			subscription.LastChargedDate = dueDate.Format("2006-01-02")
 			subscription.NextDueDate = addSubscriptionInterval(dueDate, subscription.BillingInterval).Format("2006-01-02")
-			if err := database.DB.Model(&models.Subscription{}).Where("id = ?", subscription.ID).Updates(map[string]any{
+			updates := map[string]any{
 				"last_charged_date": subscription.LastChargedDate,
 				"next_due_date":     subscription.NextDueDate,
-			}).Error; err != nil {
+			}
+			finished := false
+			if didCreate && subscription.TotalInstalments > 0 {
+				subscription.InstalmentsPaid++
+				updates["instalments_paid"] = subscription.InstalmentsPaid
+				// The last instalment closes the schedule so nothing is
+				// generated past the end of the loan.
+				if subscription.InstalmentsPaid >= subscription.TotalInstalments {
+					updates["status"] = subscriptionStatusCancelled
+					finished = true
+				}
+			}
+			if err := database.DB.Model(&models.Subscription{}).Where("id = ?", subscription.ID).Updates(updates).Error; err != nil {
 				return created, err
+			}
+			if finished {
+				break
 			}
 		}
 	}
