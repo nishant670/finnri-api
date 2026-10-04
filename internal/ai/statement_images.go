@@ -37,18 +37,26 @@ Screenshots can overlap: emit an identical row only once. Preserve two genuinely
 // message. Chat Completions is retained here because it is already the
 // configured provider path used by ParseText.
 func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []StatementImage, cycleStart, cycleEnd string) ([]byte, Usage, error) {
-	if c.cfg.OpenAIKey == "" {
-		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
-	}
 	if len(images) == 0 {
 		return nil, Usage{}, fmt.Errorf("no statement images")
 	}
+	maxTokens := c.cfg.OpenAIStatementMaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4000
+	}
+	return c.completeWithImages(ctx, "statement", fmt.Sprintf(statementImagePrompt, cycleStart, cycleEnd), images, maxTokens)
+}
+
+// completeWithImages runs one JSON-mode chat completion over a text prompt and
+// a set of images. The image bytes are only ever base64-encoded into the
+// request body; they are never logged or written anywhere.
+func (c *OpenAIClient) completeWithImages(ctx context.Context, label, prompt string, images []StatementImage, maxTokens int) ([]byte, Usage, error) {
+	if c.cfg.OpenAIKey == "" {
+		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
+	}
 
 	content := make([]map[string]any, 0, len(images)+1)
-	content = append(content, map[string]any{
-		"type": "text",
-		"text": fmt.Sprintf(statementImagePrompt, cycleStart, cycleEnd),
-	})
+	content = append(content, map[string]any{"type": "text", "text": prompt})
 	for _, image := range images {
 		content = append(content, map[string]any{
 			"type": "image_url",
@@ -59,10 +67,6 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 		})
 	}
 
-	maxTokens := c.cfg.OpenAIStatementMaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 4000
-	}
 	body := map[string]any{
 		"model":                 c.cfg.OpenAILlmModel,
 		"response_format":       map[string]string{"type": "json_object"},
@@ -90,7 +94,7 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, Usage{}, fmt.Errorf("statement vision error: %s", string(message))
+		return nil, Usage{}, fmt.Errorf("%s vision error: %s", label, string(message))
 	}
 
 	var out chatCompletion
@@ -98,8 +102,8 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 		return nil, Usage{}, err
 	}
 	log.Printf(
-		"openai statement parse usage: model=%s images=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-		c.cfg.OpenAILlmModel, len(images), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.Usage.TotalTokens,
+		"openai %s parse usage: model=%s images=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		label, c.cfg.OpenAILlmModel, len(images), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.Usage.TotalTokens,
 	)
 	if len(out.Choices) == 0 {
 		return nil, Usage{}, fmt.Errorf("no choices")

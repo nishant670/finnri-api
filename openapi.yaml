@@ -417,6 +417,44 @@ paths:
                   - $ref: "#/components/schemas/LedgerAnswerResponse"
         "422":
           description: Could not parse
+  /v1/parse/receipt:
+    post:
+      summary: Read a bill or receipt photo into a transaction draft
+      description: >-
+        Accepts one JPEG, PNG or WebP image (5 MB max). The image is sent to the
+        configured OpenAI service, held only for this request, and never stored
+        by Finnri. Always returns a capture draft (`stage: "draft"`) in the same
+        shape as `/v1/parse`; `source_text` is a one-line summary of what was
+        read. Charges the `transaction_parse_receipt` AI action.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                tz:
+                  type: string
+                  default: Asia/Kolkata
+      responses:
+        "200":
+          description: A transaction draft built from the receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpenseOrIncomeEntry"
+        "402":
+          description: AI plan or credits required
+        "413":
+          description: Image too large
+        "415":
+          description: Unsupported image type
+        "422":
+          description: No readable total on the image, or the draft could not be shaped
   /v1/entries:
     post:
       summary: Create a transaction entry
@@ -2886,7 +2924,7 @@ components:
           const: INR
         source:
           type: string
-          enum: [manual, text, voice]
+          enum: [manual, text, voice, receipt]
         account_id:
           type: integer
           minimum: 1
@@ -2983,7 +3021,7 @@ components:
               $ref: "#/components/schemas/Account"
             source:
               type: string
-              enum: [manual, text, voice]
+              enum: [manual, text, voice, receipt]
             source_text:
               type: string
     EntryPage:
