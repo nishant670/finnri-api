@@ -634,6 +634,12 @@ func runtimeSchemaStatements() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status)`,
+		// See migrations/0055_payment_promotions.sql.
+		`ALTER TABLE payments
+			ADD COLUMN IF NOT EXISTS promotion_code VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS original_amount_minor BIGINT NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_payments_promotion
+			ON payments (promotion_code, status) WHERE promotion_code <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_payments_provider_payment
 			ON payments (provider, provider_payment_id) WHERE provider_payment_id <> ''`,
 		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check`,

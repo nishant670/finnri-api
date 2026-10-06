@@ -32,6 +32,10 @@ type billingPlanResponse struct {
 	RequiresPriorPaidMonths int      `json:"requires_prior_paid_months"`
 	CheckoutEnabled         bool     `json:"checkout_enabled"`
 	FeatureGates            []string `json:"feature_gates"`
+	// Offer is present while the launch offer covers this plan. price_minor
+	// stays the regular price; the offer carries what checkout will charge an
+	// eligible buyer.
+	Offer *planOfferResponse `json:"offer,omitempty"`
 }
 
 type creditSummaryResponse struct {
@@ -66,6 +70,9 @@ type billingStatusResponse struct {
 	CurrentPeriodEnd    *time.Time                  `json:"current_period_end,omitempty"`
 	Credits             creditSummaryResponse       `json:"credits"`
 	LifetimeEligibility lifetimeEligibilityResponse `json:"lifetime_eligibility"`
+	// LaunchOffer is present while the offer runs; Eligible is false once this
+	// user has bought at the launch price.
+	LaunchOffer *launchOfferStatusResponse `json:"launch_offer,omitempty"`
 }
 
 type aiUsageEventResponse struct {
@@ -103,6 +110,14 @@ func (s *Server) listBillingPlans(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_billing_plans"})
 		return
+	}
+	offer, err := s.currentLaunchOffer(time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_launch_offer"})
+		return
+	}
+	for index := range plans {
+		plans[index].Offer = launchOfferForPlan(offer, plans[index])
 	}
 	c.JSON(http.StatusOK, gin.H{"plans": plans})
 }
@@ -147,6 +162,30 @@ func (s *Server) getBillingStatus(c *gin.Context) {
 		}
 		response.LifetimeEligibility.PaidMonthsCompleted = paidMonths
 		response.LifetimeEligibility.Eligible = paidMonths >= lifetimeQuoteRequiredPaidMonths
+	}
+	offer, err := s.currentLaunchOffer(time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_launch_offer"})
+		return
+	}
+	if offer.Active {
+		status := &launchOfferStatusResponse{
+			Active: true, Eligible: true, Code: launchOfferCode, Label: launchOfferLabel,
+			PercentOff: launchOfferPercentOff, EndsAt: offer.EndsAt,
+		}
+		if offer.SpotsLeft < launchOfferShowSpotsBelow {
+			left := offer.SpotsLeft
+			status.SpotsLeft = &left
+		}
+		if user != nil && !user.IsGuest {
+			used, err := userHasUsedLaunchOffer(user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_launch_offer"})
+				return
+			}
+			status.Eligible = !used
+		}
+		response.LaunchOffer = status
 	}
 	c.JSON(http.StatusOK, response)
 }

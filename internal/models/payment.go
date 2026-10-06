@@ -35,6 +35,12 @@ type Payment struct {
 	SubscriptionID *uint             `gorm:"index" json:"subscription_id,omitempty"`
 	Subscription   *UserSubscription `json:"-" gorm:"foreignKey:SubscriptionID"`
 
+	// PromotionCode names the offer this order was priced under ("" for full
+	// price), and OriginalAmountMinor is what it would have cost without it.
+	// The launch offer's cap and once-per-person rule are counted from these.
+	PromotionCode       string `gorm:"type:varchar(40);index;not null;default:''" json:"promotion_code,omitempty"`
+	OriginalAmountMinor int64  `gorm:"not null;default:0" json:"original_amount_minor,omitempty"`
+
 	CapturedAt *time.Time `gorm:"index" json:"captured_at,omitempty"`
 	RefundedAt *time.Time `gorm:"index" json:"refunded_at,omitempty"`
 	CreatedAt  time.Time  `gorm:"index" json:"created_at"`

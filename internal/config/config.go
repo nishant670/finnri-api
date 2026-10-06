@@ -27,6 +27,10 @@ type Config struct {
 	MaxUploadMB                     int64
 	MaxTranscriptChars              int
 	AIParseDisabled                 bool
+	// LaunchOfferStartsAt switches the launch offer on. Unset means no offer:
+	// the API is shared with builds already in testing, so the offer starts
+	// when someone sets this, never merely because the code was deployed.
+	LaunchOfferStartsAt string
 	AIUnpaidMaxVoiceBytes           int64
 	AIFailedParseCooldownThreshold  int
 	AIFailedParseCooldownWindowMin  int
@@ -176,6 +180,7 @@ func Load() *Config {
 		MaxUploadMB:                     int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars:              atoi("MAX_TRANSCRIPT_CHARS", 1000),
 		AIParseDisabled:                 atob("AI_PARSE_DISABLED", false),
+		LaunchOfferStartsAt:             getenv("LAUNCH_OFFER_STARTS_AT", ""),
 		AIUnpaidMaxVoiceBytes:           int64(atoi("AI_UNPAID_MAX_VOICE_BYTES", 512*1024)),
 		AIFailedParseCooldownThreshold:  atoi("AI_FAILED_PARSE_COOLDOWN_THRESHOLD", 5),
 		AIFailedParseCooldownWindowMin:  atoi("AI_FAILED_PARSE_COOLDOWN_WINDOW_MINUTES", 15),
