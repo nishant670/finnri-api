@@ -390,6 +390,28 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS subscriptions_status_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_status_check CHECK (status IN ('active', 'paused', 'cancelled'))`,
+		// See migrations/0054_recurring_kinds.sql. The backfill is idempotent:
+		// it only touches rows still filed as plain subscriptions.
+		`ALTER TABLE subscriptions
+			ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'subscription',
+			ADD COLUMN IF NOT EXISTS loan_type VARCHAR(24),
+			ADD COLUMN IF NOT EXISTS lender VARCHAR(120),
+			ADD COLUMN IF NOT EXISTS principal NUMERIC(19,2) NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS annual_rate_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS processing_fee NUMERIC(19,2) NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS foreclosure_charge_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS start_date VARCHAR(10),
+			ADD COLUMN IF NOT EXISTS platform VARCHAR(120),
+			ADD COLUMN IF NOT EXISTS step_up_pct DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`UPDATE subscriptions SET kind = 'loan'
+			WHERE kind = 'subscription' AND (transaction_tag = 'EMI' OR total_instalments > 0)`,
+		`UPDATE subscriptions SET kind = 'investment'
+			WHERE kind = 'subscription' AND (transaction_tag = 'Investment' OR purpose_type = 'investment')`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_kind ON subscriptions (kind)`,
+		`ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS subscriptions_kind_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_kind_check
+			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill'))`,
 		// See migrations/0052_add_card_annual_fee.sql.
 		`ALTER TABLE accounts
 			ADD COLUMN IF NOT EXISTS annual_fee NUMERIC(19,2) NOT NULL DEFAULT 0,

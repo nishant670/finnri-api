@@ -26,6 +26,8 @@ type subscriptionResponse struct {
 	models.Subscription
 	DaysUntilDue int    `json:"days_until_due"`
 	DueState     string `json:"due_state"`
+	// Schedule is the item's figures worked out for display; see recurring.go.
+	Schedule recurringSchedule `json:"schedule"`
 }
 
 func (s *Server) createSubscription(c *gin.Context) {
@@ -409,7 +411,10 @@ func buildSubscriptionResponse(subscription models.Subscription, now time.Time) 
 			dueState = "scheduled"
 		}
 	}
-	return subscriptionResponse{Subscription: subscription, DaysUntilDue: daysUntilDue, DueState: dueState}
+	return subscriptionResponse{
+		Subscription: subscription, DaysUntilDue: daysUntilDue, DueState: dueState,
+		Schedule: computeRecurringSchedule(subscription, now),
+	}
 }
 
 func truncateDate(value time.Time) time.Time {

@@ -32,10 +32,32 @@ type Subscription struct {
 	// A loan EMI ends; a streaming plan does not. TotalInstalments is how many
 	// payments the schedule has (0 = open-ended) and InstalmentsPaid how many
 	// have been taken, counting the entry the user logged when they set it up.
-	TotalInstalments int       `gorm:"not null;default:0" json:"total_instalments"`
-	InstalmentsPaid  int       `gorm:"not null;default:0" json:"instalments_paid"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	TotalInstalments int `gorm:"not null;default:0" json:"total_instalments"`
+	InstalmentsPaid  int `gorm:"not null;default:0" json:"instalments_paid"`
+
+	// Kind is what the recurring payment is: a subscription, a loan EMI, an
+	// investment such as a SIP, or a bill such as rent or insurance. It decides
+	// the form, the wording and how it is grouped — not how it is scheduled,
+	// which is the same machinery for all four.
+	Kind string `gorm:"type:varchar(16);not null;default:subscription;index" json:"kind"`
+
+	// Loans only, all optional. Zero means "not given".
+	LoanType             string  `gorm:"type:varchar(24)" json:"loan_type,omitempty"`
+	Lender               string  `gorm:"type:varchar(120)" json:"lender,omitempty"`
+	Principal            Money   `gorm:"type:numeric(19,2);not null;default:0" json:"principal"`
+	AnnualRatePct        float64 `gorm:"not null;default:0" json:"annual_rate_pct"`
+	ProcessingFee        Money   `gorm:"type:numeric(19,2);not null;default:0" json:"processing_fee"`
+	ForeclosureChargePct float64 `gorm:"not null;default:0" json:"foreclosure_charge_pct"`
+	// StartDate is the first payment of the schedule — the first EMI or the
+	// first SIP instalment. Optional for every kind.
+	StartDate string `gorm:"type:varchar(10)" json:"start_date,omitempty"`
+
+	// Investments only, optional.
+	Platform  string  `gorm:"type:varchar(120)" json:"platform,omitempty"`
+	StepUpPct float64 `gorm:"not null;default:0" json:"step_up_pct"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type SubscriptionOccurrence struct {

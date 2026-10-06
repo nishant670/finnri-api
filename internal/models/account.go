@@ -45,8 +45,8 @@ type Account struct {
 	// unknown; a statement that prints them can fill them in.
 	AnnualFee      Money `gorm:"type:numeric(19,2);not null;default:0" json:"annual_fee"`
 	FeeWaiverSpend Money `gorm:"type:numeric(19,2);not null;default:0" json:"fee_waiver_spend"`
-	Balance                Money  `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
-	IsDefault              bool   `json:"is_default"`
+	Balance        Money `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
+	IsDefault      bool  `json:"is_default"`
 	// AutoCreated distinguishes a capture shortcut from an intentionally sparse
 	// account. The first explicit account edit clears it.
 	AutoCreated bool      `gorm:"not null;default:false" json:"auto_created"`

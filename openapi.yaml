@@ -1236,6 +1236,69 @@ paths:
           description: Deleted
         "404":
           description: Budget not found
+  /v1/recurring:
+    get:
+      summary: Every recurring payment in one place
+      description: >-
+        All of the user's recurring items (subscriptions, loans, investments,
+        bills) with their computed schedule, the active card EMI plans as
+        read-only rows, and a summary of what an average month commits —
+        investments and card EMIs included, since that money leaves the
+        account too.
+      responses:
+        "200":
+          description: Overview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      monthly_total:
+                        type: number
+                      by_kind:
+                        type: object
+                        additionalProperties:
+                          type: number
+                        description: Keys subscription, loan, investment, bill, card_emi.
+                      active_count:
+                        type: integer
+                      next_due:
+                        type: object
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      description: >-
+                        A subscription response, with `schedule`: monthly_equivalent;
+                        for instalment schedules total/paid/remaining, end_date,
+                        completed, amount_paid, outstanding_principal (monthly loans
+                        with a principal), total_interest; invested_so_far for
+                        investments with a start date.
+                  card_emis:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        plan_id:
+                          type: integer
+                        account_id:
+                          type: integer
+                        card_name:
+                          type: string
+                        title:
+                          type: string
+                        monthly_amount:
+                          type: number
+                        next_due_date:
+                          type: string
+                          format: date
+                        total_instalments:
+                          type: integer
+                        instalments_paid:
+                          type: integer
   /v1/subscriptions:
     get:
       summary: List subscriptions owned by the authenticated user
@@ -3964,6 +4027,44 @@ components:
           type: integer
           minimum: 0
           description: Payments already taken, including the entry logged at set-up.
+        kind:
+          type: string
+          enum: [subscription, loan, investment, bill]
+          description: >-
+            What the payment is. Optional: when omitted on create it is inferred
+            (EMI tag or a fixed number of instalments → loan; Investment tag or
+            purpose → investment; otherwise subscription), and on update the
+            stored kind is kept.
+        loan_type:
+          type: string
+          enum: [personal, car, two_wheeler, home, education, gold, consumer, business, other]
+        lender:
+          type: string
+        principal:
+          type: number
+          minimum: 0
+        annual_rate_pct:
+          type: number
+          minimum: 0
+          maximum: 60
+        processing_fee:
+          type: number
+          minimum: 0
+        foreclosure_charge_pct:
+          type: number
+          minimum: 0
+          maximum: 20
+        start_date:
+          type: string
+          format: date
+          description: The schedule's first payment (first EMI or SIP instalment).
+        platform:
+          type: string
+          description: Investments — the fund, app or institution.
+        step_up_pct:
+          type: number
+          minimum: 0
+          maximum: 100
         currency:
           type: string
           const: INR
