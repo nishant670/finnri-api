@@ -9,28 +9,28 @@ import (
 )
 
 type Config struct {
-	Port                            string
-	AllowOrigins                    string
-	AuthBearer                      string
-	AuthSessionTTLDays              int
-	TZDefault                       string
-	OpenAIKey                       string
-	OpenAIBaseURL                   string
-	OpenAILlmModel                  string
-	OpenAIWhisper                   string
-	OpenAIMaxTokens                 int
-	OpenAIStatementMaxTokens        int
-	ReqTimeoutSec                   int
-	RateLimitRPS                    float64
-	RateLimitBurst                  int
-	MaxJSONKB                       int64
-	MaxUploadMB                     int64
-	MaxTranscriptChars              int
-	AIParseDisabled                 bool
+	Port                     string
+	AllowOrigins             string
+	AuthBearer               string
+	AuthSessionTTLDays       int
+	TZDefault                string
+	OpenAIKey                string
+	OpenAIBaseURL            string
+	OpenAILlmModel           string
+	OpenAIWhisper            string
+	OpenAIMaxTokens          int
+	OpenAIStatementMaxTokens int
+	ReqTimeoutSec            int
+	RateLimitRPS             float64
+	RateLimitBurst           int
+	MaxJSONKB                int64
+	MaxUploadMB              int64
+	MaxTranscriptChars       int
+	AIParseDisabled          bool
 	// LaunchOfferStartsAt switches the launch offer on. Unset means no offer:
 	// the API is shared with builds already in testing, so the offer starts
 	// when someone sets this, never merely because the code was deployed.
-	LaunchOfferStartsAt string
+	LaunchOfferStartsAt             string
 	AIUnpaidMaxVoiceBytes           int64
 	AIFailedParseCooldownThreshold  int
 	AIFailedParseCooldownWindowMin  int
