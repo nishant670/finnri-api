@@ -196,6 +196,26 @@ func loadPreviousUnpaid(userID, accountID uint, statementDate string) (models.Mo
 	return remainingDue(previous), nil
 }
 
+// loadPreviousStatementTotal is the previous bill's total — this cycle's
+// opening balance — or nil when Finnri has no earlier priced bill for the card.
+func loadPreviousStatementTotal(userID, accountID uint, statementDate string) (*models.Money, error) {
+	var previous models.CardStatement
+	err := database.DB.
+		Where("user_id = ? AND account_id = ? AND statement_date < ? AND status <> ?",
+			userID, accountID, statementDate, statementStatusDraft).
+		Order("statement_date DESC").
+		Limit(1).
+		Find(&previous).Error
+	if err != nil {
+		return nil, err
+	}
+	if previous.ID == 0 {
+		return nil, nil
+	}
+	total := previous.TotalDue
+	return &total, nil
+}
+
 // reconcileStatement compares one statement against the ledger and brings its
 // bucket entry into line with the result. It is called after every write that
 // can move either side of the comparison: pricing a statement, editing its

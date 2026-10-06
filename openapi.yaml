@@ -3534,6 +3534,38 @@ components:
               similarity:
                 type: number
                 description: Description overlap, 0..1. A tie-breaker only.
+        probable:
+          type: array
+          description: >-
+            Probably an entry the user already logged: the same amount up to 10
+            days apart, or within one rupee (or a 3.5% forex markup on a matching
+            merchant) within 3 days. Excluded from missing and extra; the user
+            decides. Importing the line means "a different purchase".
+          items:
+            type: object
+            properties:
+              line:
+                $ref: "#/components/schemas/StatementLine"
+              entry:
+                type: object
+              day_gap:
+                type: integer
+              amount_gap:
+                type: number
+                description: Line minus entry; positive when the bank billed more.
+              similarity:
+                type: number
+              reason:
+                type: string
+                enum: [date, amount]
+        charges:
+          type: array
+          description: The bank's fees and interest, wherever they landed in the diff.
+          items:
+            $ref: "#/components/schemas/StatementLine"
+        reconciliation:
+          type: object
+          description: The ledger against this bill before any import. Absent for a draft bill.
         missing:
           type: array
           description: On the statement, not in Finnri. These are importable.
@@ -3562,14 +3594,20 @@ components:
               type: integer
             ignored_count:
               type: integer
+            probable_count:
+              type: integer
+            charges_count:
+              type: integer
+            charges_amount:
+              type: number
             missing_amount:
               type: number
             extra_amount:
               type: number
         source:
           type: string
-          enum: [screenshots_ai]
-          description: Present only when screenshots produced this diff.
+          enum: [pdf, screenshots_ai]
+          description: Which file produced this diff; absent for a client-supplied diff.
         checksum:
           $ref: "#/components/schemas/StatementChecksum"
         credits_charged:
@@ -3580,7 +3618,9 @@ components:
           type: integer
     StatementChecksum:
       type: object
-      description: Advisory screenshot arithmetic; a mismatch never blocks review or import.
+      description: >-
+        Whether the rows read off the file add up to the bill. Advisory; a
+        mismatch never blocks review or import. Absent while the bill is a draft.
       required: [parsed_debits, parsed_credits, parsed_net, expected_net, difference, matches, message]
       properties:
         parsed_debits:
@@ -3591,7 +3631,16 @@ components:
           type: number
         expected_net:
           type: number
-          description: Statement total due minus the previous statement's unpaid remainder.
+          description: >-
+            Total due minus the opening balance plus the bill payments on the
+            statement. Without an earlier bill in Finnri, the opening balance is
+            assumed to equal the payments (previous bill paid in full).
+        payments:
+          type: number
+          description: Bill payments found among the rows, excluded from parsed_net.
+        opening_balance:
+          type: number
+          description: The previous bill's total, when Finnri has one.
         difference:
           type: number
           description: Parsed net minus expected net.

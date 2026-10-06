@@ -43,7 +43,7 @@ func TestStatementScreenshotChecksumWarnsButKeepsDiffRows(t *testing.T) {
 		{Date: "2026-08-01", Description: "Purchase", Amount: models.Money(100000), Type: "expense"},
 		{Date: "2026-08-02", Description: "Refund", Amount: models.Money(10000), Type: "income"},
 	}
-	checksum := checksumStatementLines(lines, models.Money(95000), 0)
+	checksum := checksumStatementLines(lines, models.Money(95000), nil)
 	if checksum.Matches || checksum.Difference != models.Money(-5000) {
 		t.Fatalf("unexpected checksum %#v", checksum)
 	}
@@ -56,7 +56,7 @@ func TestStatementScreenshotChecksumWarnsButKeepsDiffRows(t *testing.T) {
 
 func TestStatementScreenshotChecksumAllowsRupeeRounding(t *testing.T) {
 	lines := []statementLine{{Date: "2026-08-01", Description: "Purchase", Amount: models.Money(100050), Type: "expense"}}
-	checksum := checksumStatementLines(lines, models.Money(100000), 0)
+	checksum := checksumStatementLines(lines, models.Money(100000), nil)
 	if !checksum.Matches {
 		t.Fatalf("one-rupee tolerance should match: %#v", checksum)
 	}
