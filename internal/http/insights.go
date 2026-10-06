@@ -29,6 +29,10 @@ type DashboardPeriod struct {
 type DashboardSummary struct {
 	TotalSpent       float64 `json:"total_spent"`
 	TotalIncome      float64 `json:"total_income"`
+	// TotalInvested is what went into investments in the window (SIPs and
+	// anything tagged Investment). Not in TotalSpent; MoneyOut is both.
+	TotalInvested float64 `json:"total_invested"`
+	MoneyOut      float64 `json:"money_out"`
 	DailyAverage     float64 `json:"daily_average"`
 	TransactionCount int     `json:"transaction_count"`
 	// Lifetime activity drives progressive disclosure; the selected period's
@@ -353,6 +357,21 @@ func buildDashboardFromDB(userID uint, dateRange dashboardRange) (DashboardRespo
 // really did leave the bank account. It is only the totals that must not.
 const notCardPaymentClause = " AND COALESCE(purpose_type, '') <> '" + cardPaymentPurposeType + "'"
 
+// investmentEntryCondition recognises an investment entry: a recurring SIP
+// carries the purpose, a transaction logged with the Investment tag carries
+// the tag.
+const investmentEntryCondition = "(COALESCE(purpose_type, '') = 'investment' OR COALESCE(tag, '') = 'Investment')"
+
+// spendingRollupClause is what every "spent" and "income" rollup on this
+// screen filters with: no card payments (see above), and no investments.
+//
+// An SIP is not consumption, so it is not "spent"; a redemption is the user's
+// own money coming back, so it is not "income". Investments are still money
+// leaving the account today, so they are reported beside spending as
+// "invested" and counted in "money out" — never dropped. Activity counts keep
+// them; only the money rollups set them aside.
+const spendingRollupClause = notCardPaymentClause + " AND NOT " + investmentEntryCondition
+
 type dashboardSummaryRow struct {
 	TotalSpent       float64
 	TotalIncome      float64
@@ -367,7 +386,7 @@ func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, err
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS total_income,
 			COUNT(*) AS transaction_count,
 			COUNT(CASE WHEN LOWER(type) = 'expense' THEN 1 END) AS expense_count`).
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+"", userID, start, end).
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+"", userID, start, end).
 		Scan(&row).Error
 	if err != nil {
 		return DashboardSummary{}, err
@@ -378,9 +397,19 @@ func loadDashboardSummary(userID uint, start, end string) (DashboardSummary, err
 		Count(&lifetimeCount).Error; err != nil {
 		return DashboardSummary{}, err
 	}
+	var invested struct{ Total float64 }
+	if err := database.DB.Model(&models.Entry{}).
+		Select("COALESCE(SUM(amount), 0) AS total").
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = 'expense'"+notCardPaymentClause+" AND "+investmentEntryCondition,
+			userID, start, end).
+		Scan(&invested).Error; err != nil {
+		return DashboardSummary{}, err
+	}
 	return DashboardSummary{
 		TotalSpent:               row.TotalSpent,
 		TotalIncome:              row.TotalIncome,
+		TotalInvested:            invested.Total,
+		MoneyOut:                 row.TotalSpent + invested.Total,
 		TransactionCount:         row.TransactionCount,
 		ExpenseCount:             row.ExpenseCount,
 		LifetimeTransactionCount: int(lifetimeCount),
@@ -399,7 +428,7 @@ func loadDashboardPreviousCategoryTotals(userID uint, start, end string) (map[st
 	var rows []dashboardCategoryRow
 	if err := database.DB.Model(&models.Entry{}).
 		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ?", userID, start, end, "expense").
 		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -426,7 +455,7 @@ func loadDashboardTopCategories(userID uint, start, end string, totalSpent float
 	var rows []dashboardCategoryRow
 	if err := database.DB.Model(&models.Entry{}).
 		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ?", userID, start, end, "expense").
 		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
 		Order("amount DESC").
 		Limit(dashboardCategoryLimit).
@@ -466,7 +495,7 @@ func loadDashboardTopMerchants(userID uint, start, end string) ([]DashboardMerch
 	var rows []DashboardMerchant
 	if err := database.DB.Model(&models.Entry{}).
 		Select("TRIM(merchant) AS merchant, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS transaction_count").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ? AND TRIM(merchant) <> ?", userID, start, end, "expense", "").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ? AND TRIM(merchant) <> ?", userID, start, end, "expense", "").
 		Group("TRIM(merchant)").
 		Order("amount DESC").
 		Limit(5).
@@ -537,7 +566,7 @@ func loadDashboardDailySpending(userID uint, dateRange dashboardRange) ([]Dashbo
 	dateExpression := sqlDateDay(database.DB, "date")
 	if err := database.DB.Model(&models.Entry{}).
 		Select(dateExpression+" AS date, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ?", userID, start, end, "expense").
 		Group(dateExpression).
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -561,7 +590,7 @@ func loadDashboardDailySpending(userID uint, dateRange dashboardRange) ([]Dashbo
 func loadDashboardRecentTransactions(userID uint, start, end string) ([]models.Entry, error) {
 	var entries []models.Entry
 	if err := database.DB.Preload("Account").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+"", userID, start, end).
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+"", userID, start, end).
 		Order("date desc, created_at desc").
 		Limit(5).
 		Find(&entries).Error; err != nil {
@@ -576,7 +605,7 @@ func loadDashboardRecentTransactions(userID uint, start, end string) ([]models.E
 func loadDashboardPostProcessingEntries(userID uint, start, end string) ([]models.Entry, error) {
 	var entries []models.Entry
 	if err := database.DB.Preload("Account").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+"", userID, start, end).
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+"", userID, start, end).
 		Order("date desc, created_at desc").
 		Find(&entries).Error; err != nil {
 		return nil, err
@@ -608,7 +637,7 @@ func currentDashboardEntries(entries []models.Entry, dateRange dashboardRange) [
 func loadDashboardRecurringEntries(userID uint, start, end string) ([]models.Entry, error) {
 	var entries []models.Entry
 	if err := database.DB.Preload("Account").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ?", userID, start, end, "expense").
 		Order("date asc, created_at asc").
 		Find(&entries).Error; err != nil {
 		return nil, err
@@ -623,7 +652,7 @@ func loadDashboardExpenseAmounts(userID uint, start, end string) ([]float64, err
 	var amounts []float64
 	if err := database.DB.Model(&models.Entry{}).
 		Select("amount").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ?", userID, start, end, "expense").
 		Scan(&amounts).Error; err != nil {
 		return nil, err
 	}
@@ -640,7 +669,7 @@ func loadDashboardPreviousExpenseTotal(userID uint, start, end string) (comparis
 	}
 	err := database.DB.Model(&models.Entry{}).
 		Select("COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
-		Where("user_id = ? AND date >= ? AND date <= ?"+notCardPaymentClause+" AND LOWER(type) = ?", userID, start, end, "expense").
+		Where("user_id = ? AND date >= ? AND date <= ?"+spendingRollupClause+" AND LOWER(type) = ?", userID, start, end, "expense").
 		Scan(&row).Error
 	return comparisonBase{Amount: row.Amount, Count: row.Count}, err
 }

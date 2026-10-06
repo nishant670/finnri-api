@@ -1,9 +1,11 @@
 package http
 
 import (
+	"fmt"
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -275,4 +277,62 @@ func summariseRecurring(items []subscriptionResponse, cardEMIs []recurringCardEM
 		consider(emi.Title, "card_emi", emi.MonthlyAmount, emi.NextDueDate)
 	}
 	return summary
+}
+
+// recurringNoun is what a reminder calls the payment.
+func recurringNoun(kind string) string {
+	switch kind {
+	case recurringKindLoan:
+		return "EMI"
+	case recurringKindInvestment:
+		return "Investment"
+	case recurringKindBill:
+		return "Bill"
+	default:
+		return "Subscription"
+	}
+}
+
+func recurringAutopayTitle(kind string) string {
+	switch kind {
+	case recurringKindLoan:
+		return "EMI recorded"
+	case recurringKindInvestment:
+		return "Investment recorded"
+	case recurringKindBill:
+		return "Bill payment recorded"
+	default:
+		return "Autopay transaction added"
+	}
+}
+
+// recurringCompletedType notifications open the Recurring tab.
+const recurringCompletedType = "recurring.completed"
+
+// notifyRecurringCompleted marks the last instalment of a schedule: a loan
+// paid off, or a fixed-term investment finished. Best-effort — the schedule is
+// already closed, and a missed notification costs a moment of good news, not
+// a wrong number.
+func notifyRecurringCompleted(subscription models.Subscription) {
+	name := strings.TrimSpace(subscription.Name)
+	if name == "" {
+		name = "Your loan"
+	}
+	title := "Loan paid off"
+	body := fmt.Sprintf("%s: all %d EMIs are done. It has moved out of your monthly commitments.", name, subscription.TotalInstalments)
+	if subscription.Kind != recurringKindLoan && subscription.Kind != "" {
+		title = "Schedule complete"
+		body = fmt.Sprintf("%s: all %d payments are done.", name, subscription.TotalInstalments)
+	}
+	actionURL := fmt.Sprintf("/recurring/%d", subscription.ID)
+	notification := models.Notification{
+		UserID: subscription.UserID, Type: recurringCompletedType,
+		Title: title, Body: body, ActionURL: actionURL,
+	}
+	if err := database.DB.Create(&notification).Error; err != nil {
+		return
+	}
+	go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{
+		"action_url": actionURL, "subscription_id": subscription.ID,
+	})
 }

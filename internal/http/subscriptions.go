@@ -195,9 +195,23 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 	subscription.LastChargedDate = paidDate.Format("2006-01-02")
 	subscription.NextDueDate = nextDue
 	subscription.Status = subscriptionStatusActive
+	// A loan paid by hand counts its EMI exactly as autopay does; without this
+	// a loan not on autopay sat at "0 of 36 paid" however often it was paid.
+	finished := false
+	if subscription.TotalInstalments > 0 {
+		subscription.InstalmentsPaid++
+		if subscription.InstalmentsPaid >= subscription.TotalInstalments {
+			subscription.InstalmentsPaid = subscription.TotalInstalments
+			subscription.Status = subscriptionStatusCancelled
+			finished = true
+		}
+	}
 	if err := database.DB.Save(&subscription).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_mark_subscription_paid"})
 		return
+	}
+	if finished {
+		notifyRecurringCompleted(subscription)
 	}
 	_ = database.DB.Preload("Account").First(&subscription, subscription.ID).Error
 	c.JSON(http.StatusOK, buildSubscriptionResponse(subscription, paidDate))
@@ -317,13 +331,15 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	if name == "" {
 		name = "Subscription"
 	}
+	noun := recurringNoun(subscription.Kind)
+	amount := rupeesForCopy(subscription.Amount)
 	if kind == subscriptionReminderOverdueKind {
-		return "Subscription overdue", fmt.Sprintf("%s was due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
+		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dueDate, amount)
 	}
 	if kind == subscriptionReminderCancelKind {
-		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for ₹%s.", name, subscription.NextDueDate, subscription.Amount.String())
+		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for %s.", name, subscription.NextDueDate, amount)
 	}
-	return "Subscription due soon", fmt.Sprintf("%s is due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
+	return noun + " due soon", fmt.Sprintf("%s is due on %s for %s.", name, dueDate, amount)
 }
 
 func advanceSubscriptionDueDate(currentDueDate, interval string, paidDate time.Time) (string, error) {

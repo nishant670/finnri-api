@@ -2447,6 +2447,12 @@ components:
               type: number
             total_income:
               type: number
+            total_invested:
+              type: number
+              description: Investments in the window (SIPs, anything tagged Investment). Not in total_spent.
+            money_out:
+              type: number
+              description: total_spent + total_invested — everything that left the account.
             daily_average:
               type: number
             transaction_count:
