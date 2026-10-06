@@ -1694,6 +1694,86 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SplitBalance"
+  /v1/accounts/{id}/statements/read:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Read a statement file before the bill is saved
+      description: >-
+        Send either `file` (a PDF, with `password` when protected) or ordered
+        `images` (up to 8 screenshots). Nothing is saved. Returns the bill
+        summary to prefill the Add statement form, the transaction rows for the
+        statement check, and the card settings the statement disagrees with.
+        A PDF is free: rows are read locally, and the summary is one text-model
+        call on the masked text whose amounts are kept only when printed in it.
+        Without AI, a PDF still returns its rows. Screenshots are the paid
+        statement read and return the summary in the same call.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                password:
+                  type: string
+                images:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "200":
+          description: Summary, rows, proposed card updates and warnings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    description: Every field optional; absent means not printed.
+                  lines:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StatementLine"
+                  card_updates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        field:
+                          type: string
+                          enum: [statement_day, due_day, credit_limit, annual_fee, fee_waiver_spend, fee_month, last4]
+                        label:
+                          type: string
+                        current: {}
+                        proposed: {}
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+                  source:
+                    type: string
+                    enum: [pdf, screenshots_ai]
+        "402":
+          description: Screenshots need a plan or credits
+        "404":
+          description: Card not found
+        "413":
+          description: File too large
+        "415":
+          description: Unsupported image type
+        "422":
+          description: Password required or incorrect, not a PDF, or nothing readable
   /v1/accounts/{id}/statements:
     parameters:
       - in: path
@@ -3106,6 +3186,12 @@ components:
           type: boolean
         fee_month:
           type: string
+        annual_fee:
+          type: number
+          description: Yearly membership fee before GST; 0 when unknown.
+        fee_waiver_spend:
+          type: number
+          description: Yearly spend that waives the annual fee; 0 when unknown.
         balance:
           type: number
           multipleOf: 0.01
@@ -3159,6 +3245,12 @@ components:
           format: date-time
         fee_month:
           type: string
+        annual_fee:
+          type: number
+          description: Yearly membership fee before GST; 0 when unknown.
+        fee_waiver_spend:
+          type: number
+          description: Yearly spend that waives the annual fee; 0 when unknown.
         balance:
           type: number
           multipleOf: 0.01

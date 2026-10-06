@@ -56,53 +56,9 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 		return
 	}
 
-	form, err := c.MultipartForm()
-	if err != nil {
-		if requestBodyTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
+	images, ok := readStatementScreenshotForm(c, action.InputLimits.MaxFileBytes)
+	if !ok {
 		return
-	}
-	files := form.File["images"]
-	if len(files) == 0 {
-		// Accept the singular field too, which makes curl and simple clients less
-		// surprising while the mobile app uses the documented plural field.
-		files = form.File["image"]
-	}
-	if len(files) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
-		return
-	}
-	if len(files) > maxStatementScreenshots {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "too_many_statement_images", "max_images": maxStatementScreenshots,
-		})
-		return
-	}
-
-	maxBytes := action.InputLimits.MaxFileBytes
-	images := make([]ai.StatementImage, 0, len(files))
-	var totalBytes int64
-	for _, file := range files {
-		if file.Size <= 0 || (maxBytes > 0 && totalBytes+file.Size > maxBytes) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
-			return
-		}
-		image, readErr := readStatementScreenshot(file, maxBytes-totalBytes)
-		if readErr != nil {
-			if requestBodyTooLarge(readErr) {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
-			} else {
-				c.JSON(http.StatusUnsupportedMediaType, gin.H{
-					"error": "unsupported_statement_image", "message": "Use JPEG, PNG or WebP screenshots.",
-				})
-			}
-			return
-		}
-		totalBytes += int64(len(image.Data))
-		images = append(images, image)
 	}
 	defer func() {
 		for index := range images {
@@ -176,6 +132,60 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 	diff.Source = "screenshots_ai"
 	setStatementDiffCredits(&diff, credits)
 	c.JSON(http.StatusOK, diff)
+}
+
+// readStatementScreenshotForm reads the ordered `images` (or `image`) parts of
+// a statement upload into memory, writing the error response itself when the
+// batch is missing, too large, too long or not images.
+func readStatementScreenshotForm(c *gin.Context, maxBytes int64) ([]ai.StatementImage, bool) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+			return nil, false
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
+		return nil, false
+	}
+	files := form.File["images"]
+	if len(files) == 0 {
+		// Accept the singular field too, which makes curl and simple clients less
+		// surprising while the mobile app uses the documented plural field.
+		files = form.File["image"]
+	}
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
+		return nil, false
+	}
+	if len(files) > maxStatementScreenshots {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "too_many_statement_images", "max_images": maxStatementScreenshots,
+		})
+		return nil, false
+	}
+
+	images := make([]ai.StatementImage, 0, len(files))
+	var totalBytes int64
+	for _, file := range files {
+		if file.Size <= 0 || (maxBytes > 0 && totalBytes+file.Size > maxBytes) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
+			return nil, false
+		}
+		image, readErr := readStatementScreenshot(file, maxBytes-totalBytes)
+		if readErr != nil {
+			if requestBodyTooLarge(readErr) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
+			} else {
+				c.JSON(http.StatusUnsupportedMediaType, gin.H{
+					"error": "unsupported_statement_image", "message": "Use JPEG, PNG or WebP screenshots.",
+				})
+			}
+			return nil, false
+		}
+		totalBytes += int64(len(image.Data))
+		images = append(images, image)
+	}
+	return images, true
 }
 
 func readStatementScreenshot(file *multipart.FileHeader, remaining int64) (ai.StatementImage, error) {

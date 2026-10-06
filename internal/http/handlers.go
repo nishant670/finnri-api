@@ -237,6 +237,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Credit card statements
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
+		authorized.POST("/accounts/:id/statements/read", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.readCardStatement)
 		authorized.POST("/accounts/:id/statements/alert", jsonRequestLimits(cfg), rateLimit(cfg, "ai"), s.importCardStatementAlert)
 		authorized.GET("/statements/upcoming", s.listUpcomingStatements)
 		authorized.GET("/statements/:id", s.getCardStatement)

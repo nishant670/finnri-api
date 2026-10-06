@@ -390,6 +390,15 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS subscriptions_status_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_status_check CHECK (status IN ('active', 'paused', 'cancelled'))`,
+		// See migrations/0052_add_card_annual_fee.sql.
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS annual_fee NUMERIC(19,2) NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS fee_waiver_spend NUMERIC(19,2) NOT NULL DEFAULT 0`,
+		`ALTER TABLE accounts
+			DROP CONSTRAINT IF EXISTS accounts_annual_fee_non_negative_check`,
+		`ALTER TABLE accounts
+			ADD CONSTRAINT accounts_annual_fee_non_negative_check
+			CHECK (annual_fee >= 0 AND fee_waiver_spend >= 0)`,
 		// See migrations/0050_add_subscription_instalments.sql.
 		`ALTER TABLE subscriptions
 			ADD COLUMN IF NOT EXISTS total_instalments INTEGER NOT NULL DEFAULT 0,

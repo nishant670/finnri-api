@@ -6,7 +6,6 @@ import (
 	"finnri/internal/models"
 )
 
-
 func TestDiffPairsSameAmountLoggedOnADifferentDayAsProbable(t *testing.T) {
 	lines := []statementLine{{Date: "2026-09-12", Description: "SWIGGY BANGALORE", Amount: rupees(640), Type: "expense"}}
 	entries := []ledgerLine{{EntryID: 1, Date: "2026-09-02", Title: "Dinner", Amount: rupees(640), Type: "expense"}}
