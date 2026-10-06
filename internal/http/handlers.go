@@ -197,6 +197,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	authorized.Use(AuthMiddleware())
 	{
 		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
+		authorized.POST("/parse/receipt", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParseReceipt)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)

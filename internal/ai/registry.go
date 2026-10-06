@@ -12,6 +12,7 @@ const (
 	ActionTransactionParseVoiceShort  ActionCode = "transaction_parse_voice_short"
 	ActionTransactionParseVoiceMedium ActionCode = "transaction_parse_voice_medium"
 	ActionTransactionParseVoiceLong   ActionCode = "transaction_parse_voice_long"
+	ActionTransactionParseReceipt     ActionCode = "transaction_parse_receipt"
 	ActionFutureAIAdvisorMessage      ActionCode = "future_ai_advisor_message"
 	ActionFutureAIWeeklySummary       ActionCode = "future_ai_weekly_summary"
 	ActionFutureAIBulkCategorization  ActionCode = "future_ai_bulk_categorization"
@@ -23,6 +24,7 @@ type InputKind string
 const (
 	InputKindText  InputKind = "text"
 	InputKindVoice InputKind = "voice"
+	InputKindImage InputKind = "image"
 	InputKindFile  InputKind = "file"
 	InputKindChat  InputKind = "chat"
 )
@@ -117,6 +119,19 @@ func DefaultActionRegistry() ActionRegistry {
 			},
 			PaidPlanRequired: true,
 			Implemented:      false,
+		},
+		{
+			Code:               ActionTransactionParseReceipt,
+			Label:              "Receipt photo AI transaction parse",
+			InputKind:          InputKindImage,
+			GuestAllowed:       true,
+			DefaultCredits:     25,
+			MaxCredits:         50,
+			ProviderOperations: []ProviderOperation{ProviderOperationLLM},
+			InputLimits: ActionInputLimits{
+				MaxFileBytes: 5 * 1024 * 1024,
+			},
+			Implemented: true,
 		},
 		{
 			Code:               ActionFutureAIAdvisorMessage,

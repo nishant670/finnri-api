@@ -12,7 +12,7 @@
       ]
     },
     "currency": { "type": "string", "const": "INR" },
-    "source": { "type": "string", "enum": ["manual", "text", "voice"], "default": "manual" },
+    "source": { "type": "string", "enum": ["manual", "text", "voice", "receipt"], "default": "manual" },
     "account_id": { "type": "integer", "minimum": 1 },
     "mode": {
       "type": "string",

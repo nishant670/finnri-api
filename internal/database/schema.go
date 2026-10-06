@@ -1089,7 +1089,7 @@ func runtimeSchemaStatements() []string {
 			WHERE LOWER(type) IN ('expense', 'income')`,
 		`UPDATE entries
 			SET source = LOWER(source)
-			WHERE LOWER(source) IN ('manual', 'text', 'voice')`,
+			WHERE LOWER(source) IN ('manual', 'text', 'voice', 'receipt')`,
 		`ALTER TABLE accounts
 			DROP CONSTRAINT IF EXISTS accounts_type_check`,
 		`ALTER TABLE accounts
@@ -1110,7 +1110,7 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE entries
 			DROP CONSTRAINT IF EXISTS entries_source_check`,
 		`ALTER TABLE entries
-			ADD CONSTRAINT entries_source_check CHECK (source IN ('manual', 'text', 'voice'))`,
+			ADD CONSTRAINT entries_source_check CHECK (source IN ('manual', 'text', 'voice', 'receipt'))`, // 'receipt': see migrations/0051_allow_receipt_entry_source.sql.
 		`ALTER TABLE entries
 			DROP CONSTRAINT IF EXISTS fk_entries_owned_account`,
 		`ALTER TABLE entries
