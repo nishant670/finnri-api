@@ -132,6 +132,7 @@ func syncSubscriptionAutomation(userID uint, today time.Time) ([]models.Subscrip
 				return created, err
 			}
 			if finished {
+				notifyRecurringCompleted(*subscription)
 				break
 			}
 		}
@@ -192,8 +193,8 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 		}
 		notification := models.Notification{
 			UserID: subscription.UserID, Type: "subscription.autopay",
-			Title:     "Autopay transaction added",
-			Body:      fmt.Sprintf("Added %s for ₹%s from %s. Confirm it or open it to make changes.", subscription.Name, subscription.Amount.String(), occurrenceAccountLabel(*subscription)),
+			Title:     recurringAutopayTitle(subscription.Kind),
+			Body:      fmt.Sprintf("Added %s for %s from %s. Confirm it or open it to make changes.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(*subscription)),
 			ActionURL: fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID),
 		}
 		if err := tx.Create(&notification).Error; err != nil {

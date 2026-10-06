@@ -284,6 +284,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Subscriptions
 		authorized.POST("/subscriptions", s.createSubscription)
 		authorized.GET("/subscriptions", s.listSubscriptions)
+		authorized.GET("/recurring", s.listRecurring)
 		authorized.POST("/subscriptions/reminders", s.requireEntitlement(billing.FeatureSubscriptionReminders), s.createSubscriptionReminders)
 		authorized.POST("/subscriptions/sync", s.syncSubscriptionAutomationNow)
 		authorized.PUT("/subscriptions/:id", s.updateSubscription)
@@ -393,6 +394,10 @@ func skipsStaticBearer(path string) bool {
 		// dismiss, snooze and track from the app answers 401 — which is what
 		// happened to the decision endpoint from the day it shipped.
 		strings.HasPrefix(path, "/v1/recurring-candidates") ||
+		// The Recurring tab's overview. "/v1/recurring" is not covered by the
+		// candidates line above, and gating it would answer 401 in every
+		// deployed environment.
+		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
