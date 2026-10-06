@@ -132,15 +132,21 @@ func openDueCardStatementDrafts(userID uint, now time.Time) ([]models.CardStatem
 func createDraftStatement(card models.Account, statementDate time.Time) (models.CardStatement, bool, error) {
 	formatted := statementDate.Format(apiDateLayout)
 
-	var existing models.CardStatement
-	err := database.DB.
-		Where("user_id = ? AND account_id = ? AND statement_date = ?", card.UserID, card.ID, formatted).
-		First(&existing).Error
-	if err == nil {
+	// Any statement within a fortnight is this cycle's — including one the
+	// user re-dated because the bank billed a few days off the usual day.
+	// An exact-date check would open a second draft beside it.
+	existing, err := statementInSameCycle(card.UserID, card.ID, statementDate, false)
+	if err != nil {
+		return models.CardStatement{}, false, err
+	}
+	if existing.ID != 0 {
 		return existing, false, nil
 	}
 
-	cycleStart, cycleEnd := statementCycle(statementDate, card.StatementDay)
+	cycleStart, cycleEnd, err := cardStatementCycle(card.UserID, card.ID, 0, statementDate, card.StatementDay)
+	if err != nil {
+		return models.CardStatement{}, false, err
+	}
 	statement := models.CardStatement{
 		UserID:        card.UserID,
 		AccountID:     card.ID,
