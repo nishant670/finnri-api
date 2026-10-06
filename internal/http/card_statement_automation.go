@@ -84,6 +84,9 @@ func syncAllCardStatements(now time.Time) error {
 		if _, err := syncCardStatementReminders(userID, now); err != nil {
 			return err
 		}
+		if _, err := syncAnnualFeeReminders(userID, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }

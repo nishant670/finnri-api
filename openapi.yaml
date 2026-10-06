@@ -1732,6 +1732,86 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SplitBalance"
+  /v1/accounts/{id}/statements/read:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Read a statement file before the bill is saved
+      description: >-
+        Send either `file` (a PDF, with `password` when protected) or ordered
+        `images` (up to 8 screenshots). Nothing is saved. Returns the bill
+        summary to prefill the Add statement form, the transaction rows for the
+        statement check, and the card settings the statement disagrees with.
+        A PDF is free: rows are read locally, and the summary is one text-model
+        call on the masked text whose amounts are kept only when printed in it.
+        Without AI, a PDF still returns its rows. Screenshots are the paid
+        statement read and return the summary in the same call.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                password:
+                  type: string
+                images:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "200":
+          description: Summary, rows, proposed card updates and warnings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    description: Every field optional; absent means not printed.
+                  lines:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StatementLine"
+                  card_updates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        field:
+                          type: string
+                          enum: [statement_day, due_day, credit_limit, annual_fee, fee_waiver_spend, fee_month, last4]
+                        label:
+                          type: string
+                        current: {}
+                        proposed: {}
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+                  source:
+                    type: string
+                    enum: [pdf, screenshots_ai]
+        "402":
+          description: Screenshots need a plan or credits
+        "404":
+          description: Card not found
+        "413":
+          description: File too large
+        "415":
+          description: Unsupported image type
+        "422":
+          description: Password required or incorrect, not a PDF, or nothing readable
   /v1/accounts/{id}/statements:
     parameters:
       - in: path
@@ -3144,6 +3224,12 @@ components:
           type: boolean
         fee_month:
           type: string
+        annual_fee:
+          type: number
+          description: Yearly membership fee before GST; 0 when unknown.
+        fee_waiver_spend:
+          type: number
+          description: Yearly spend that waives the annual fee; 0 when unknown.
         balance:
           type: number
           multipleOf: 0.01
@@ -3197,6 +3283,12 @@ components:
           format: date-time
         fee_month:
           type: string
+        annual_fee:
+          type: number
+          description: Yearly membership fee before GST; 0 when unknown.
+        fee_waiver_spend:
+          type: number
+          description: Yearly spend that waives the annual fee; 0 when unknown.
         balance:
           type: number
           multipleOf: 0.01
@@ -3283,6 +3375,31 @@ components:
           description: >-
             Non-card accounts with an opening balance only — opening plus money in
             minus money out. Absent otherwise, because net flow is not a balance.
+        annual_fee:
+          type: object
+          description: >-
+            Credit cards with an annual fee and a fee month only. The card year
+            is the twelve months before the 1st of the fee month; spent is net
+            card spend in it, a guide to the bank's own waiver count.
+          properties:
+            fee:
+              type: number
+            fee_month:
+              type: string
+            renewal_date:
+              type: string
+              format: date
+            card_year_start:
+              type: string
+              format: date
+            spent:
+              type: number
+            waiver_spend:
+              type: number
+            remaining_to_waive:
+              type: number
+            waived:
+              type: boolean
     BudgetInput:
       type: object
       required: [name, limit_amount]
@@ -3572,6 +3689,38 @@ components:
               similarity:
                 type: number
                 description: Description overlap, 0..1. A tie-breaker only.
+        probable:
+          type: array
+          description: >-
+            Probably an entry the user already logged: the same amount up to 10
+            days apart, or within one rupee (or a 3.5% forex markup on a matching
+            merchant) within 3 days. Excluded from missing and extra; the user
+            decides. Importing the line means "a different purchase".
+          items:
+            type: object
+            properties:
+              line:
+                $ref: "#/components/schemas/StatementLine"
+              entry:
+                type: object
+              day_gap:
+                type: integer
+              amount_gap:
+                type: number
+                description: Line minus entry; positive when the bank billed more.
+              similarity:
+                type: number
+              reason:
+                type: string
+                enum: [date, amount]
+        charges:
+          type: array
+          description: The bank's fees and interest, wherever they landed in the diff.
+          items:
+            $ref: "#/components/schemas/StatementLine"
+        reconciliation:
+          type: object
+          description: The ledger against this bill before any import. Absent for a draft bill.
         missing:
           type: array
           description: On the statement, not in Finnri. These are importable.
@@ -3600,14 +3749,20 @@ components:
               type: integer
             ignored_count:
               type: integer
+            probable_count:
+              type: integer
+            charges_count:
+              type: integer
+            charges_amount:
+              type: number
             missing_amount:
               type: number
             extra_amount:
               type: number
         source:
           type: string
-          enum: [screenshots_ai]
-          description: Present only when screenshots produced this diff.
+          enum: [pdf, screenshots_ai]
+          description: Which file produced this diff; absent for a client-supplied diff.
         checksum:
           $ref: "#/components/schemas/StatementChecksum"
         credits_charged:
@@ -3618,7 +3773,9 @@ components:
           type: integer
     StatementChecksum:
       type: object
-      description: Advisory screenshot arithmetic; a mismatch never blocks review or import.
+      description: >-
+        Whether the rows read off the file add up to the bill. Advisory; a
+        mismatch never blocks review or import. Absent while the bill is a draft.
       required: [parsed_debits, parsed_credits, parsed_net, expected_net, difference, matches, message]
       properties:
         parsed_debits:
@@ -3629,7 +3786,16 @@ components:
           type: number
         expected_net:
           type: number
-          description: Statement total due minus the previous statement's unpaid remainder.
+          description: >-
+            Total due minus the opening balance plus the bill payments on the
+            statement. Without an earlier bill in Finnri, the opening balance is
+            assumed to equal the payments (previous bill paid in full).
+        payments:
+          type: number
+          description: Bill payments found among the rows, excluded from parsed_net.
+        opening_balance:
+          type: number
+          description: The previous bill's total, when Finnri has one.
         difference:
           type: number
           description: Parsed net minus expected net.

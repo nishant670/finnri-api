@@ -238,6 +238,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Credit card statements
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
+		authorized.POST("/accounts/:id/statements/read", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.readCardStatement)
 		authorized.POST("/accounts/:id/statements/alert", jsonRequestLimits(cfg), rateLimit(cfg, "ai"), s.importCardStatementAlert)
 		authorized.GET("/statements/upcoming", s.listUpcomingStatements)
 		authorized.GET("/statements/:id", s.getCardStatement)
@@ -1993,8 +1994,13 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_load_card_statements"})
 		return
 	}
-	today := truncateDate(timepkg.Now().In(location)).Format(apiDateLayout)
-	c.JSON(200, summariseAccounts(accounts, totals, statements, today))
+	now := timepkg.Now().In(location)
+	summarised := summariseAccounts(accounts, totals, statements, truncateDate(now).Format(apiDateLayout))
+	if err := attachAnnualFeeStatus(summarised, now); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_annual_fee"})
+		return
+	}
+	c.JSON(200, summarised)
 }
 
 func (s *Server) updateAccount(c *gin.Context) {
