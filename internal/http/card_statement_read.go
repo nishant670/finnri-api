@@ -417,8 +417,10 @@ func compareCardWithStatement(account models.Account, summary statementSummary) 
 
 	// Against the clamped anchor: a card billing on the 31st that is dated
 	// the 30th in November has not moved.
+	// A card with no statement day yet is always offered one: clamping treats
+	// day 0 as the 1st, which would hide the offer for a bill dated the 1st.
 	if date, err := parseStrictAPIDate(summary.StatementDate); err == nil &&
-		!clampDayToMonth(date.Year(), date.Month(), account.StatementDay).Equal(date) {
+		(account.StatementDay == 0 || !clampDayToMonth(date.Year(), date.Month(), account.StatementDay).Equal(date)) {
 		updates = append(updates, cardUpdate{"statement_day", "Statement day", account.StatementDay, date.Day()})
 	}
 	if date, err := parseStrictAPIDate(summary.DueDate); err == nil && account.DueDay != date.Day() {

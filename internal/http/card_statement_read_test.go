@@ -245,3 +245,16 @@ func TestReadStatementScreenshotsNeedsAPlanBeforeAnyAICall(t *testing.T) {
 		t.Fatal("a locked read must not reach the model")
 	}
 }
+
+func TestCompareCardOffersAStatementDayToACardWithoutOne(t *testing.T) {
+	updates, _ := compareCardWithStatement(models.Account{}, statementSummary{StatementDate: "2026-10-01"})
+	if len(updates) != 1 || updates[0].Field != "statement_day" || updates[0].Proposed != 1 {
+		t.Fatalf("a card with no statement day must be offered the 1st: %+v", updates)
+	}
+	// And a card that bills on the 31st is not told it moved when November
+	// ends on the 30th.
+	none, _ := compareCardWithStatement(models.Account{StatementDay: 31}, statementSummary{StatementDate: "2026-11-30"})
+	if len(none) != 0 {
+		t.Fatalf("the clamped anchor is not a move: %+v", none)
+	}
+}
