@@ -1090,6 +1090,10 @@ func runtimeSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_entries_pending_refunds
 			ON entries (refund_expected_on, refund_reminder_at)
 			WHERE refund_status = 'pending'`,
+		// See migrations/0053_unique_annual_fee_reminder.sql.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_annual_fee_unique
+			ON notifications (user_id, type, action_url)
+			WHERE type = 'card.annual_fee'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_refund_due_unique
 			ON notifications (user_id, type, action_url)
 			WHERE type = 'refund.due'`,

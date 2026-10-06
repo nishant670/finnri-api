@@ -3337,6 +3337,31 @@ components:
           description: >-
             Non-card accounts with an opening balance only — opening plus money in
             minus money out. Absent otherwise, because net flow is not a balance.
+        annual_fee:
+          type: object
+          description: >-
+            Credit cards with an annual fee and a fee month only. The card year
+            is the twelve months before the 1st of the fee month; spent is net
+            card spend in it, a guide to the bank's own waiver count.
+          properties:
+            fee:
+              type: number
+            fee_month:
+              type: string
+            renewal_date:
+              type: string
+              format: date
+            card_year_start:
+              type: string
+              format: date
+            spent:
+              type: number
+            waiver_spend:
+              type: number
+            remaining_to_waive:
+              type: number
+            waived:
+              type: boolean
     BudgetInput:
       type: object
       required: [name, limit_amount]

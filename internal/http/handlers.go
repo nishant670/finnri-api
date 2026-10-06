@@ -1993,8 +1993,13 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_load_card_statements"})
 		return
 	}
-	today := truncateDate(timepkg.Now().In(location)).Format(apiDateLayout)
-	c.JSON(200, summariseAccounts(accounts, totals, statements, today))
+	now := timepkg.Now().In(location)
+	summarised := summariseAccounts(accounts, totals, statements, truncateDate(now).Format(apiDateLayout))
+	if err := attachAnnualFeeStatus(summarised, now); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_annual_fee"})
+		return
+	}
+	c.JSON(200, summarised)
 }
 
 func (s *Server) updateAccount(c *gin.Context) {
