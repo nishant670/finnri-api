@@ -27,12 +27,12 @@ type DashboardPeriod struct {
 }
 
 type DashboardSummary struct {
-	TotalSpent       float64 `json:"total_spent"`
-	TotalIncome      float64 `json:"total_income"`
+	TotalSpent  float64 `json:"total_spent"`
+	TotalIncome float64 `json:"total_income"`
 	// TotalInvested is what went into investments in the window (SIPs and
 	// anything tagged Investment). Not in TotalSpent; MoneyOut is both.
-	TotalInvested float64 `json:"total_invested"`
-	MoneyOut      float64 `json:"money_out"`
+	TotalInvested    float64 `json:"total_invested"`
+	MoneyOut         float64 `json:"money_out"`
 	DailyAverage     float64 `json:"daily_average"`
 	TransactionCount int     `json:"transaction_count"`
 	// Lifetime activity drives progressive disclosure; the selected period's
