@@ -242,6 +242,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/accounts/:id/statements/alert", jsonRequestLimits(cfg), rateLimit(cfg, "ai"), s.importCardStatementAlert)
 		authorized.GET("/statements/upcoming", s.listUpcomingStatements)
 		authorized.GET("/statements/:id", s.getCardStatement)
+		authorized.PATCH("/statements/:id", jsonRequestLimits(cfg), s.updateCardStatement)
 		authorized.DELETE("/statements/:id", s.deleteCardStatement)
 		authorized.POST("/statements/:id/payments", s.recordCardStatementPayment)
 		authorized.DELETE("/statements/:id/payments/:paymentId", s.deleteCardStatementPayment)

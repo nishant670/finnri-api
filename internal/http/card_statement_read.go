@@ -415,7 +415,10 @@ func compareCardWithStatement(account models.Account, summary statementSummary) 
 		return updates, warnings
 	}
 
-	if date, err := parseStrictAPIDate(summary.StatementDate); err == nil && account.StatementDay != date.Day() {
+	// Against the clamped anchor: a card billing on the 31st that is dated
+	// the 30th in November has not moved.
+	if date, err := parseStrictAPIDate(summary.StatementDate); err == nil &&
+		!clampDayToMonth(date.Year(), date.Month(), account.StatementDay).Equal(date) {
 		updates = append(updates, cardUpdate{"statement_day", "Statement day", account.StatementDay, date.Day()})
 	}
 	if date, err := parseStrictAPIDate(summary.DueDate); err == nil && account.DueDay != date.Day() {
