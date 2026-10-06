@@ -117,3 +117,31 @@ func TestParseReceiptRejectsNonImage(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
+
+func TestParseReceiptForeignCurrencyStaysSaveable(t *testing.T) {
+	server := newReceiptServer(t, `{
+		"summary":"Starbucks receipt, USD 12.50","type":"expense","title":"Coffee",
+		"amount":12.5,"currency":"usd","category":"Food & Drinks","merchant":"Starbucks",
+		"date":"2026-09-12","confidence":{"amount":0.9}
+	}`)
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+
+	server.handleParseReceipt(ctx)
+
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var draft map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	if draft["currency"] != "INR" {
+		t.Fatalf("entries are INR-only, got currency %v", draft["currency"])
+	}
+	if confirm, _ := draft["needs_confirmation"].(map[string]any); confirm["amount"] != true {
+		t.Fatalf("a foreign amount must be flagged for confirmation: %v", draft["needs_confirmation"])
+	}
+	if !strings.Contains(response.Body.String(), "This bill is in USD") {
+		t.Fatalf("expected a clarification naming the currency: %s", response.Body.String())
+	}
+}

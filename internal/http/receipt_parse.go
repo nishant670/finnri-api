@@ -130,6 +130,7 @@ func (s *Server) handleParseReceipt(c *gin.Context) {
 		return
 	}
 	normalizeParsedDraft(draft, summary)
+	flagForeignCurrency(draft)
 	if amount, ok := draft["amount"].(float64); !ok || amount <= 0 {
 		// A receipt with no readable total is not a draft worth reviewing; the
 		// user would be re-typing the one number the photo was meant to give.
@@ -200,6 +201,31 @@ func decodeReceiptDraft(raw []byte) (map[string]any, string, error) {
 	delete(draft, "intent")
 	delete(draft, "query")
 	return draft, summary, nil
+}
+
+// flagForeignCurrency keeps a bill printed in another currency saveable.
+// Entries are INR-only, so the draft is switched to INR and the amount is
+// flagged: the printed figure is a foreign amount the user must replace with
+// what the card or account was actually charged.
+func flagForeignCurrency(draft map[string]any) {
+	currency, _ := draft["currency"].(string)
+	if currency == "" || currency == "INR" {
+		return
+	}
+	draft["currency"] = "INR"
+	needsConfirmation, _ := draft["needs_confirmation"].(map[string]any)
+	if needsConfirmation == nil {
+		needsConfirmation = map[string]any{}
+	}
+	needsConfirmation["amount"] = true
+	draft["needs_confirmation"] = needsConfirmation
+	if confidence, ok := draft["confidence"].(map[string]any); ok {
+		confidence["amount"] = 0.0
+	}
+	draft["clarifications"] = appendUniqueAnyString(
+		draft["clarifications"],
+		"This bill is in "+currency+". Enter the rupee amount you were charged.",
+	)
 }
 
 func todayIn(tz string) string {

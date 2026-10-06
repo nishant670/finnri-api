@@ -21,7 +21,7 @@ const receiptMaxTokens = 1200
 // has to steer, not police.
 const receiptImagePrompt = `Read this photo or screenshot of a bill, receipt, invoice or payment confirmation and return JSON only.
 Return ONE transaction for the whole document, never one per line item:
-{"summary": string, "type": "expense|income", "title": string|null, "amount": number|null, "currency": "INR",
+{"summary": string, "type": "expense|income", "title": string|null, "amount": number|null, "currency": "INR, or the ISO code of the currency printed on the bill",
  "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null", "card_network": "Visa|Mastercard|Amex|Rupay|null",
  "account_hint": string|null, "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Refund|Other|null",
  "merchant": string|null, "tags": [string], "note": string|null, "date": "YYYY-MM-DD"|null, "time": "HH:MM"|null,
