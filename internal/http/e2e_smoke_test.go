@@ -215,6 +215,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.Use(AuthMiddleware())
 	authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), server.handleParse)
 	authorized.GET("/billing/status", server.getBillingStatus)
+	authorized.GET("/billing/payments", server.listBillingPayments)
 	authorized.POST("/billing/checkout", server.createBillingCheckout)
 	authorized.POST("/billing/lifetime-quote/request", server.requestLifetimeQuote)
 	authorized.GET("/ai/usage", server.listAIUsage)
