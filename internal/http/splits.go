@@ -103,6 +103,8 @@ type splitSettlementInput struct {
 	Direction string       `json:"direction"`
 	Date      string       `json:"date"`
 	Notes     string       `json:"notes"`
+	// Optional so that app builds which do not ask can still record one.
+	PaymentMode string `json:"payment_mode"`
 }
 
 type splitBalance struct {
@@ -133,8 +135,10 @@ type splitActivityItem struct {
 	// A settlement's standing, on settlement rows only. The feed carried
 	// claimed payments and agreed ones under the same wording, which is the
 	// difference the person being asked to agree most needs to see.
-	Status    string    `json:"status,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Status string `json:"status,omitempty"`
+	// How a settlement was paid, on settlement rows only.
+	PaymentMode string    `json:"payment_mode,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type splitGroupInviteResponse struct {
@@ -2059,20 +2063,21 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		friendID := counterpart.ID
 		friendCopy := counterpart
 		items = append(items, splitActivityItem{
-			ID:        fmt.Sprintf("settlement-%d", settlement.ID),
-			Type:      "settlement",
-			RecordID:  settlement.ID,
-			Title:     title,
-			Date:      settlement.Date,
-			Amount:    &amount,
-			GroupID:   settlement.GroupID,
-			FriendID:  &friendID,
-			Friend:    &friendCopy,
-			Direction: direction,
-			Notes:     settlement.Notes,
-			ActorName: actorName(settlement.GroupID, settlement.UserID),
-			Status:    settlementStatusOrDefault(settlement.Status),
-			CreatedAt: settlement.CreatedAt,
+			ID:          fmt.Sprintf("settlement-%d", settlement.ID),
+			Type:        "settlement",
+			RecordID:    settlement.ID,
+			Title:       title,
+			Date:        settlement.Date,
+			Amount:      &amount,
+			GroupID:     settlement.GroupID,
+			FriendID:    &friendID,
+			Friend:      &friendCopy,
+			Direction:   direction,
+			Notes:       settlement.Notes,
+			ActorName:   actorName(settlement.GroupID, settlement.UserID),
+			Status:      settlementStatusOrDefault(settlement.Status),
+			PaymentMode: settlement.PaymentMode,
+			CreatedAt:   settlement.CreatedAt,
 		})
 	}
 
@@ -2107,17 +2112,18 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			title = fmt.Sprintf("You paid %s", fallbackSplitFriendName(settlement.Friend))
 		}
 		item := splitActivityItem{
-			ID:        fmt.Sprintf("settlement-%d", settlement.ID),
-			Type:      "settlement",
-			RecordID:  settlement.ID,
-			Title:     title,
-			Date:      settlement.Date,
-			Amount:    &amount,
-			FriendID:  &friendID,
-			Direction: settlement.Direction,
-			Notes:     settlement.Notes,
-			Status:    settlementStatusOrDefault(settlement.Status),
-			CreatedAt: settlement.CreatedAt,
+			ID:          fmt.Sprintf("settlement-%d", settlement.ID),
+			Type:        "settlement",
+			RecordID:    settlement.ID,
+			Title:       title,
+			Date:        settlement.Date,
+			Amount:      &amount,
+			FriendID:    &friendID,
+			Direction:   settlement.Direction,
+			Notes:       settlement.Notes,
+			Status:      settlementStatusOrDefault(settlement.Status),
+			PaymentMode: settlement.PaymentMode,
+			CreatedAt:   settlement.CreatedAt,
 		}
 		if settlement.Friend.ID != 0 {
 			friend := settlement.Friend
@@ -2402,19 +2408,47 @@ func (input splitSettlementInput) validate() map[string]string {
 	if _, err := time.Parse("2006-01-02", input.Date); err != nil {
 		fields["date"] = "must use YYYY-MM-DD"
 	}
+	if _, ok := normalizeSettlementPaymentMode(input.PaymentMode); !ok {
+		fields["payment_mode"] = "must be cash, upi, bank_transfer, card, wallet or other"
+	}
 	return fields
 }
 
 func (input splitSettlementInput) toModel(userID uint) models.SplitSettlement {
+	mode, _ := normalizeSettlementPaymentMode(input.PaymentMode)
 	return models.SplitSettlement{
-		UserID:    userID,
-		FriendID:  input.FriendID,
-		GroupID:   input.GroupID,
-		Amount:    input.Amount,
-		Direction: normalizeSettlementDirection(input.Direction),
-		Date:      input.Date,
-		Notes:     strings.TrimSpace(input.Notes),
+		UserID:      userID,
+		FriendID:    input.FriendID,
+		GroupID:     input.GroupID,
+		Amount:      input.Amount,
+		Direction:   normalizeSettlementDirection(input.Direction),
+		Date:        input.Date,
+		Notes:       strings.TrimSpace(input.Notes),
+		PaymentMode: mode,
 	}
+}
+
+// settlementPaymentModes are the ways a settlement can be paid, with the words
+// a sentence uses for each. Kept to how money actually moves between two
+// people, not the full list of account types an expense can come from.
+var settlementPaymentModes = map[string]string{
+	"cash":          "in cash",
+	"upi":           "by UPI",
+	"bank_transfer": "by bank transfer",
+	"card":          "by card",
+	"wallet":        "from a wallet",
+	"other":         "",
+}
+
+// normalizeSettlementPaymentMode accepts a known mode in any case, and empty
+// for a client that does not ask.
+func normalizeSettlementPaymentMode(raw string) (string, bool) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return "", true
+	}
+	_, ok := settlementPaymentModes[mode]
+	return mode, ok
 }
 
 // splitGroupFrame is one shared group's roster, in every namespace at once.
