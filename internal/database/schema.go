@@ -1386,6 +1386,14 @@ func runtimeSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_split_settlements_counterparty_status
 			ON split_settlements (counterparty_user_id, status)
 			WHERE counterparty_user_id IS NOT NULL`,
+		// See migrations/0057_settlement_payment_mode.sql.
+		`ALTER TABLE split_settlements
+			ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(24) NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_settlements
+			DROP CONSTRAINT IF EXISTS split_settlements_payment_mode_check`,
+		`ALTER TABLE split_settlements
+			ADD CONSTRAINT split_settlements_payment_mode_check
+			CHECK (payment_mode IN ('', 'cash', 'upi', 'bank_transfer', 'card', 'wallet', 'other'))`,
 		`CREATE TABLE IF NOT EXISTS split_friend_merges (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
