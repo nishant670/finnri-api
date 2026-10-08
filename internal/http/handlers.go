@@ -1492,9 +1492,9 @@ func (s *Server) listQuickPrompts(c *gin.Context) {
 	// Seed default prompts if none exist
 	if len(prompts) == 0 {
 		defaults := []models.QuickPrompt{
-			{UserID: userID, Title: "Morning Coffee", Amount: 150, Mode: "Cash", Category: "Food & Drinks", Icon: "coffee-outline"},
-			{UserID: userID, Title: "Metro Recharge", Amount: 500, Mode: "UPI", Category: "Travel", Icon: "train"},
-			{UserID: userID, Title: "Car Fuel", Amount: 3000, Mode: "Credit Card", Category: "Transport", Icon: "gas-station-outline"},
+			{UserID: userID, Title: "Morning Coffee", Type: "expense", Amount: 150, Mode: "Cash", Category: "Food & Drinks", Icon: "coffee-outline"},
+			{UserID: userID, Title: "Metro Recharge", Type: "expense", Amount: 500, Mode: "UPI", Category: "Travel", Icon: "train"},
+			{UserID: userID, Title: "Car Fuel", Type: "expense", Amount: 3000, Mode: "Credit Card", Category: "Transport", Icon: "gas-station-outline"},
 		}
 		for _, p := range defaults {
 			database.DB.Create(&p)
@@ -1515,7 +1515,15 @@ func (s *Server) saveQuickPrompt(c *gin.Context) {
 		return
 	}
 
+	prompt.ID = 0
 	prompt.UserID = userID
+	if fields, err := normalizeQuickPrompt(&prompt, userID); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_quick_prompt", "fields": fields})
+		return
+	}
 	if err := database.DB.Create(&prompt).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -1545,12 +1553,56 @@ func (s *Server) updateQuickPrompt(c *gin.Context) {
 
 	prompt.ID = uint(id)
 	prompt.UserID = userID
+	if fields, err := normalizeQuickPrompt(&prompt, userID); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_quick_prompt", "fields": fields})
+		return
+	}
 	if err := database.DB.Save(&prompt).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(200, prompt)
+}
+
+// normalizeQuickPrompt tidies what was typed and checks what the prompt points
+// at, returning field errors in the shape the entry endpoints use.
+//
+// An update binds onto the stored row, so a field the client leaves out keeps
+// its value — which is what lets an app build that predates these fields edit
+// a prompt without wiping the account, merchant, tag or notes set elsewhere.
+func normalizeQuickPrompt(prompt *models.QuickPrompt, userID uint) (gin.H, error) {
+	prompt.Title = strings.TrimSpace(prompt.Title)
+	prompt.Merchant = strings.TrimSpace(prompt.Merchant)
+	prompt.Tag = strings.TrimSpace(prompt.Tag)
+	prompt.Notes = strings.TrimSpace(prompt.Notes)
+	prompt.Type = strings.ToLower(strings.TrimSpace(prompt.Type))
+	if prompt.Type == "" {
+		prompt.Type = "expense"
+	}
+
+	fields := gin.H{}
+	if prompt.Type != "expense" && prompt.Type != "income" {
+		fields["type"] = "must be expense or income"
+	}
+	if prompt.AccountID != nil && *prompt.AccountID == 0 {
+		prompt.AccountID = nil
+	}
+	if prompt.AccountID != nil {
+		var count int64
+		if err := database.DB.Model(&models.Account{}).
+			Where("user_id = ? AND id = ?", userID, *prompt.AccountID).
+			Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count == 0 {
+			fields["account_id"] = "must belong to the current user"
+		}
+	}
+	return fields, nil
 }
 
 func (s *Server) deleteQuickPrompt(c *gin.Context) {
