@@ -1157,6 +1157,21 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE entries
 			ADD CONSTRAINT fk_entries_owned_account
 			FOREIGN KEY (user_id, account_id) REFERENCES accounts(user_id, id)`,
+		// See migrations/0056_quick_prompt_details.sql.
+		`ALTER TABLE quick_prompts
+			ADD COLUMN IF NOT EXISTS type VARCHAR(10) NOT NULL DEFAULT 'expense',
+			ADD COLUMN IF NOT EXISTS account_id BIGINT,
+			ADD COLUMN IF NOT EXISTS merchant TEXT NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS tag TEXT NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE quick_prompts DROP CONSTRAINT IF EXISTS quick_prompts_type_check`,
+		`ALTER TABLE quick_prompts
+			ADD CONSTRAINT quick_prompts_type_check CHECK (type IN ('expense', 'income'))`,
+		`ALTER TABLE quick_prompts DROP CONSTRAINT IF EXISTS fk_quick_prompts_account`,
+		`ALTER TABLE quick_prompts
+			ADD CONSTRAINT fk_quick_prompts_account
+			FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_quick_prompts_account_id ON quick_prompts (account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_friends_user_archived
 			ON split_friends (user_id, archived, name)`,
 		`ALTER TABLE split_bills
