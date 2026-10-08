@@ -70,6 +70,9 @@ type billingStatusResponse struct {
 	CurrentPeriodEnd    *time.Time                  `json:"current_period_end,omitempty"`
 	Credits             creditSummaryResponse       `json:"credits"`
 	LifetimeEligibility lifetimeEligibilityResponse `json:"lifetime_eligibility"`
+	// LastPass is present only while no pass is running, and only when one
+	// ran before: the most recent paid period, already over.
+	LastPass *pastPassResponse `json:"last_pass,omitempty"`
 	// LaunchOffer is present while the offer runs; Eligible is false once this
 	// user has bought at the launch price.
 	LaunchOffer *launchOfferStatusResponse `json:"launch_offer,omitempty"`
@@ -154,6 +157,13 @@ func (s *Server) getBillingStatus(c *gin.Context) {
 			response.CurrentPeriodEnd = &subscription.CurrentPeriodEnd
 			plan := s.planResponseFromModel(subscription.Plan)
 			response.Plan = &plan
+		} else {
+			lastPass, err := lastEndedPass(user.ID, time.Now().UTC())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_subscription"})
+				return
+			}
+			response.LastPass = lastPass
 		}
 		paidMonths, err := paidMonthsCompleted(user.ID)
 		if err != nil {

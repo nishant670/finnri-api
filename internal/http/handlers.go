@@ -222,6 +222,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 		// Billing and AI credit visibility
 		authorized.GET("/billing/status", s.getBillingStatus)
+		authorized.GET("/billing/payments", s.listBillingPayments)
 		authorized.POST("/billing/checkout", s.createBillingCheckout)
 		authorized.POST("/billing/lifetime-quote/request", s.requestLifetimeQuote)
 		authorized.GET("/ai/usage", s.listAIUsage)
