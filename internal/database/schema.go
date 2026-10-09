@@ -1386,6 +1386,9 @@ func runtimeSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_split_settlements_counterparty_status
 			ON split_settlements (counterparty_user_id, status)
 			WHERE counterparty_user_id IS NOT NULL`,
+		// See migrations/0058_feedback_attachments.sql.
+		`ALTER TABLE feedbacks
+			ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		// See migrations/0057_settlement_payment_mode.sql.
 		`ALTER TABLE split_settlements
 			ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(24) NOT NULL DEFAULT ''`,

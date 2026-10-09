@@ -198,6 +198,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.PATCH("/ai/abuse-blocks/:id", requireAdminRole(models.AdminRoleSupport), server.updateAIAbuseBlock)
 	admin.GET("/feedback", server.listAdminFeedback)
 	admin.GET("/feedback/stats", server.getAdminFeedbackStats)
+	admin.GET("/feedback/:id/attachments/:index", server.getAdminFeedbackAttachment)
 	admin.PATCH("/feedback/:id", requireAdminRole(models.AdminRoleSupport), server.updateAdminFeedback)
 	admin.GET("/analytics/signups", server.getAdminSignups)
 	admin.GET("/analytics/activation", server.getAdminActivation)
