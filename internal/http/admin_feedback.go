@@ -2,7 +2,10 @@ package http
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +14,51 @@ import (
 	"finnri/internal/database"
 	"finnri/internal/models"
 )
+
+// getAdminFeedbackAttachment streams one file a user attached to feedback.
+//
+// Uploads are otherwise readable only through a signature tied to the user's
+// own session, which an admin does not have. This route is the admin's way in,
+// and it opens exactly the files a piece of feedback names — by position, so
+// no path from the request ever reaches the filesystem.
+func (s *Server) getAdminFeedbackAttachment(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment_not_found"})
+		return
+	}
+	index, err := strconv.Atoi(c.Param("index"))
+	if err != nil || index < 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment_not_found"})
+		return
+	}
+	var feedback models.Feedback
+	if err := database.DB.First(&feedback, id).Error; err != nil || index >= len(feedback.Attachments) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment_not_found"})
+		return
+	}
+	path, ok := localUploadPathFromAttachment(feedback.Attachments[index])
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment_not_found"})
+		return
+	}
+	name, ok := safeUploadName(filepath.Base(path))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment_not_found"})
+		return
+	}
+	file := filepath.Join(uploadDir, name)
+	if _, err := os.Stat(file); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment_not_found"})
+		return
+	}
+	// The same guards as a user's own receipt: the bytes were sniffed on the
+	// way in, and they are never given a chance to run on the way out.
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'; img-src 'self'; object-src 'none'; sandbox")
+	c.Header("Cache-Control", "private, no-store")
+	c.File(file)
+}
 
 func (s *Server) listAdminFeedback(c *gin.Context) {
 	page, pageSize := parseBillingPagination(c.Query("page"), c.Query("page_size"))

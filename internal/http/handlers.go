@@ -178,6 +178,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.PATCH("/ai/abuse-blocks/:id", requireAdminRole(models.AdminRoleSupport), s.updateAIAbuseBlock)
 		admin.GET("/feedback", s.listAdminFeedback)
 		admin.GET("/feedback/stats", s.getAdminFeedbackStats)
+		admin.GET("/feedback/:id/attachments/:index", s.getAdminFeedbackAttachment)
 		admin.PATCH("/feedback/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminFeedback)
 		admin.GET("/analytics/signups", s.getAdminSignups)
 		admin.GET("/analytics/activation", s.getAdminActivation)
