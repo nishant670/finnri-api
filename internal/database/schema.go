@@ -390,6 +390,37 @@ func runtimeSchemaStatements() []string {
 			DROP CONSTRAINT IF EXISTS subscriptions_status_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_status_check CHECK (status IN ('active', 'paused', 'cancelled'))`,
+		// See migrations/0054_recurring_kinds.sql. The backfill is idempotent:
+		// it only touches rows still filed as plain subscriptions.
+		`ALTER TABLE subscriptions
+			ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'subscription',
+			ADD COLUMN IF NOT EXISTS loan_type VARCHAR(24),
+			ADD COLUMN IF NOT EXISTS lender VARCHAR(120),
+			ADD COLUMN IF NOT EXISTS principal NUMERIC(19,2) NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS annual_rate_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS processing_fee NUMERIC(19,2) NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS foreclosure_charge_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS start_date VARCHAR(10),
+			ADD COLUMN IF NOT EXISTS platform VARCHAR(120),
+			ADD COLUMN IF NOT EXISTS step_up_pct DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`UPDATE subscriptions SET kind = 'loan'
+			WHERE kind = 'subscription' AND (transaction_tag = 'EMI' OR total_instalments > 0)`,
+		`UPDATE subscriptions SET kind = 'investment'
+			WHERE kind = 'subscription' AND (transaction_tag = 'Investment' OR purpose_type = 'investment')`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_kind ON subscriptions (kind)`,
+		`ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS subscriptions_kind_check`,
+		`ALTER TABLE subscriptions
+			ADD CONSTRAINT subscriptions_kind_check
+			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill'))`,
+		// See migrations/0052_add_card_annual_fee.sql.
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS annual_fee NUMERIC(19,2) NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS fee_waiver_spend NUMERIC(19,2) NOT NULL DEFAULT 0`,
+		`ALTER TABLE accounts
+			DROP CONSTRAINT IF EXISTS accounts_annual_fee_non_negative_check`,
+		`ALTER TABLE accounts
+			ADD CONSTRAINT accounts_annual_fee_non_negative_check
+			CHECK (annual_fee >= 0 AND fee_waiver_spend >= 0)`,
 		// See migrations/0050_add_subscription_instalments.sql.
 		`ALTER TABLE subscriptions
 			ADD COLUMN IF NOT EXISTS total_instalments INTEGER NOT NULL DEFAULT 0,
@@ -603,6 +634,12 @@ func runtimeSchemaStatements() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status)`,
+		// See migrations/0055_payment_promotions.sql.
+		`ALTER TABLE payments
+			ADD COLUMN IF NOT EXISTS promotion_code VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS original_amount_minor BIGINT NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_payments_promotion
+			ON payments (promotion_code, status) WHERE promotion_code <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_payments_provider_payment
 			ON payments (provider, provider_payment_id) WHERE provider_payment_id <> ''`,
 		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check`,
@@ -1081,6 +1118,10 @@ func runtimeSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_entries_pending_refunds
 			ON entries (refund_expected_on, refund_reminder_at)
 			WHERE refund_status = 'pending'`,
+		// See migrations/0053_unique_annual_fee_reminder.sql.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_annual_fee_unique
+			ON notifications (user_id, type, action_url)
+			WHERE type = 'card.annual_fee'`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_refund_due_unique
 			ON notifications (user_id, type, action_url)
 			WHERE type = 'refund.due'`,
@@ -1089,7 +1130,7 @@ func runtimeSchemaStatements() []string {
 			WHERE LOWER(type) IN ('expense', 'income')`,
 		`UPDATE entries
 			SET source = LOWER(source)
-			WHERE LOWER(source) IN ('manual', 'text', 'voice')`,
+			WHERE LOWER(source) IN ('manual', 'text', 'voice', 'receipt')`,
 		`ALTER TABLE accounts
 			DROP CONSTRAINT IF EXISTS accounts_type_check`,
 		`ALTER TABLE accounts
@@ -1110,12 +1151,27 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE entries
 			DROP CONSTRAINT IF EXISTS entries_source_check`,
 		`ALTER TABLE entries
-			ADD CONSTRAINT entries_source_check CHECK (source IN ('manual', 'text', 'voice'))`,
+			ADD CONSTRAINT entries_source_check CHECK (source IN ('manual', 'text', 'voice', 'receipt'))`, // 'receipt': see migrations/0051_allow_receipt_entry_source.sql.
 		`ALTER TABLE entries
 			DROP CONSTRAINT IF EXISTS fk_entries_owned_account`,
 		`ALTER TABLE entries
 			ADD CONSTRAINT fk_entries_owned_account
 			FOREIGN KEY (user_id, account_id) REFERENCES accounts(user_id, id)`,
+		// See migrations/0056_quick_prompt_details.sql.
+		`ALTER TABLE quick_prompts
+			ADD COLUMN IF NOT EXISTS type VARCHAR(10) NOT NULL DEFAULT 'expense',
+			ADD COLUMN IF NOT EXISTS account_id BIGINT,
+			ADD COLUMN IF NOT EXISTS merchant TEXT NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS tag TEXT NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE quick_prompts DROP CONSTRAINT IF EXISTS quick_prompts_type_check`,
+		`ALTER TABLE quick_prompts
+			ADD CONSTRAINT quick_prompts_type_check CHECK (type IN ('expense', 'income'))`,
+		`ALTER TABLE quick_prompts DROP CONSTRAINT IF EXISTS fk_quick_prompts_account`,
+		`ALTER TABLE quick_prompts
+			ADD CONSTRAINT fk_quick_prompts_account
+			FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_quick_prompts_account_id ON quick_prompts (account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_split_friends_user_archived
 			ON split_friends (user_id, archived, name)`,
 		`ALTER TABLE split_bills
@@ -1330,6 +1386,17 @@ func runtimeSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_split_settlements_counterparty_status
 			ON split_settlements (counterparty_user_id, status)
 			WHERE counterparty_user_id IS NOT NULL`,
+		// See migrations/0058_feedback_attachments.sql.
+		`ALTER TABLE feedbacks
+			ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'::jsonb`,
+		// See migrations/0057_settlement_payment_mode.sql.
+		`ALTER TABLE split_settlements
+			ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(24) NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_settlements
+			DROP CONSTRAINT IF EXISTS split_settlements_payment_mode_check`,
+		`ALTER TABLE split_settlements
+			ADD CONSTRAINT split_settlements_payment_mode_check
+			CHECK (payment_mode IN ('', 'cash', 'upi', 'bank_transfer', 'card', 'wallet', 'other'))`,
 		`CREATE TABLE IF NOT EXISTS split_friend_merges (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

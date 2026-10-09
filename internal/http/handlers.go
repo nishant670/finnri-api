@@ -178,6 +178,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.PATCH("/ai/abuse-blocks/:id", requireAdminRole(models.AdminRoleSupport), s.updateAIAbuseBlock)
 		admin.GET("/feedback", s.listAdminFeedback)
 		admin.GET("/feedback/stats", s.getAdminFeedbackStats)
+		admin.GET("/feedback/:id/attachments/:index", s.getAdminFeedbackAttachment)
 		admin.PATCH("/feedback/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminFeedback)
 		admin.GET("/analytics/signups", s.getAdminSignups)
 		admin.GET("/analytics/activation", s.getAdminActivation)
@@ -197,6 +198,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	authorized.Use(AuthMiddleware())
 	{
 		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
+		authorized.POST("/parse/receipt", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParseReceipt)
 		authorized.POST("/entries", s.saveEntry)
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)
@@ -221,6 +223,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 		// Billing and AI credit visibility
 		authorized.GET("/billing/status", s.getBillingStatus)
+		authorized.GET("/billing/payments", s.listBillingPayments)
 		authorized.POST("/billing/checkout", s.createBillingCheckout)
 		authorized.POST("/billing/lifetime-quote/request", s.requestLifetimeQuote)
 		authorized.GET("/ai/usage", s.listAIUsage)
@@ -237,9 +240,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Credit card statements
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
+		authorized.POST("/accounts/:id/statements/read", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.readCardStatement)
 		authorized.POST("/accounts/:id/statements/alert", jsonRequestLimits(cfg), rateLimit(cfg, "ai"), s.importCardStatementAlert)
 		authorized.GET("/statements/upcoming", s.listUpcomingStatements)
 		authorized.GET("/statements/:id", s.getCardStatement)
+		authorized.PATCH("/statements/:id", jsonRequestLimits(cfg), s.updateCardStatement)
 		authorized.DELETE("/statements/:id", s.deleteCardStatement)
 		authorized.POST("/statements/:id/payments", s.recordCardStatementPayment)
 		authorized.DELETE("/statements/:id/payments/:paymentId", s.deleteCardStatementPayment)
@@ -282,6 +287,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// Subscriptions
 		authorized.POST("/subscriptions", s.createSubscription)
 		authorized.GET("/subscriptions", s.listSubscriptions)
+		authorized.GET("/recurring", s.listRecurring)
 		authorized.POST("/subscriptions/reminders", s.requireEntitlement(billing.FeatureSubscriptionReminders), s.createSubscriptionReminders)
 		authorized.POST("/subscriptions/sync", s.syncSubscriptionAutomationNow)
 		authorized.PUT("/subscriptions/:id", s.updateSubscription)
@@ -391,6 +397,10 @@ func skipsStaticBearer(path string) bool {
 		// dismiss, snooze and track from the app answers 401 — which is what
 		// happened to the decision endpoint from the day it shipped.
 		strings.HasPrefix(path, "/v1/recurring-candidates") ||
+		// The Recurring tab's overview. "/v1/recurring" is not covered by the
+		// candidates line above, and gating it would answer 401 in every
+		// deployed environment.
+		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
@@ -1483,9 +1493,9 @@ func (s *Server) listQuickPrompts(c *gin.Context) {
 	// Seed default prompts if none exist
 	if len(prompts) == 0 {
 		defaults := []models.QuickPrompt{
-			{UserID: userID, Title: "Morning Coffee", Amount: 150, Mode: "Cash", Category: "Food & Drinks", Icon: "coffee-outline"},
-			{UserID: userID, Title: "Metro Recharge", Amount: 500, Mode: "UPI", Category: "Travel", Icon: "train"},
-			{UserID: userID, Title: "Car Fuel", Amount: 3000, Mode: "Credit Card", Category: "Transport", Icon: "gas-station-outline"},
+			{UserID: userID, Title: "Morning Coffee", Type: "expense", Amount: 150, Mode: "Cash", Category: "Food & Drinks", Icon: "coffee-outline"},
+			{UserID: userID, Title: "Metro Recharge", Type: "expense", Amount: 500, Mode: "UPI", Category: "Travel", Icon: "train"},
+			{UserID: userID, Title: "Car Fuel", Type: "expense", Amount: 3000, Mode: "Credit Card", Category: "Transport", Icon: "gas-station-outline"},
 		}
 		for _, p := range defaults {
 			database.DB.Create(&p)
@@ -1506,7 +1516,15 @@ func (s *Server) saveQuickPrompt(c *gin.Context) {
 		return
 	}
 
+	prompt.ID = 0
 	prompt.UserID = userID
+	if fields, err := normalizeQuickPrompt(&prompt, userID); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_quick_prompt", "fields": fields})
+		return
+	}
 	if err := database.DB.Create(&prompt).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -1536,12 +1554,56 @@ func (s *Server) updateQuickPrompt(c *gin.Context) {
 
 	prompt.ID = uint(id)
 	prompt.UserID = userID
+	if fields, err := normalizeQuickPrompt(&prompt, userID); err != nil {
+		c.JSON(500, gin.H{"error": "account_lookup_failed"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_quick_prompt", "fields": fields})
+		return
+	}
 	if err := database.DB.Save(&prompt).Error; err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(200, prompt)
+}
+
+// normalizeQuickPrompt tidies what was typed and checks what the prompt points
+// at, returning field errors in the shape the entry endpoints use.
+//
+// An update binds onto the stored row, so a field the client leaves out keeps
+// its value — which is what lets an app build that predates these fields edit
+// a prompt without wiping the account, merchant, tag or notes set elsewhere.
+func normalizeQuickPrompt(prompt *models.QuickPrompt, userID uint) (gin.H, error) {
+	prompt.Title = strings.TrimSpace(prompt.Title)
+	prompt.Merchant = strings.TrimSpace(prompt.Merchant)
+	prompt.Tag = strings.TrimSpace(prompt.Tag)
+	prompt.Notes = strings.TrimSpace(prompt.Notes)
+	prompt.Type = strings.ToLower(strings.TrimSpace(prompt.Type))
+	if prompt.Type == "" {
+		prompt.Type = "expense"
+	}
+
+	fields := gin.H{}
+	if prompt.Type != "expense" && prompt.Type != "income" {
+		fields["type"] = "must be expense or income"
+	}
+	if prompt.AccountID != nil && *prompt.AccountID == 0 {
+		prompt.AccountID = nil
+	}
+	if prompt.AccountID != nil {
+		var count int64
+		if err := database.DB.Model(&models.Account{}).
+			Where("user_id = ? AND id = ?", userID, *prompt.AccountID).
+			Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count == 0 {
+			fields["account_id"] = "must belong to the current user"
+		}
+	}
+	return fields, nil
 }
 
 func (s *Server) deleteQuickPrompt(c *gin.Context) {
@@ -1992,8 +2054,13 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_load_card_statements"})
 		return
 	}
-	today := truncateDate(timepkg.Now().In(location)).Format(apiDateLayout)
-	c.JSON(200, summariseAccounts(accounts, totals, statements, today))
+	now := timepkg.Now().In(location)
+	summarised := summariseAccounts(accounts, totals, statements, truncateDate(now).Format(apiDateLayout))
+	if err := attachAnnualFeeStatus(summarised, now); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_annual_fee"})
+		return
+	}
+	c.JSON(200, summarised)
 }
 
 func (s *Server) updateAccount(c *gin.Context) {

@@ -34,9 +34,13 @@ type accountInput struct {
 	CreditLimit     models.Money `json:"credit_limit"`
 	DueDay          int          `json:"due_day"`
 	FeeMonth        string       `json:"fee_month"`
-	Balance         models.Money `json:"balance"`
-	IsDefault       bool         `json:"is_default"`
-	AutoCreated     bool         `json:"auto_created"`
+	// Pointers for the same reason as StatementDay below: an older client
+	// that does not know these fields must not reset them by omission.
+	AnnualFee      *models.Money `json:"annual_fee"`
+	FeeWaiverSpend *models.Money `json:"fee_waiver_spend"`
+	Balance        models.Money  `json:"balance"`
+	IsDefault      bool          `json:"is_default"`
+	AutoCreated    bool          `json:"auto_created"`
 
 	// Card statement settings are pointers so that omitting them means "leave
 	// as is" rather than "reset to zero". The app sends the whole account back
@@ -94,6 +98,12 @@ func (input accountInput) validate() map[string]string {
 	}
 	if input.CreditLimit < 0 {
 		fields["credit_limit"] = "must not be negative"
+	}
+	if input.AnnualFee != nil && *input.AnnualFee < 0 {
+		fields["annual_fee"] = "must not be negative"
+	}
+	if input.FeeWaiverSpend != nil && *input.FeeWaiverSpend < 0 {
+		fields["fee_waiver_spend"] = "must not be negative"
 	}
 	if input.DueDay < 0 || input.DueDay > 31 {
 		fields["due_day"] = "must be between 1 and 31"
@@ -173,6 +183,12 @@ func (input accountInput) apply(account *models.Account) {
 
 	if input.StatementDay != nil {
 		account.StatementDay = *input.StatementDay
+	}
+	if input.AnnualFee != nil {
+		account.AnnualFee = *input.AnnualFee
+	}
+	if input.FeeWaiverSpend != nil {
+		account.FeeWaiverSpend = *input.FeeWaiverSpend
 	}
 	if input.ReminderDaysBefore != nil {
 		account.ReminderDaysBefore = *input.ReminderDaysBefore

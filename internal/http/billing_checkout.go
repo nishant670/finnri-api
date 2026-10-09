@@ -38,6 +38,10 @@ type checkoutOrderResponse struct {
 	// mobile app opens it in a browser tab rather than building the URL
 	// itself, so the web origin is configured server-side in one place.
 	CheckoutURL string `json:"checkout_url,omitempty"`
+	// Set when the order is priced under an offer, so a pay page can show
+	// the regular price struck through beside what is being charged.
+	OriginalAmountMinor int64  `json:"original_amount_minor,omitempty"`
+	OfferLabel          string `json:"offer_label,omitempty"`
 }
 
 // publicCheckoutOrderResponse is what the hosted pay page reads to render an
@@ -58,6 +62,9 @@ type publicCheckoutOrderResponse struct {
 	// Status lets the page say "already paid" instead of opening a second
 	// checkout for an order the webhook has already settled.
 	Status string `json:"status"`
+
+	OriginalAmountMinor int64  `json:"original_amount_minor,omitempty"`
+	OfferLabel          string `json:"offer_label,omitempty"`
 }
 
 // checkoutOrderReuseWindow lets a double-click, a back-button, or a reloaded
@@ -141,6 +148,30 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 	}
 	amountMinor := *plan.PriceMinor
 
+	// The launch price is decided here and only here. The app's displayed
+	// price is a courtesy; this is what Razorpay will be asked to collect.
+	promotionCode := ""
+	originalAmountMinor := int64(0)
+	if launchOfferApplies(plan.BillingInterval) {
+		offer, err := s.currentLaunchOffer(time.Now())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_launch_offer"})
+			return
+		}
+		if offer.Active {
+			used, err := userHasUsedLaunchOffer(user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_launch_offer"})
+				return
+			}
+			if !used {
+				promotionCode = launchOfferCode
+				originalAmountMinor = amountMinor
+				amountMinor = launchOfferPriceMinor(amountMinor)
+			}
+		}
+	}
+
 	// payments.plan_id is a foreign key, so the plan has to exist as a row.
 	// findPublicBillingPlan falls back to the in-code catalogue when the table
 	// is empty, and an order created against that would have nothing to point
@@ -170,6 +201,7 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 		Notes: map[string]string{
 			"user_id":   fmt.Sprintf("%d", user.ID),
 			"plan_code": plan.Code,
+			"promotion": promotionCode,
 		},
 	})
 	if err != nil {
@@ -187,6 +219,9 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 		AmountMinor:     amountMinor,
 		Currency:        plan.Currency,
 		Receipt:         order.Receipt,
+
+		PromotionCode:       promotionCode,
+		OriginalAmountMinor: originalAmountMinor,
 	}
 	if err := database.DB.Create(&payment).Error; err != nil {
 		// The order exists at Razorpay but we cannot track it. Refusing here
@@ -247,14 +282,16 @@ func (s *Server) getBillingCheckoutOrder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, publicCheckoutOrderResponse{
-		Provider:    payment.Provider,
-		OrderID:     payment.ProviderOrderID,
-		KeyID:       s.razorpayClient().KeyID(),
-		AmountMinor: payment.AmountMinor,
-		Currency:    payment.Currency,
-		PlanCode:    plan.Code,
-		PlanName:    plan.Name,
-		Status:      payment.Status,
+		Provider:            payment.Provider,
+		OrderID:             payment.ProviderOrderID,
+		KeyID:               s.razorpayClient().KeyID(),
+		AmountMinor:         payment.AmountMinor,
+		OriginalAmountMinor: payment.OriginalAmountMinor,
+		OfferLabel:          offerLabelFor(payment.PromotionCode),
+		Currency:            payment.Currency,
+		PlanCode:            plan.Code,
+		PlanName:            plan.Name,
+		Status:              payment.Status,
 	})
 }
 
@@ -274,6 +311,9 @@ func (s *Server) checkoutResponse(payment models.Payment, plan billingPlanRespon
 		PaymentID:   payment.ID,
 		SuccessURL:  successURL,
 		CheckoutURL: s.hostedCheckoutURL(payment.ProviderOrderID),
+
+		OriginalAmountMinor: payment.OriginalAmountMinor,
+		OfferLabel:          offerLabelFor(payment.PromotionCode),
 	}
 }
 

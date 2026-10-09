@@ -70,13 +70,12 @@ func (s *Server) diffCardStatement(c *gin.Context) {
 		return
 	}
 
-	entries, err := loadCycleLedgerLines(statement)
+	diff, err := buildStatementDiff(statement, input.Lines)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_cycle_entries"})
 		return
 	}
-
-	c.JSON(http.StatusOK, diffStatementLines(input.Lines, entries))
+	c.JSON(http.StatusOK, diff)
 }
 
 // importCardStatementLines creates entries for the rows the user picked.
@@ -163,16 +162,29 @@ func loadStatementForRequest(c *gin.Context, userID uint) (*models.CardStatement
 	return &statement, true
 }
 
-// loadCycleLedgerLines is what Finnri holds for a statement's cycle, reduced
-// to what matching needs.
+// ledgerMatchMarginDays widens the ledger load on both sides of the cycle.
+// A purchase logged on the day it happened, two days before the cycle opened,
+// can still be the line the bank posted on the cycle's first day. Leaving it
+// out reported that line as missing and invited a duplicate import.
+const ledgerMatchMarginDays = 7
+
+// loadCycleLedgerLines is what Finnri holds for a statement's cycle, plus the
+// margin either side, reduced to what matching needs. Entries in the margin
+// are marked OutsideCycle: they may match, but are never reported as extra.
 //
 // The unitemized bucket is excluded. It is Finnri's own placeholder for money
-// it could not explain, not a transaction the bank billed, and leaving it in
-// would let it match a real statement line and hide a genuine gap.
+// it could not explain, not a transaction the bank billed.
 func loadCycleLedgerLines(statement *models.CardStatement) ([]ledgerLine, error) {
+	from, to := statement.CycleStart, statement.CycleEnd
+	if start, err := parseAPIDate(statement.CycleStart); err == nil {
+		from = start.AddDate(0, 0, -ledgerMatchMarginDays).Format("2006-01-02")
+	}
+	if end, err := parseAPIDate(statement.CycleEnd); err == nil {
+		to = end.AddDate(0, 0, ledgerMatchMarginDays).Format("2006-01-02")
+	}
 	query := database.DB.Model(&models.Entry{}).
 		Where("user_id = ? AND account_id = ? AND date >= ? AND date <= ?",
-			statement.UserID, statement.AccountID, statement.CycleStart, statement.CycleEnd)
+			statement.UserID, statement.AccountID, from, to)
 
 	if statement.UnitemizedEntryID != nil {
 		query = query.Where("id <> ?", *statement.UnitemizedEntryID)
@@ -185,18 +197,59 @@ func loadCycleLedgerLines(statement *models.CardStatement) ([]ledgerLine, error)
 
 	lines := make([]ledgerLine, 0, len(entries))
 	for _, entry := range entries {
+		date := dateOnly(entry.Date)
 		lines = append(lines, ledgerLine{
-			EntryID:  entry.ID,
-			Date:     dateOnly(entry.Date),
-			Title:    entry.Title,
-			Merchant: entry.Merchant,
-			Category: entry.Category,
-			Amount:   entry.Amount,
-			Type:     strings.ToLower(entry.Type),
-			Tag:      entry.Tag,
+			EntryID:      entry.ID,
+			Date:         date,
+			Title:        entry.Title,
+			Merchant:     entry.Merchant,
+			Category:     entry.Category,
+			Amount:       entry.Amount,
+			Type:         strings.ToLower(entry.Type),
+			Tag:          entry.Tag,
+			OutsideCycle: date < statement.CycleStart || date > statement.CycleEnd,
 		})
 	}
 	return lines, nil
+}
+
+// buildStatementDiff is the one comparison every intake route returns: the
+// matched, probable, missing and extra buckets, whether the rows add up to the
+// bill, and where the ledger stands against the bill before any import.
+func buildStatementDiff(statement *models.CardStatement, lines []statementLine) (statementDiff, error) {
+	entries, err := loadCycleLedgerLines(statement)
+	if err != nil {
+		return statementDiff{}, err
+	}
+	diff := diffStatementLines(lines, entries)
+
+	// A draft has no amount yet, so there is nothing to add up to.
+	if statement.Status == statementStatusDraft || statement.TotalDue <= 0 {
+		return diff, nil
+	}
+	opening, err := loadPreviousStatementTotal(statement.UserID, statement.AccountID, statement.StatementDate)
+	if err != nil {
+		return statementDiff{}, err
+	}
+	checksum := checksumStatementLines(lines, statement.TotalDue, opening)
+	diff.Checksum = &checksum
+
+	itemized, count, err := loadCycleItemizedTotal(
+		statement.UserID, statement.AccountID, statement.CycleStart, statement.CycleEnd, statement.UnitemizedEntryID,
+	)
+	if err != nil {
+		return statementDiff{}, err
+	}
+	previousUnpaid, err := loadPreviousUnpaid(statement.UserID, statement.AccountID, statement.StatementDate)
+	if err != nil {
+		return statementDiff{}, err
+	}
+	reconciliation := computeReconciliation(statement.TotalDue, itemized, previousUnpaid)
+	reconciliation.CycleStart = statement.CycleStart
+	reconciliation.CycleEnd = statement.CycleEnd
+	reconciliation.EntriesCount = count
+	diff.Reconciliation = &reconciliation
+	return diff, nil
 }
 
 // buildEntryFromStatementLine turns an imported row into a transaction.
@@ -325,11 +378,11 @@ func (s *Server) uploadCardStatementPDF(c *gin.Context) {
 		return
 	}
 
-	entries, err := loadCycleLedgerLines(statement)
+	diff, err := buildStatementDiff(statement, lines)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_cycle_entries"})
 		return
 	}
-
-	c.JSON(http.StatusOK, diffStatementLines(lines, entries))
+	diff.Source = "pdf"
+	c.JSON(http.StatusOK, diff)
 }

@@ -133,9 +133,9 @@ func validateEntryValues(amount models.Money, title, entryType, currency, source
 		fields["currency"] = "must be INR"
 	}
 	switch strings.ToLower(strings.TrimSpace(source)) {
-	case "", "manual", "text", "voice":
+	case "", "manual", "text", "voice", "receipt":
 	default:
-		fields["source"] = "must be manual, text, or voice"
+		fields["source"] = "must be manual, text, voice, or receipt"
 	}
 	if strings.TrimSpace(title) == "" {
 		fields["title"] = "is required"
