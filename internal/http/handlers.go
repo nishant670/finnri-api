@@ -863,6 +863,9 @@ func (s *Server) finalizeParseSuccess(
 		CompletionTokens: completion,
 		TotalTokens:      total,
 	}
+	if reported.Model != "" {
+		providerUsage.Model = reported.Model
+	}
 	if audioSize > 0 {
 		providerUsage.SecondaryProvider = "openai"
 		providerUsage.SecondaryModel = s.cfg.OpenAIWhisper

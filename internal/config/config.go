@@ -9,24 +9,32 @@ import (
 )
 
 type Config struct {
-	Port                     string
-	AllowOrigins             string
-	AuthBearer               string
-	AuthSessionTTLDays       int
-	TZDefault                string
-	OpenAIKey                string
-	OpenAIBaseURL            string
-	OpenAILlmModel           string
-	OpenAIWhisper            string
-	OpenAIMaxTokens          int
-	OpenAIStatementMaxTokens int
-	ReqTimeoutSec            int
-	RateLimitRPS             float64
-	RateLimitBurst           int
-	MaxJSONKB                int64
-	MaxUploadMB              int64
-	MaxTranscriptChars       int
-	AIParseDisabled          bool
+	Port               string
+	AllowOrigins       string
+	AuthBearer         string
+	AuthSessionTTLDays int
+	TZDefault          string
+	OpenAIKey          string
+	OpenAIBaseURL      string
+	OpenAILlmModel     string
+	OpenAIWhisper      string
+	// OpenAIVisionModel reads bill and receipt photos. It is separate from
+	// OpenAILlmModel because reading a photographed bill is the one job where
+	// the small text model falls short: gpt-4o-mini took the amount from an
+	// unrelated card slip lying on the bill, at full confidence.
+	OpenAIVisionModel string
+	// OpenAIVisionReasoningEffort is sent only when OPENAI_VISION_MODEL names a
+	// reasoning model (gpt-5 or o-series); the default model ignores it.
+	OpenAIVisionReasoningEffort string
+	OpenAIMaxTokens             int
+	OpenAIStatementMaxTokens    int
+	ReqTimeoutSec               int
+	RateLimitRPS                float64
+	RateLimitBurst              int
+	MaxJSONKB                   int64
+	MaxUploadMB                 int64
+	MaxTranscriptChars          int
+	AIParseDisabled             bool
 	// LaunchOfferStartsAt switches the launch offer on. Unset means no offer:
 	// the API is shared with builds already in testing, so the offer starts
 	// when someone sets this, never merely because the code was deployed.
@@ -171,6 +179,8 @@ func Load() *Config {
 		OpenAIBaseURL:                   getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 		OpenAILlmModel:                  getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
 		OpenAIWhisper:                   getenv("OPENAI_WHISPER_MODEL", "gpt-4o-mini-transcribe"),
+		OpenAIVisionModel:               getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini"),
+		OpenAIVisionReasoningEffort:     getenv("OPENAI_VISION_REASONING_EFFORT", "low"),
 		OpenAIMaxTokens:                 atoi("OPENAI_MAX_OUTPUT_TOKENS", 600),
 		OpenAIStatementMaxTokens:        atoi("OPENAI_STATEMENT_MAX_OUTPUT_TOKENS", 4000),
 		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),

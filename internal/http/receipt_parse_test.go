@@ -13,7 +13,10 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 
 	"finnri/internal/ai"
+	"finnri/internal/billing"
 	"finnri/internal/config"
+	"finnri/internal/database"
+	"finnri/internal/models"
 )
 
 type fixtureReceiptParser struct {
@@ -143,5 +146,156 @@ func TestParseReceiptForeignCurrencyStaysSaveable(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "This bill is in USD") {
 		t.Fatalf("expected a clarification naming the currency: %s", response.Body.String())
+	}
+}
+
+func receiptDraftFromResponse(t *testing.T, response *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var draft map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	return draft
+}
+
+func TestParseReceiptFlagsAnAmountFromAPhotoWithUnrelatedPapers(t *testing.T) {
+	// The reported case: a petrol bill with an unrelated HDFC card slip on top.
+	server := newReceiptServer(t, `{
+		"summary":"Bharat Petroleum bill, Rs 3301, 9 Oct","documents_in_photo":2,"other_papers":"unrelated",
+		"other_papers_detail":[{"shop":"Anand Medicos","amount":7647.6,"date":"2026-10-05"}],
+		"total_label":"Amount (Rs)","total_as_printed":"3301.00",
+		"type":"expense","title":"Petrol","amount":3301,"currency":"INR","category":"Transport",
+		"mode":"Credit Card","account_hint":"HDFC","card_network":"Visa",
+		"merchant":"Bharat Petroleum","date":"2026-10-09","confidence":{"amount":0.98}
+	}`)
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+
+	server.handleParseReceipt(ctx)
+
+	draft := receiptDraftFromResponse(t, response)
+	if confirm, _ := draft["needs_confirmation"].(map[string]any); confirm["amount"] != true {
+		t.Fatalf("amount should be flagged: %v", draft["needs_confirmation"])
+	}
+	if confidence, _ := draft["confidence"].(map[string]any); confidence["amount"].(float64) > 0.5 {
+		t.Fatalf("confidence should be capped, got %v", confidence["amount"])
+	}
+	if !strings.Contains(response.Body.String(), "another receipt (Anand Medicos, ₹7,647.60)") {
+		t.Fatalf("expected a clarification naming the other receipt: %s", response.Body.String())
+	}
+	// Which paper named HDFC cannot be told, so no account is offered from it.
+	if _, kept := draft["account_hint"]; kept {
+		t.Fatalf("account_hint should be dropped with an unrelated paper in the photo: %v", draft["account_hint"])
+	}
+	if _, kept := draft["card_network"]; kept {
+		t.Fatalf("card_network should be dropped too: %v", draft["card_network"])
+	}
+	for _, key := range []string{"documents_in_photo", "other_papers", "other_papers_detail", "total_label", "total_as_printed"} {
+		if _, leaked := draft[key]; leaked {
+			t.Fatalf("%s should be stripped from the draft", key)
+		}
+	}
+}
+
+func TestParseReceiptTrustsAMatchingCardSlip(t *testing.T) {
+	server := newReceiptServer(t, `{
+		"summary":"Bharat Petroleum bill, Rs 3301, 9 Oct","documents_in_photo":2,"other_papers":"same_purchase",
+		"other_papers_detail":[{"shop":"HDFC Bank","amount":3301,"date":"2026-10-09"}],
+		"total_label":"Amount (Rs)","total_as_printed":"Rs 3,301.00",
+		"type":"expense","title":"Petrol","amount":3301,"currency":"INR","mode":"Credit Card","account_hint":"HDFC",
+		"merchant":"Bharat Petroleum","date":"2026-10-09","confidence":{"amount":0.98}
+	}`)
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+
+	server.handleParseReceipt(ctx)
+
+	draft := receiptDraftFromResponse(t, response)
+	if confirm, _ := draft["needs_confirmation"].(map[string]any); confirm["amount"] == true {
+		t.Fatalf("a bill with its own card slip should not be flagged: %v", draft)
+	}
+	if draft["account_hint"] != "HDFC" {
+		t.Fatalf("the bill's own card slip should keep its bank, got %v", draft["account_hint"])
+	}
+}
+
+func TestParseReceiptDoesNotTakeSamePurchaseOnTrustWhenTotalsDiffer(t *testing.T) {
+	server := newReceiptServer(t, `{
+		"summary":"Bharat Petroleum bill, Rs 3301","documents_in_photo":2,"other_papers":"same_purchase",
+		"other_papers_detail":[{"shop":null,"amount":7647.6,"date":null}],
+		"type":"expense","title":"Petrol","amount":3301,"currency":"INR","account_hint":"HDFC",
+		"merchant":"Bharat Petroleum","date":"2026-10-09","confidence":{"amount":0.98}
+	}`)
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+
+	server.handleParseReceipt(ctx)
+
+	draft := receiptDraftFromResponse(t, response)
+	if confirm, _ := draft["needs_confirmation"].(map[string]any); confirm["amount"] != true {
+		t.Fatalf("a second paper with a different total is not the same purchase: %v", draft)
+	}
+	if !strings.Contains(response.Body.String(), "another receipt (₹7,647.60)") {
+		t.Fatalf("expected the other total in the clarification: %s", response.Body.String())
+	}
+}
+
+func TestParseReceiptFlagsAnAmountThatDisagreesWithThePrintedTotal(t *testing.T) {
+	server := newReceiptServer(t, `{
+		"summary":"PhonePe payment, Rs 450","documents_in_photo":1,"other_papers":"none",
+		"total_label":"Paid","total_as_printed":"₹450",
+		"type":"expense","title":"Groceries","amount":1450,"currency":"INR","mode":"UPI",
+		"merchant":"Ramesh Kirana","date":"2026-10-11","confidence":{"amount":0.9}
+	}`)
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+
+	server.handleParseReceipt(ctx)
+
+	draft := receiptDraftFromResponse(t, response)
+	if confirm, _ := draft["needs_confirmation"].(map[string]any); confirm["amount"] != true {
+		t.Fatalf("1450 against a printed ₹450 should be flagged: %v", draft["needs_confirmation"])
+	}
+}
+
+func TestParseReceiptUnreadablePhotoCostsNothing(t *testing.T) {
+	server := newReceiptServer(t, `{"summary":"A photo of a cat","amount":null,"clarifications":["No bill found"]}`)
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+	user, _ := ctx.Get("user")
+	creditService := billing.NewCreditService(database.DB)
+	subject := billing.SubjectForUser(user.(*models.User).ID)
+	before, err := creditService.CheckAllowance(subject, ai.ActionTransactionParseReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.handleParseReceipt(ctx)
+
+	if response.Code != 422 || !strings.Contains(response.Body.String(), `"credits_charged":0`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	after, err := creditService.CheckAllowance(subject, ai.ActionTransactionParseReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.AvailableCredits != before.AvailableCredits || after.DailyRemaining != before.DailyRemaining {
+		t.Fatalf("credits moved: before %+v, after %+v", before, after)
+	}
+}
+
+func TestParsePrintedAmount(t *testing.T) {
+	cases := map[string]float64{
+		"3301.00": 3301, "Rs 3,301.00": 3301, "₹450": 450, "1,26,560.00": 126560,
+		"INR 548.5": 548.5, "Total (2 items) 548": 548,
+	}
+	for printed, want := range cases {
+		got, ok := parsePrintedAmount(printed)
+		if !ok || got != want {
+			t.Errorf("parsePrintedAmount(%q) = %v, %v; want %v", printed, got, ok, want)
+		}
+	}
+	for _, printed := range []string{"", "Rs", "0.00"} {
+		if _, ok := parsePrintedAmount(printed); ok {
+			t.Errorf("parsePrintedAmount(%q) should not read a figure", printed)
+		}
 	}
 }

@@ -13,6 +13,10 @@ type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// Model is the model that answered, when a caller can choose between more
+	// than one (receipt reading falls back to the text model). Empty means the
+	// caller's configured default.
+	Model string
 }
 
 // Reported says whether the provider actually told us what the call cost.
