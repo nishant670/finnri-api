@@ -1922,8 +1922,13 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		return
 	}
 
+	// Bare rows: the feed is sorted and paged on a bill's date, title and
+	// author alone. Its participants and group are loaded below for the page
+	// being returned, not for every bill the user has ever split — which is
+	// what every page used to pay for, and the app now reads the feed a page
+	// at a time all the way to the end.
 	var bills []models.SplitBill
-	billQuery := database.DB.Preload("Group").Preload("Participants.Friend")
+	billQuery := database.DB.Model(&models.SplitBill{})
 	if len(accessibleGroupIDs) > 0 {
 		billQuery = billQuery.Where(
 			"(split_bills.user_id = ? AND split_bills.group_id IS NULL) OR split_bills.group_id IN ?",
@@ -2054,21 +2059,16 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	for _, bill := range bills {
 		amount := bill.TotalAmount
 		item := splitActivityItem{
-			ID:               fmt.Sprintf("bill-%d", bill.ID),
-			Type:             "bill",
-			RecordID:         bill.ID,
-			Title:            bill.Title,
-			Date:             bill.Date,
-			Amount:           &amount,
-			GroupID:          bill.GroupID,
-			ParticipantCount: len(bill.Participants),
-			Participants:     bill.Participants,
-			Notes:            bill.Notes,
-			ActorName:        actorName(bill.GroupID, bill.UserID),
-			CreatedAt:        bill.CreatedAt,
-		}
-		if bill.Group != nil && bill.Group.ID != 0 {
-			item.Group = bill.Group
+			ID:        fmt.Sprintf("bill-%d", bill.ID),
+			Type:      "bill",
+			RecordID:  bill.ID,
+			Title:     bill.Title,
+			Date:      bill.Date,
+			Amount:    &amount,
+			GroupID:   bill.GroupID,
+			Notes:     bill.Notes,
+			ActorName: actorName(bill.GroupID, bill.UserID),
+			CreatedAt: bill.CreatedAt,
 		}
 		items = append(items, item)
 	}
@@ -2204,12 +2204,55 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	if end > total {
 		end = total
 	}
+	pageItems := items[start:end]
+	if err := hydrateSplitActivityBills(database.DB, pageItems); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"items":     items[start:end],
+		"items":     pageItems,
 		"page":      page,
 		"page_size": pageSize,
 		"total":     total,
 	})
+}
+
+// hydrateSplitActivityBills fills in the participants and group of the bill
+// rows on one page of the feed, in two queries however long the page is.
+func hydrateSplitActivityBills(db *gorm.DB, items []splitActivityItem) error {
+	billIDs := make([]uint, 0, len(items))
+	for _, item := range items {
+		if item.Type == "bill" {
+			billIDs = append(billIDs, item.RecordID)
+		}
+	}
+	if len(billIDs) == 0 {
+		return nil
+	}
+	var bills []models.SplitBill
+	if err := db.Preload("Group").Preload("Participants.Friend").
+		Where("id IN ?", billIDs).Find(&bills).Error; err != nil {
+		return err
+	}
+	byID := make(map[uint]models.SplitBill, len(bills))
+	for _, bill := range bills {
+		byID[bill.ID] = bill
+	}
+	for i := range items {
+		if items[i].Type != "bill" {
+			continue
+		}
+		bill, ok := byID[items[i].RecordID]
+		if !ok {
+			continue
+		}
+		items[i].Participants = bill.Participants
+		items[i].ParticipantCount = len(bill.Participants)
+		if bill.Group != nil && bill.Group.ID != 0 {
+			items[i].Group = bill.Group
+		}
+	}
+	return nil
 }
 
 func (s *Server) listSplitBalances(c *gin.Context) {
