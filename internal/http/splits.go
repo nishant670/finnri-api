@@ -137,8 +137,13 @@ type splitActivityItem struct {
 	// difference the person being asked to agree most needs to see.
 	Status string `json:"status,omitempty"`
 	// How a settlement was paid, on settlement rows only.
-	PaymentMode string    `json:"payment_mode,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	PaymentMode string `json:"payment_mode,omitempty"`
+	// On settlement rows: the group it settled, by name, so a history of
+	// payments between two people can say which shared ledger each one closed.
+	GroupName string `json:"group_name,omitempty"`
+	// On settlement rows: when the other side confirmed or denied it.
+	RespondedAt *time.Time `json:"responded_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type splitGroupInviteResponse struct {
@@ -1880,6 +1885,23 @@ func (s *Server) listSplitSettlements(c *gin.Context) {
 func (s *Server) listSplitActivity(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	page, pageSize := parseBillingPagination(c.Query("page"), c.Query("page_size"))
+	// Optional narrowing, applied before paging so a filtered page is a full
+	// one. A friend's page asks for type=settlement&friend_id=N: every payment
+	// between the viewer and that one person, whichever of them recorded it and
+	// whether or not the other side agreed.
+	typeFilter := strings.TrimSpace(c.Query("type"))
+	var friendFilter uint
+	if raw := strings.TrimSpace(c.Query("friend_id")); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil || parsed == 0 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":  "invalid_filters",
+				"fields": gin.H{"friend_id": "must be a positive integer"},
+			})
+			return
+		}
+		friendFilter = uint(parsed)
+	}
 
 	// Activity is a history of the ledger the user still has, not of everything
 	// that ever happened to it. A deleted group kept narrating itself here —
@@ -1992,6 +2014,21 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	for _, friend := range friends {
 		friendsByID[friend.ID] = friend
 	}
+	groupNames := map[uint]string{}
+	for _, group := range groups {
+		groupNames[group.ID] = group.Name
+	}
+	for _, membership := range sharedMemberships {
+		if membership.Group.ID != 0 {
+			groupNames[membership.Group.ID] = membership.Group.Name
+		}
+	}
+	groupNameOf := func(groupID *uint) string {
+		if groupID == nil {
+			return ""
+		}
+		return groupNames[*groupID]
+	}
 	// How the viewer knows whoever wrote a line in a shared group. Their account
 	// name would be a name the viewer has never seen; the friend row they keep
 	// for that person is the one every other screen shows.
@@ -2077,6 +2114,8 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			ActorName:   actorName(settlement.GroupID, settlement.UserID),
 			Status:      settlementStatusOrDefault(settlement.Status),
 			PaymentMode: settlement.PaymentMode,
+			GroupName:   groupNameOf(settlement.GroupID),
+			RespondedAt: settlement.RespondedAt,
 			CreatedAt:   settlement.CreatedAt,
 		})
 	}
@@ -2118,11 +2157,14 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			Title:       title,
 			Date:        settlement.Date,
 			Amount:      &amount,
+			GroupID:     settlement.GroupID,
 			FriendID:    &friendID,
 			Direction:   settlement.Direction,
 			Notes:       settlement.Notes,
 			Status:      settlementStatusOrDefault(settlement.Status),
 			PaymentMode: settlement.PaymentMode,
+			GroupName:   groupNameOf(settlement.GroupID),
+			RespondedAt: settlement.RespondedAt,
 			CreatedAt:   settlement.CreatedAt,
 		}
 		if settlement.Friend.ID != 0 {
@@ -2130,6 +2172,20 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			item.Friend = &friend
 		}
 		items = append(items, item)
+	}
+
+	if typeFilter != "" || friendFilter != 0 {
+		kept := items[:0]
+		for _, item := range items {
+			if typeFilter != "" && item.Type != typeFilter {
+				continue
+			}
+			if friendFilter != 0 && (item.FriendID == nil || *item.FriendID != friendFilter) {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		items = kept
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
