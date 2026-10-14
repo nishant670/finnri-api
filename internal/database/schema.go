@@ -500,6 +500,24 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE recurring_candidate_decisions
 			ADD CONSTRAINT recurring_candidate_decisions_decision_check
 			CHECK (decision IN ('dismissed', 'snoozed', 'tracked'))`,
+		// See migrations/0059_user_categories.sql.
+		`CREATE TABLE IF NOT EXISTS user_categories (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			type VARCHAR(10) NOT NULL,
+			name VARCHAR(40) NOT NULL,
+			name_key VARCHAR(80) NOT NULL,
+			removed BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_categories_user_type_key
+			ON user_categories (user_id, type, name_key)`,
+		`ALTER TABLE user_categories
+			DROP CONSTRAINT IF EXISTS user_categories_type_check`,
+		`ALTER TABLE user_categories
+			ADD CONSTRAINT user_categories_type_check
+			CHECK (type IN ('expense', 'income'))`,
 		`CREATE TABLE IF NOT EXISTS push_devices (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

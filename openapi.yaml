@@ -755,6 +755,80 @@ paths:
                 $ref: "#/components/schemas/Categories"
         "401":
           description: Missing or invalid session
+  /v1/categories/custom:
+    get:
+      summary: List the categories this user named themselves
+      description: >-
+        What the picker offers beside the canonical list. It holds the names
+        the user's own entries already carry (built-in names and their legacy
+        spellings excluded) plus any added from the picker, minus any the user
+        removed. Sorted by name.
+      responses:
+        "200":
+          description: The user's own categories, per entry type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomCategories"
+        "401":
+          description: Missing or invalid session
+    post:
+      summary: Keep a category the user typed
+      description: >-
+        Idempotent and case-insensitive. A name that is a built-in category or
+        one of its aliases is answered with the built-in and canonical=true, and
+        nothing is stored. Adding a removed category brings it back.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name:
+                  type: string
+                  maxLength: 40
+                type:
+                  type: string
+                  enum: [expense, income]
+      responses:
+        "200":
+          description: Already kept, or a built-in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomCategory"
+        "201":
+          description: Kept
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomCategory"
+        "422":
+          description: Invalid name or type, or 100 categories of this type already kept
+    delete:
+      summary: Take a category out of the user's picker
+      description: >-
+        Entries that use the name keep it. The name stays off the list, even
+        though entries still carry it, until it is added again.
+      parameters:
+        - in: query
+          name: type
+          required: true
+          schema:
+            type: string
+            enum: [expense, income]
+        - in: query
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Removed
+        "422":
+          description: Invalid name or type
   /v1/reports/transactions/summary:
     get:
       summary: Return filtered transaction report rollups
@@ -3198,6 +3272,33 @@ components:
             canonical category. Absent categories are absent, not zero.
           additionalProperties:
             type: integer
+    CustomCategories:
+      type: object
+      required: [expense, income]
+      properties:
+        expense:
+          type: array
+          items:
+            type: string
+          example: ["Pet Care"]
+        income:
+          type: array
+          items:
+            type: string
+          example: ["Dividend"]
+    CustomCategory:
+      type: object
+      required: [name, type, canonical]
+      properties:
+        name:
+          type: string
+          example: "Dividend"
+        type:
+          type: string
+          enum: [expense, income]
+        canonical:
+          type: boolean
+          description: True when the name was a built-in category; nothing was stored.
     Categories:
       type: object
       required: [categories, default, income_categories, income_default]
