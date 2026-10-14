@@ -246,6 +246,9 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/entries/export", server.exportEntriesCSV)
 	authorized.GET("/merchants/suggestions", server.listMerchantSuggestions)
 	authorized.GET("/categories", server.listCategories)
+	authorized.GET("/categories/custom", server.listCustomCategories)
+	authorized.POST("/categories/custom", server.addCustomCategory)
+	authorized.DELETE("/categories/custom", server.removeCustomCategory)
 	authorized.GET("/reports/transactions/summary", server.getTransactionSummaryReport)
 	authorized.GET("/entries/:id", server.getEntry)
 	authorized.PUT("/entries/:id", server.updateEntry)
@@ -346,6 +349,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.CardEMIPlan{},
 		&models.CardEMIInstallment{},
 		&models.RecurringCandidateDecision{},
+		&models.UserCategory{},
 		&models.PushDevice{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},

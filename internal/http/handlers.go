@@ -204,6 +204,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries/export", s.exportEntriesCSV)
 		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
 		authorized.GET("/categories", s.listCategories)
+		authorized.GET("/categories/custom", s.listCustomCategories)
+		authorized.POST("/categories/custom", s.addCustomCategory)
+		authorized.DELETE("/categories/custom", s.removeCustomCategory)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
@@ -1817,6 +1820,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.PushDevice{}, "push devices"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
+			{&models.UserCategory{}, "user categories"},
 			{&models.Entry{}, "entries"},
 			{&models.Account{}, "accounts"},
 			{&models.AuthSession{}, "auth sessions"},
