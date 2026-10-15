@@ -145,3 +145,24 @@ func parseEnvExample(contents string) map[string]string {
 	}
 	return values
 }
+
+// Staging's WEB_BASE_URL held a list, and every checkout opened a page on the
+// host "finnri.app,https". Anything but one origin is refused.
+func TestWebBaseURLMustBeOneOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://staging.finnri.app": "https://staging.finnri.app",
+		" https://finnri.app/ ":      "https://finnri.app",
+		"http://localhost:3000":      "http://localhost:3000",
+		"":                           "",
+		"https://finnri.app,https://staging.finnri.app": "",
+		"https://finnri.app https://staging.finnri.app": "",
+		"finnri.app":             "",
+		"https://finnri.app/pay": "",
+		"ftp://finnri.app":       "",
+	}
+	for raw, want := range cases {
+		if got := webBaseURL(raw); got != want {
+			t.Errorf("webBaseURL(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}

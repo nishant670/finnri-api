@@ -1,6 +1,8 @@
 package config
 
 import (
+	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -92,6 +94,31 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// webBaseURL is the one web origin the pay page and invite links live on, or
+// "" when WEB_BASE_URL is not one.
+//
+// Staging was given a list — "https://finnri.app,https://staging.finnri.app",
+// the shape ALLOW_ORIGINS takes — and every checkout opened
+// "https://finnri.app,https://staging.finnri.app/pay?order=…", which a browser
+// reads as the host "finnri.app,https" and cannot find. An empty value makes
+// the app say checkout is not ready instead of opening a dead page, and the
+// log says why at boot.
+func webBaseURL(raw string) string {
+	value := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || strings.ContainsAny(value, ", ") ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		log.Printf("WEB_BASE_URL %q is not a single origin like https://finnri.app; "+
+			"checkout and invite links stay off until it is", raw)
+		return ""
+	}
+	return value
 }
 
 func atoi(key string, def int) int {
@@ -247,7 +274,7 @@ func Load() *Config {
 		RazorpayKeySecret:     getenv("RAZORPAY_KEY_SECRET", ""),
 		RazorpayWebhookSecret: getenv("RAZORPAY_WEBHOOK_SECRET", ""),
 		RazorpayBaseURL:       getenv("RAZORPAY_BASE_URL", ""),
-		WebBaseURL:            strings.TrimRight(strings.TrimSpace(getenv("WEB_BASE_URL", "")), "/"),
+		WebBaseURL:            webBaseURL(getenv("WEB_BASE_URL", "")),
 	}
 }
 
