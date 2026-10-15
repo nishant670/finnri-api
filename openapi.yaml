@@ -4172,6 +4172,16 @@ components:
           type: number
           minimum: 0
           maximum: 100
+        log_payment_on:
+          type: string
+          format: date
+          description: >-
+            Create only; ignored on update. A payment already made, written to
+            the transactions as a confirmed entry on this date. It must not be
+            after next_due_date, nor more than a day ahead of the server. When
+            it is the payment that was due, next_due_date moves on a cadence
+            and a loan counts the EMI; an earlier payment leaves the schedule
+            alone.
         currency:
           type: string
           const: INR
