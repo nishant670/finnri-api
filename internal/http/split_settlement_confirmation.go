@@ -61,14 +61,22 @@ func splitSettlementCounterparty(db *gorm.DB, userID, friendID uint) (*uint, err
 // settlementCounterpartySentence states the payment from the point of view of
 // the person being asked about it, which is the opposite of the one it was
 // written in. `friend_paid_user` means the recorder says *you* paid them.
-func settlementCounterpartySentence(direction string, amount models.Money, recorder string) string {
+//
+// It names how the money moved when that is known: "says they paid you ₹500
+// by UPI" is something the reader can check against their UPI app, where a
+// bare amount leaves them guessing which transfer is meant.
+func settlementCounterpartySentence(direction string, amount models.Money, recorder, paymentMode string) string {
+	how := ""
+	if phrase := settlementPaymentModes[paymentMode]; phrase != "" {
+		how = " " + phrase
+	}
 	switch direction {
 	case settlementDirectionFriendPaidUser:
-		return fmt.Sprintf("%s says you paid them ₹%s.", recorder, amount.String())
+		return fmt.Sprintf("%s says you paid them ₹%s%s.", recorder, amount.String(), how)
 	case settlementDirectionUserPaidFriend:
-		return fmt.Sprintf("%s says they paid you ₹%s.", recorder, amount.String())
+		return fmt.Sprintf("%s says they paid you ₹%s%s.", recorder, amount.String(), how)
 	default:
-		return fmt.Sprintf("%s recorded a settlement of ₹%s.", recorder, amount.String())
+		return fmt.Sprintf("%s recorded a settlement of ₹%s%s.", recorder, amount.String(), how)
 	}
 }
 
@@ -100,7 +108,7 @@ func notifySettlementRecorded(db *gorm.DB, settlement models.SplitSettlement, re
 		*settlement.CounterpartyUserID,
 		"split.settlement.recorded",
 		title,
-		settlementCounterpartySentence(settlement.Direction, settlement.Amount, name)+" Confirm it if that is right, or deny it if it is not.",
+		settlementCounterpartySentence(settlement.Direction, settlement.Amount, name, settlement.PaymentMode)+" Confirm it if that is right, or deny it if it is not.",
 		fmt.Sprintf("/split/settlements/%d", settlement.ID),
 	)
 }

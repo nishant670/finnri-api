@@ -16,4 +16,9 @@ type Feedback struct {
 	ResolvedBy *uint     `gorm:"index" json:"resolved_by,omitempty"`
 	CreatedAt  time.Time `gorm:"index" json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+
+	// Attachments are screenshots or files the user added to show what they
+	// mean, as upload URLs from POST /v1/upload. At most three. They are read
+	// back only by admins, through GET /v1/admin/feedback/:id/attachments/:i.
+	Attachments StringArray `gorm:"type:jsonb;not null;default:'[]'" json:"attachments"`
 }

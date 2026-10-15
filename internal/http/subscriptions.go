@@ -26,6 +26,10 @@ type subscriptionResponse struct {
 	models.Subscription
 	DaysUntilDue int    `json:"days_until_due"`
 	DueState     string `json:"due_state"`
+	// Schedule is the item's figures worked out for display; see recurring.go.
+	Schedule recurringSchedule `json:"schedule"`
+	// Set by mark-paid when it wrote the payment to the transactions.
+	LoggedEntryID *uint `json:"logged_entry_id,omitempty"`
 }
 
 func (s *Server) createSubscription(c *gin.Context) {
@@ -49,14 +53,44 @@ func (s *Server) createSubscription(c *gin.Context) {
 		}
 	}
 
+	now := time.Now()
+	var loggedOn *time.Time
+	if raw := strings.TrimSpace(input.LogPaymentOn); raw != "" {
+		parsed, _ := parseStrictAPIDate(raw) // validate() has checked the format
+		// A day of slack: the app sends the phone's date, which in India runs
+		// up to five and a half hours ahead of the server's.
+		if parsed.After(truncateDate(now.UTC()).AddDate(0, 0, 1)) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"log_payment_on": "must not be in the future"}})
+			return
+		}
+		loggedOn = &parsed
+	}
+
 	subscription := models.Subscription{UserID: userID}
 	input.apply(&subscription)
-	if err := database.DB.Create(&subscription).Error; err != nil {
+	var loggedEntry *models.Entry
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&subscription).Error; err != nil {
+			return err
+		}
+		if loggedOn == nil {
+			return nil
+		}
+		entry, err := logSubscriptionPayment(tx, &subscription, *loggedOn, now)
+		loggedEntry = entry
+		return err
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_subscription"})
 		return
 	}
+	if loggedEntry != nil {
+		_ = maybeCreateBudgetAlertsForEntry(*loggedEntry)
+		if subscription.Status == subscriptionStatusCancelled {
+			notifyRecurringCompleted(subscription)
+		}
+	}
 	_ = database.DB.Preload("Account").First(&subscription, subscription.ID).Error
-	c.JSON(http.StatusCreated, buildSubscriptionResponse(subscription, time.Now()))
+	c.JSON(http.StatusCreated, buildSubscriptionResponse(subscription, now))
 }
 
 func (s *Server) listSubscriptions(c *gin.Context) {
@@ -179,8 +213,22 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 		paidDate = parsed
 	}
 
+	if mode := strings.TrimSpace(input.PaymentMode); mode != "" && normalizeSubscriptionPaymentMode(mode) == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"payment_mode": "must be Cash, Bank Account, UPI, Credit Card, or Wallets"}})
+		return
+	}
+	if input.AccountID != nil {
+		if ok, err := userOwnsAccount(userID, *input.AccountID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "account_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"account_id": "must belong to the current user"}})
+			return
+		}
+	}
+
 	var subscription models.Subscription
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&subscription).Error; err != nil {
+	if err := database.DB.Preload("Account").Where("id = ? AND user_id = ?", id, userID).First(&subscription).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found"})
 		return
 	}
@@ -189,16 +237,65 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"next_due_date": "must use YYYY-MM-DD"}})
 		return
 	}
+	// The due date this payment settles, before the schedule moves past it.
+	settledDue := subscription.NextDueDate
+	if parsed, err := parseAPIDate(settledDue); err == nil {
+		settledDue = parsed.Format("2006-01-02")
+	}
 
 	subscription.LastChargedDate = paidDate.Format("2006-01-02")
 	subscription.NextDueDate = nextDue
 	subscription.Status = subscriptionStatusActive
-	if err := database.DB.Save(&subscription).Error; err != nil {
+	// A loan paid by hand counts its EMI exactly as autopay does; without this
+	// a loan not on autopay sat at "0 of 36 paid" however often it was paid.
+	finished := false
+	if subscription.TotalInstalments > 0 {
+		subscription.InstalmentsPaid++
+		if subscription.InstalmentsPaid >= subscription.TotalInstalments {
+			subscription.InstalmentsPaid = subscription.TotalInstalments
+			subscription.Status = subscriptionStatusCancelled
+			finished = true
+		}
+	}
+	// Marking it paid used to move the date on and nothing else, so the
+	// payment never reached the transactions. Asked to, it is written there
+	// too — from the account the user names for this payment, else the item's
+	// own — and filed against the due date it settled, so autopay cannot add
+	// that date again.
+	var loggedEntry *models.Entry
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if input.LogTransaction {
+			payer := subscription
+			if input.AccountID != nil {
+				payer.AccountID = input.AccountID
+				payer.Account = nil
+			}
+			if mode := normalizeSubscriptionPaymentMode(input.PaymentMode); mode != "" {
+				payer.PaymentMode = mode
+			}
+			entry, err := recordSubscriptionPayment(tx, payer, paidDate.Format("2006-01-02"), settledDue, time.Now())
+			if err != nil {
+				return err
+			}
+			loggedEntry = entry
+		}
+		return tx.Omit("Account").Save(&subscription).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_mark_subscription_paid"})
 		return
 	}
+	if loggedEntry != nil {
+		_ = maybeCreateBudgetAlertsForEntry(*loggedEntry)
+	}
+	if finished {
+		notifyRecurringCompleted(subscription)
+	}
 	_ = database.DB.Preload("Account").First(&subscription, subscription.ID).Error
-	c.JSON(http.StatusOK, buildSubscriptionResponse(subscription, paidDate))
+	response := buildSubscriptionResponse(subscription, paidDate)
+	if loggedEntry != nil {
+		response.LoggedEntryID = &loggedEntry.ID
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (s *Server) createSubscriptionReminders(c *gin.Context) {
@@ -315,13 +412,15 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	if name == "" {
 		name = "Subscription"
 	}
+	noun := recurringNoun(subscription.Kind)
+	amount := rupeesForCopy(subscription.Amount)
 	if kind == subscriptionReminderOverdueKind {
-		return "Subscription overdue", fmt.Sprintf("%s was due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
+		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dueDate, amount)
 	}
 	if kind == subscriptionReminderCancelKind {
-		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for ₹%s.", name, subscription.NextDueDate, subscription.Amount.String())
+		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for %s.", name, subscription.NextDueDate, amount)
 	}
-	return "Subscription due soon", fmt.Sprintf("%s is due on %s for ₹%s.", name, dueDate, subscription.Amount.String())
+	return noun + " due soon", fmt.Sprintf("%s is due on %s for %s.", name, dueDate, amount)
 }
 
 func advanceSubscriptionDueDate(currentDueDate, interval string, paidDate time.Time) (string, error) {
@@ -409,7 +508,10 @@ func buildSubscriptionResponse(subscription models.Subscription, now time.Time) 
 			dueState = "scheduled"
 		}
 	}
-	return subscriptionResponse{Subscription: subscription, DaysUntilDue: daysUntilDue, DueState: dueState}
+	return subscriptionResponse{
+		Subscription: subscription, DaysUntilDue: daysUntilDue, DueState: dueState,
+		Schedule: computeRecurringSchedule(subscription, now),
+	}
 }
 
 func truncateDate(value time.Time) time.Time {

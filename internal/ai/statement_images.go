@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 // StatementImage is request-scoped input for statement extraction. Callers
@@ -37,18 +39,69 @@ Screenshots can overlap: emit an identical row only once. Preserve two genuinely
 // message. Chat Completions is retained here because it is already the
 // configured provider path used by ParseText.
 func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []StatementImage, cycleStart, cycleEnd string) ([]byte, Usage, error) {
-	if c.cfg.OpenAIKey == "" {
-		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
-	}
 	if len(images) == 0 {
 		return nil, Usage{}, fmt.Errorf("no statement images")
 	}
+	maxTokens := c.cfg.OpenAIStatementMaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4000
+	}
+	return c.completeWithImages(ctx, "statement", fmt.Sprintf(statementImagePrompt, cycleStart, cycleEnd), images, maxTokens)
+}
+
+// completeWithImages runs one JSON-mode chat completion over a text prompt and
+// a set of images. The image bytes are only ever base64-encoded into the
+// request body; they are never logged or written anywhere.
+func (c *OpenAIClient) completeWithImages(ctx context.Context, label, prompt string, images []StatementImage, maxTokens int) ([]byte, Usage, error) {
+	return c.completeWithImagesUsing(ctx, label, c.cfg.OpenAILlmModel, "", prompt, images, maxTokens)
+}
+
+// visionHTTPError is a non-2xx answer from the provider. The status lets a
+// caller tell "this model is not available to the key" (worth one retry on
+// another model) from everything else.
+type visionHTTPError struct {
+	label  string
+	status int
+	body   string
+}
+
+func (e *visionHTTPError) Error() string {
+	return fmt.Sprintf("%s vision error (%d): %s", e.label, e.status, e.body)
+}
+
+// modelUnavailable reports a provider answer that names the model itself as
+// the problem: unknown, retired, or not enabled for this key.
+func modelUnavailable(err error) bool {
+	var httpErr *visionHTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	if httpErr.status != http.StatusNotFound && httpErr.status != http.StatusBadRequest && httpErr.status != http.StatusForbidden {
+		return false
+	}
+	body := strings.ToLower(httpErr.body)
+	return strings.Contains(body, "model")
+}
+
+// isReasoningModel says whether a model takes reasoning_effort. Sending it to
+// any other model is a 400.
+func isReasoningModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
+}
+
+// completeWithImagesUsing sends one vision request to a named model. A
+// reasoning model also gets the effort and room for its reasoning tokens,
+// which count against max_completion_tokens: the plain budget would cut the
+// JSON off part-way.
+func (c *OpenAIClient) completeWithImagesUsing(ctx context.Context, label, model, effort, prompt string, images []StatementImage, maxTokens int) ([]byte, Usage, error) {
+	if c.cfg.OpenAIKey == "" {
+		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
+	}
 
 	content := make([]map[string]any, 0, len(images)+1)
-	content = append(content, map[string]any{
-		"type": "text",
-		"text": fmt.Sprintf(statementImagePrompt, cycleStart, cycleEnd),
-	})
+	content = append(content, map[string]any{"type": "text", "text": prompt})
 	for _, image := range images {
 		content = append(content, map[string]any{
 			"type": "image_url",
@@ -59,18 +112,20 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 		})
 	}
 
-	maxTokens := c.cfg.OpenAIStatementMaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 4000
-	}
 	body := map[string]any{
-		"model":                 c.cfg.OpenAILlmModel,
+		"model":                 model,
 		"response_format":       map[string]string{"type": "json_object"},
 		"max_completion_tokens": maxTokens,
 		"messages": []map[string]any{{
 			"role":    "user",
 			"content": content,
 		}},
+	}
+	if isReasoningModel(model) {
+		if effort != "" {
+			body["reasoning_effort"] = effort
+		}
+		body["max_completion_tokens"] = maxTokens + reasoningHeadroomTokens
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -90,7 +145,7 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, Usage{}, fmt.Errorf("statement vision error: %s", string(message))
+		return nil, Usage{}, &visionHTTPError{label: label, status: resp.StatusCode, body: string(message)}
 	}
 
 	var out chatCompletion
@@ -98,11 +153,13 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 		return nil, Usage{}, err
 	}
 	log.Printf(
-		"openai statement parse usage: model=%s images=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-		c.cfg.OpenAILlmModel, len(images), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.Usage.TotalTokens,
+		"openai %s parse usage: model=%s images=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		label, model, len(images), out.Usage.PromptTokens, out.Usage.CompletionTokens, out.Usage.TotalTokens,
 	)
 	if len(out.Choices) == 0 {
 		return nil, Usage{}, fmt.Errorf("no choices")
 	}
-	return []byte(out.Choices[0].Message.Content), out.usage(), nil
+	usage := out.usage()
+	usage.Model = model
+	return []byte(out.Choices[0].Message.Content), usage, nil
 }

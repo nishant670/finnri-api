@@ -40,8 +40,13 @@ type Account struct {
 	// have database-specific precision, while entry ids preserve insertion order.
 	CardLedgerResetEntryID *uint  `json:"-"`
 	FeeMonth               string `json:"fee_month"`
-	Balance                Money  `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
-	IsDefault              bool   `json:"is_default"`
+	// AnnualFee is the card's yearly membership fee before GST, and
+	// FeeWaiverSpend the yearly spend that waives it. Both are zero when
+	// unknown; a statement that prints them can fill them in.
+	AnnualFee      Money `gorm:"type:numeric(19,2);not null;default:0" json:"annual_fee"`
+	FeeWaiverSpend Money `gorm:"type:numeric(19,2);not null;default:0" json:"fee_waiver_spend"`
+	Balance        Money `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
+	IsDefault      bool  `json:"is_default"`
 	// AutoCreated distinguishes a capture shortcut from an intentionally sparse
 	// account. The first explicit account edit clears it.
 	AutoCreated bool      `gorm:"not null;default:false" json:"auto_created"`

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,24 +11,36 @@ import (
 )
 
 type Config struct {
-	Port                            string
-	AllowOrigins                    string
-	AuthBearer                      string
-	AuthSessionTTLDays              int
-	TZDefault                       string
-	OpenAIKey                       string
-	OpenAIBaseURL                   string
-	OpenAILlmModel                  string
-	OpenAIWhisper                   string
-	OpenAIMaxTokens                 int
-	OpenAIStatementMaxTokens        int
-	ReqTimeoutSec                   int
-	RateLimitRPS                    float64
-	RateLimitBurst                  int
-	MaxJSONKB                       int64
-	MaxUploadMB                     int64
-	MaxTranscriptChars              int
-	AIParseDisabled                 bool
+	Port               string
+	AllowOrigins       string
+	AuthBearer         string
+	AuthSessionTTLDays int
+	TZDefault          string
+	OpenAIKey          string
+	OpenAIBaseURL      string
+	OpenAILlmModel     string
+	OpenAIWhisper      string
+	// OpenAIVisionModel reads bill and receipt photos. It is separate from
+	// OpenAILlmModel because reading a photographed bill is the one job where
+	// the small text model falls short: gpt-4o-mini took the amount from an
+	// unrelated card slip lying on the bill, at full confidence.
+	OpenAIVisionModel string
+	// OpenAIVisionReasoningEffort is sent only when OPENAI_VISION_MODEL names a
+	// reasoning model (gpt-5 or o-series); the default model ignores it.
+	OpenAIVisionReasoningEffort string
+	OpenAIMaxTokens             int
+	OpenAIStatementMaxTokens    int
+	ReqTimeoutSec               int
+	RateLimitRPS                float64
+	RateLimitBurst              int
+	MaxJSONKB                   int64
+	MaxUploadMB                 int64
+	MaxTranscriptChars          int
+	AIParseDisabled             bool
+	// LaunchOfferStartsAt switches the launch offer on. Unset means no offer:
+	// the API is shared with builds already in testing, so the offer starts
+	// when someone sets this, never merely because the code was deployed.
+	LaunchOfferStartsAt             string
 	AIUnpaidMaxVoiceBytes           int64
 	AIFailedParseCooldownThreshold  int
 	AIFailedParseCooldownWindowMin  int
@@ -80,6 +94,31 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// webBaseURL is the one web origin the pay page and invite links live on, or
+// "" when WEB_BASE_URL is not one.
+//
+// Staging was given a list — "https://finnri.app,https://staging.finnri.app",
+// the shape ALLOW_ORIGINS takes — and every checkout opened
+// "https://finnri.app,https://staging.finnri.app/pay?order=…", which a browser
+// reads as the host "finnri.app,https" and cannot find. An empty value makes
+// the app say checkout is not ready instead of opening a dead page, and the
+// log says why at boot.
+func webBaseURL(raw string) string {
+	value := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || strings.ContainsAny(value, ", ") ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		log.Printf("WEB_BASE_URL %q is not a single origin like https://finnri.app; "+
+			"checkout and invite links stay off until it is", raw)
+		return ""
+	}
+	return value
 }
 
 func atoi(key string, def int) int {
@@ -167,6 +206,8 @@ func Load() *Config {
 		OpenAIBaseURL:                   getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 		OpenAILlmModel:                  getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
 		OpenAIWhisper:                   getenv("OPENAI_WHISPER_MODEL", "gpt-4o-mini-transcribe"),
+		OpenAIVisionModel:               getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini"),
+		OpenAIVisionReasoningEffort:     getenv("OPENAI_VISION_REASONING_EFFORT", "low"),
 		OpenAIMaxTokens:                 atoi("OPENAI_MAX_OUTPUT_TOKENS", 600),
 		OpenAIStatementMaxTokens:        atoi("OPENAI_STATEMENT_MAX_OUTPUT_TOKENS", 4000),
 		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),
@@ -176,6 +217,7 @@ func Load() *Config {
 		MaxUploadMB:                     int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars:              atoi("MAX_TRANSCRIPT_CHARS", 1000),
 		AIParseDisabled:                 atob("AI_PARSE_DISABLED", false),
+		LaunchOfferStartsAt:             getenv("LAUNCH_OFFER_STARTS_AT", ""),
 		AIUnpaidMaxVoiceBytes:           int64(atoi("AI_UNPAID_MAX_VOICE_BYTES", 512*1024)),
 		AIFailedParseCooldownThreshold:  atoi("AI_FAILED_PARSE_COOLDOWN_THRESHOLD", 5),
 		AIFailedParseCooldownWindowMin:  atoi("AI_FAILED_PARSE_COOLDOWN_WINDOW_MINUTES", 15),
@@ -232,7 +274,7 @@ func Load() *Config {
 		RazorpayKeySecret:     getenv("RAZORPAY_KEY_SECRET", ""),
 		RazorpayWebhookSecret: getenv("RAZORPAY_WEBHOOK_SECRET", ""),
 		RazorpayBaseURL:       getenv("RAZORPAY_BASE_URL", ""),
-		WebBaseURL:            strings.TrimRight(strings.TrimSpace(getenv("WEB_BASE_URL", "")), "/"),
+		WebBaseURL:            webBaseURL(getenv("WEB_BASE_URL", "")),
 	}
 }
 

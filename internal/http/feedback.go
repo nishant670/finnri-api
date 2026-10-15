@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -29,7 +30,13 @@ type feedbackInput struct {
 	Title   string `json:"title"`
 	Message string `json:"message"`
 	Impact  string `json:"impact"`
+	// Upload URLs from POST /v1/upload. Optional.
+	Attachments []string `json:"attachments"`
 }
+
+// maxFeedbackAttachments is enough to show a before and after and the screen
+// around it; a report that needs more is a conversation, not a form.
+const maxFeedbackAttachments = 3
 
 func (s *Server) createFeedback(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
@@ -83,16 +90,46 @@ func (input feedbackInput) toModel(userID uint) (models.Feedback, gin.H) {
 	if utf8.RuneCountInString(area) > 64 {
 		fields["area"] = "must be 64 characters or less"
 	}
+	attachments, attachmentError := feedbackAttachments(input.Attachments)
+	if attachmentError != "" {
+		fields["attachments"] = attachmentError
+	}
 
 	return models.Feedback{
-		UserID:  userID,
-		Type:    feedbackType,
-		Area:    area,
-		Title:   title,
-		Message: message,
-		Impact:  impact,
-		Status:  "new",
+		UserID:      userID,
+		Type:        feedbackType,
+		Area:        area,
+		Title:       title,
+		Message:     message,
+		Impact:      impact,
+		Status:      "new",
+		Attachments: attachments,
 	}, fields
+}
+
+// feedbackAttachments keeps only files this server stored. Anything else — a
+// link to somewhere else, a path outside the upload directory — is refused
+// rather than dropped, so the person learns their screenshot did not go.
+func feedbackAttachments(raw []string) (models.StringArray, string) {
+	attachments := models.StringArray{}
+	for _, value := range raw {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		path, ok := localUploadPathFromAttachment(value)
+		if !ok {
+			return nil, "must be files uploaded through Finnri"
+		}
+		if _, ok := safeUploadName(filepath.Base(path)); !ok {
+			return nil, "must be files uploaded through Finnri"
+		}
+		attachments = append(attachments, value)
+	}
+	if len(attachments) > maxFeedbackAttachments {
+		return nil, "attach at most 3 files"
+	}
+	return attachments, ""
 }
 
 func normalizeFeedbackType(value string) string {

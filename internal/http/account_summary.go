@@ -61,6 +61,10 @@ type accountSummary struct {
 	// Credit cards with at least one priced statement. The bill to pay.
 	CurrentStatement *currentStatementSummary `json:"current_statement,omitempty"`
 
+	// Credit cards with an annual fee and a fee month. How this card year's
+	// spend stands against the waiver. See card_annual_fee.go.
+	AnnualFee *annualFeeStatus `json:"annual_fee,omitempty"`
+
 	// Everything else, and only when an opening balance was actually entered:
 	// opening + money in - money out.
 	RunningBalance *float64 `json:"running_balance,omitempty"`

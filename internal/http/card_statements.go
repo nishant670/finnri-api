@@ -130,7 +130,6 @@ func (s *Server) saveCardStatement(c *gin.Context) {
 	}
 
 	statementDate, _ := parseStrictAPIDate(input.StatementDate)
-	cycleStart, cycleEnd := statementCycle(statementDate, account.StatementDay)
 
 	dueDate := input.DueDate
 	if dueDate == "" {
@@ -142,6 +141,25 @@ func (s *Server) saveCardStatement(c *gin.Context) {
 		Where("user_id = ? AND account_id = ? AND statement_date = ?", userID, accountID, input.StatementDate).
 		First(&statement).Error
 	created := err != nil
+	if created {
+		// The reminder job opened this cycle's draft on the card's usual day,
+		// and the bank dated the bill a few days off it. That draft is this
+		// bill: price it rather than leave a phantom unpaid one beside it.
+		draft, draftErr := statementInSameCycle(userID, accountID, statementDate, true)
+		if draftErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_save_statement"})
+			return
+		}
+		if draft.ID != 0 {
+			statement = draft
+		}
+	}
+
+	cycleStart, cycleEnd, err := cardStatementCycle(userID, accountID, statement.ID, statementDate, account.StatementDay)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_save_statement"})
+		return
+	}
 
 	statement.UserID = userID
 	statement.AccountID = accountID
@@ -178,8 +196,9 @@ func (s *Server) saveCardStatement(c *gin.Context) {
 			log.Printf("card statement: could not infer statement_day for account %d: %v", account.ID, err)
 		}
 	}
+	retileNextStatement(account, statement.ID, statement.StatementDate)
 
-	respondWithStatement(c, &statement, created)
+	respondWithSavedStatement(c, &statement, created, suggestStatementDay(account, statement))
 }
 
 // getCardStatement returns one statement, its payments, and a freshly
@@ -305,20 +324,7 @@ func (s *Server) recordCardStatementPayment(c *gin.Context) {
 			})
 			return
 		}
-		entry := models.Entry{
-			Title:       "Credit card payment",
-			Type:        "expense",
-			Amount:      input.Amount,
-			Currency:    statement.Currency,
-			Source:      "manual",
-			Category:    defaultCategory,
-			Tag:         unitemizedTag,
-			PurposeType: cardPaymentPurposeType,
-			Notes:       input.Note,
-			Date:        paidOn,
-			AccountID:   input.FromAccountID,
-			UserID:      userID,
-		}
+		entry := newCardPaymentEntry(userID, input.FromAccountID, input.Amount, statement.Currency, paidOn, input.Note)
 		if err := database.DB.Create(&entry).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_record_payment"})
 			return
@@ -337,6 +343,28 @@ func (s *Server) recordCardStatementPayment(c *gin.Context) {
 	}
 
 	respondWithStatement(c, &statement, true)
+}
+
+// newCardPaymentEntry is the money leaving the account a card bill was paid
+// from. It is filed as a card payment, never as spending: the card's own
+// spends are already in the ledger one by one, and counting the bill that
+// sums them would count them twice. Every spending rollup leaves it out (see
+// notCardPaymentClause); it is there so that account's balance stays right.
+func newCardPaymentEntry(userID uint, fromAccountID *uint, amount models.Money, currency, paidOn, note string) models.Entry {
+	return models.Entry{
+		Title:       "Credit card payment",
+		Type:        "expense",
+		Amount:      amount,
+		Currency:    currency,
+		Source:      "manual",
+		Category:    defaultCategory,
+		Tag:         unitemizedTag,
+		PurposeType: cardPaymentPurposeType,
+		Notes:       note,
+		Date:        paidOn,
+		AccountID:   fromAccountID,
+		UserID:      userID,
+	}
 }
 
 // deleteCardStatementPayment reverses a logged payment, including the bank
@@ -456,10 +484,24 @@ func refreshStatementPaidAmount(statement *models.CardStatement) error {
 
 // respondWithStatement reconciles, loads payments and writes the response.
 func respondWithStatement(c *gin.Context, statement *models.CardStatement, created bool) {
+	response, ok := buildStatementResponse(c, statement)
+	if !ok {
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, response)
+}
+
+// buildStatementResponse reconciles and loads payments. On failure it has
+// already written the error and returns false.
+func buildStatementResponse(c *gin.Context, statement *models.CardStatement) (cardStatementResponse, bool) {
 	reconciliation, err := reconcileStatement(statement)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_reconcile_statement"})
-		return
+		return cardStatementResponse{}, false
 	}
 
 	var payments []models.CardStatementPayment
@@ -468,27 +510,21 @@ func respondWithStatement(c *gin.Context, statement *models.CardStatement, creat
 		Order("paid_on DESC, id DESC").
 		Find(&payments).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_payments"})
-		return
+		return cardStatementResponse{}, false
 	}
 	if payments == nil {
 		payments = []models.CardStatementPayment{}
 	}
 
 	today := truncateDate(time.Now()).Format(apiDateLayout)
-	response := cardStatementResponse{
+	return cardStatementResponse{
 		CardStatement:  *statement,
 		RemainingDue:   remainingDue(*statement),
 		IsOverdue:      statementIsOverdue(*statement, today),
 		DaysToDue:      daysBetween(today, statement.DueDate),
 		Reconciliation: reconciliation,
 		Payments:       payments,
-	}
-
-	status := http.StatusOK
-	if created {
-		status = http.StatusCreated
-	}
-	c.JSON(status, response)
+	}, true
 }
 
 // effectiveDueDay falls back to the statement day when the card has no due

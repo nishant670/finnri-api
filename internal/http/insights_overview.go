@@ -120,7 +120,7 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS spent,
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS income,
 			COUNT(*) AS count`).
-		Where("user_id = ? AND date >= ?"+notCardPaymentClause, userID, windowStart.Format("2006-01-02")).
+		Where("user_id = ? AND date >= ?"+spendingRollupClause, userID, windowStart.Format("2006-01-02")).
 		Group(monthExpression).
 		Order("month asc").
 		Scan(&rows).Error; err != nil {
@@ -171,7 +171,7 @@ func loadDashboardOverview(userID uint, now time.Time) (DashboardOverview, error
 			COALESCE(SUM(CASE WHEN LOWER(type) = 'income' THEN amount ELSE 0 END), 0) AS income,
 			COUNT(*) AS count,
 			COALESCE(` + firstExpression + `, '') AS first`).
-		Where("user_id = ?"+notCardPaymentClause, userID).
+		Where("user_id = ?"+spendingRollupClause, userID).
 		Scan(&lifetime).Error; err != nil {
 		return DashboardOverview{}, err
 	}
@@ -271,7 +271,7 @@ func loadOverviewTopCategory(userID uint, now time.Time) (string, float64, float
 	var rows []dashboardCategoryRow
 	if err := database.DB.Model(&models.Entry{}).
 		Select("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END AS category, COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS count").
-		Where("user_id = ? AND date >= ?"+notCardPaymentClause+" AND LOWER(type) = ?",
+		Where("user_id = ? AND date >= ?"+spendingRollupClause+" AND LOWER(type) = ?",
 			userID, start.Format("2006-01-02"), "expense").
 		Group("CASE WHEN TRIM(category) = '' THEN 'Uncategorized' ELSE TRIM(category) END").
 		Order("amount desc").

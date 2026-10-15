@@ -383,6 +383,12 @@ type SplitSettlement struct {
 	Direction string `gorm:"type:varchar(24);not null" json:"direction"`
 	Date      string `gorm:"not null" json:"date"`
 	Notes     string `json:"notes"`
+	// PaymentMode is how the money moved: cash, upi, bank_transfer, card,
+	// wallet or other. The person asked to confirm a payment is being asked
+	// whether it reached them, and "by UPI" or "in cash" is what lets them
+	// check. Empty on rows recorded before it was asked, and from app builds
+	// that do not ask.
+	PaymentMode string `gorm:"type:varchar(24);not null;default:''" json:"payment_mode"`
 	// Status is whether the other side agrees this payment happened.
 	//
 	// A settlement is one person's account of a transfer that took place off

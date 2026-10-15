@@ -56,53 +56,9 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 		return
 	}
 
-	form, err := c.MultipartForm()
-	if err != nil {
-		if requestBodyTooLarge(err) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
+	images, ok := readStatementScreenshotForm(c, action.InputLimits.MaxFileBytes)
+	if !ok {
 		return
-	}
-	files := form.File["images"]
-	if len(files) == 0 {
-		// Accept the singular field too, which makes curl and simple clients less
-		// surprising while the mobile app uses the documented plural field.
-		files = form.File["image"]
-	}
-	if len(files) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
-		return
-	}
-	if len(files) > maxStatementScreenshots {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "too_many_statement_images", "max_images": maxStatementScreenshots,
-		})
-		return
-	}
-
-	maxBytes := action.InputLimits.MaxFileBytes
-	images := make([]ai.StatementImage, 0, len(files))
-	var totalBytes int64
-	for _, file := range files {
-		if file.Size <= 0 || (maxBytes > 0 && totalBytes+file.Size > maxBytes) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
-			return
-		}
-		image, readErr := readStatementScreenshot(file, maxBytes-totalBytes)
-		if readErr != nil {
-			if requestBodyTooLarge(readErr) {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
-			} else {
-				c.JSON(http.StatusUnsupportedMediaType, gin.H{
-					"error": "unsupported_statement_image", "message": "Use JPEG, PNG or WebP screenshots.",
-				})
-			}
-			return
-		}
-		totalBytes += int64(len(image.Data))
-		images = append(images, image)
 	}
 	defer func() {
 		for index := range images {
@@ -156,22 +112,13 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 	}
 	lines = dedupeStatementLines(statement.ID, lines)
 
-	entries, err := loadCycleLedgerLines(statement)
+	diff, err := buildStatementDiff(statement, lines)
 	if err != nil {
 		responseBytes := len(parsed)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "failed_load_cycle_entries", ResponseBytes: &responseBytes,
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "failed_build_statement_diff", ResponseBytes: &responseBytes,
 		})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_cycle_entries"})
-		return
-	}
-	previousUnpaid, err := loadPreviousUnpaid(statement.UserID, statement.AccountID, statement.StatementDate)
-	if err != nil {
-		responseBytes := len(parsed)
-		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "failed_load_previous_statement", ResponseBytes: &responseBytes,
-		})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_previous_statement"})
 		return
 	}
 
@@ -182,12 +129,63 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 		return
 	}
 
-	diff := diffStatementLines(lines, entries)
 	diff.Source = "screenshots_ai"
-	checksum := checksumStatementLines(lines, statement.TotalDue, previousUnpaid)
-	diff.Checksum = &checksum
 	setStatementDiffCredits(&diff, credits)
 	c.JSON(http.StatusOK, diff)
+}
+
+// readStatementScreenshotForm reads the ordered `images` (or `image`) parts of
+// a statement upload into memory, writing the error response itself when the
+// batch is missing, too large, too long or not images.
+func readStatementScreenshotForm(c *gin.Context, maxBytes int64) ([]ai.StatementImage, bool) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		if requestBodyTooLarge(err) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request_body_too_large"})
+			return nil, false
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
+		return nil, false
+	}
+	files := form.File["images"]
+	if len(files) == 0 {
+		// Accept the singular field too, which makes curl and simple clients less
+		// surprising while the mobile app uses the documented plural field.
+		files = form.File["image"]
+	}
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "images_required"})
+		return nil, false
+	}
+	if len(files) > maxStatementScreenshots {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error": "too_many_statement_images", "max_images": maxStatementScreenshots,
+		})
+		return nil, false
+	}
+
+	images := make([]ai.StatementImage, 0, len(files))
+	var totalBytes int64
+	for _, file := range files {
+		if file.Size <= 0 || (maxBytes > 0 && totalBytes+file.Size > maxBytes) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
+			return nil, false
+		}
+		image, readErr := readStatementScreenshot(file, maxBytes-totalBytes)
+		if readErr != nil {
+			if requestBodyTooLarge(readErr) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "statement_images_too_large", "max_bytes": maxBytes})
+			} else {
+				c.JSON(http.StatusUnsupportedMediaType, gin.H{
+					"error": "unsupported_statement_image", "message": "Use JPEG, PNG or WebP screenshots.",
+				})
+			}
+			return nil, false
+		}
+		totalBytes += int64(len(image.Data))
+		images = append(images, image)
+	}
+	return images, true
 }
 
 func readStatementScreenshot(file *multipart.FileHeader, remaining int64) (ai.StatementImage, error) {
@@ -257,29 +255,49 @@ func dedupeStatementLines(statementID uint, lines []statementLine) []statementLi
 	return result
 }
 
-func checksumStatementLines(lines []statementLine, totalDue, previousUnpaid models.Money) statementChecksum {
-	var debits, credits models.Money
+// checksumStatementLines asks whether the rows read off the file add up to the
+// bill, which is how a cropped screenshot or a page the PDF reader skipped
+// shows itself.
+//
+// A statement balances as closing = opening - payments + purchases, so the
+// rows' purchases (spends, fees, interest and EMIs, less refunds) should equal
+// closing - opening + payments. Bill payments are taken out of the rows first:
+// counting last month's payment against this month's spending reported a
+// false gap for everyone who pays in full.
+//
+// `opening` is the previous statement's total when Finnri has one. Without it
+// the previous bill is assumed to have been paid in full inside this cycle —
+// opening equals the payments — which is the common case and is said so in
+// the message.
+func checksumStatementLines(lines []statementLine, totalDue models.Money, opening *models.Money) statementChecksum {
+	var debits, credits, payments models.Money
 	for _, line := range lines {
-		if line.isCredit() {
+		switch {
+		case classifyLine(line) == lineKindPayment:
+			payments += line.Amount
+		case line.isCredit():
 			credits += line.Amount
-		} else {
+		default:
 			debits += line.Amount
 		}
 	}
 	parsedNet := debits - credits
-	expectedNet := totalDue - previousUnpaid
-	difference := parsedNet - expectedNet
-	absDifference := difference
-	if absDifference < 0 {
-		absDifference = -absDifference
+	expectedNet := totalDue
+	if opening != nil {
+		expectedNet = totalDue - *opening + payments
 	}
-	matches := absDifference <= reconcileTolerance
-	message := "The screenshot totals agree with this statement."
+	difference := parsedNet - expectedNet
+	matches := absMoney(difference) <= reconcileTolerance
+	message := "The rows Finnri read add up to this bill."
 	if !matches {
-		message = "The screenshot totals do not match the statement yet. Review cropped or overlapping rows before importing."
+		message = "The rows Finnri read do not add up to this bill. A page or row may be missing from the file."
+		if opening == nil {
+			message += " Finnri has no earlier bill for this card, so it assumed last month was paid in full."
+		}
 	}
 	return statementChecksum{
 		ParsedDebits: debits, ParsedCredits: credits, ParsedNet: parsedNet,
+		Payments: payments, OpeningBalance: opening,
 		ExpectedNet: expectedNet, Difference: difference, Matches: matches, Message: message,
 	}
 }
