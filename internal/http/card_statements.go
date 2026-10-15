@@ -324,20 +324,7 @@ func (s *Server) recordCardStatementPayment(c *gin.Context) {
 			})
 			return
 		}
-		entry := models.Entry{
-			Title:       "Credit card payment",
-			Type:        "expense",
-			Amount:      input.Amount,
-			Currency:    statement.Currency,
-			Source:      "manual",
-			Category:    defaultCategory,
-			Tag:         unitemizedTag,
-			PurposeType: cardPaymentPurposeType,
-			Notes:       input.Note,
-			Date:        paidOn,
-			AccountID:   input.FromAccountID,
-			UserID:      userID,
-		}
+		entry := newCardPaymentEntry(userID, input.FromAccountID, input.Amount, statement.Currency, paidOn, input.Note)
 		if err := database.DB.Create(&entry).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_record_payment"})
 			return
@@ -356,6 +343,28 @@ func (s *Server) recordCardStatementPayment(c *gin.Context) {
 	}
 
 	respondWithStatement(c, &statement, true)
+}
+
+// newCardPaymentEntry is the money leaving the account a card bill was paid
+// from. It is filed as a card payment, never as spending: the card's own
+// spends are already in the ledger one by one, and counting the bill that
+// sums them would count them twice. Every spending rollup leaves it out (see
+// notCardPaymentClause); it is there so that account's balance stays right.
+func newCardPaymentEntry(userID uint, fromAccountID *uint, amount models.Money, currency, paidOn, note string) models.Entry {
+	return models.Entry{
+		Title:       "Credit card payment",
+		Type:        "expense",
+		Amount:      amount,
+		Currency:    currency,
+		Source:      "manual",
+		Category:    defaultCategory,
+		Tag:         unitemizedTag,
+		PurposeType: cardPaymentPurposeType,
+		Notes:       note,
+		Date:        paidOn,
+		AccountID:   fromAccountID,
+		UserID:      userID,
+	}
 }
 
 // deleteCardStatementPayment reverses a logged payment, including the bank
