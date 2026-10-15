@@ -226,19 +226,11 @@ func newSubscriptionEntry(subscription models.Subscription, due string) models.E
 // was due, the schedule moves past it, and a loan counts the EMI, exactly as
 // marking it paid does. An earlier payment — last month's, while the next is
 // still to come — leaves the schedule alone.
-func logSubscriptionPayment(tx *gorm.DB, subscription *models.Subscription, paid, now time.Time) (models.Entry, error) {
+func logSubscriptionPayment(tx *gorm.DB, subscription *models.Subscription, paid, now time.Time) (*models.Entry, error) {
 	due := paid.Format("2006-01-02")
-	entry := newSubscriptionEntry(*subscription, due)
-	if err := tx.Create(&entry).Error; err != nil {
-		return entry, err
-	}
-	confirmedAt := now.UTC()
-	occurrence := models.SubscriptionOccurrence{
-		UserID: subscription.UserID, SubscriptionID: subscription.ID, EntryID: entry.ID,
-		DueDate: due, Status: subscriptionOccurrenceConfirmed, ConfirmedAt: &confirmedAt,
-	}
-	if err := tx.Create(&occurrence).Error; err != nil {
-		return entry, err
+	entry, err := recordSubscriptionPayment(tx, *subscription, due, due, now)
+	if err != nil {
+		return nil, err
 	}
 
 	subscription.LastChargedDate = due
@@ -260,6 +252,37 @@ func logSubscriptionPayment(tx *gorm.DB, subscription *models.Subscription, paid
 		}
 	}
 	return entry, tx.Model(&models.Subscription{}).Where("id = ?", subscription.ID).Updates(updates).Error
+}
+
+// recordSubscriptionPayment writes one payment the user made: a confirmed
+// entry dated when it was paid, and the occurrence that files it against the
+// due date it settled. That occurrence is what keeps a payment from being
+// written twice — autopay, logging and marking paid all check it — so when
+// the due date already has one, nothing is written and the entry is nil.
+func recordSubscriptionPayment(tx *gorm.DB, subscription models.Subscription, paidOn, dueDate string, now time.Time) (*models.Entry, error) {
+	var existing int64
+	if err := tx.Model(&models.SubscriptionOccurrence{}).
+		Where("user_id = ? AND subscription_id = ? AND due_date = ?", subscription.UserID, subscription.ID, dueDate).
+		Count(&existing).Error; err != nil {
+		return nil, err
+	}
+	if existing > 0 {
+		return nil, nil
+	}
+	entry := newSubscriptionEntry(subscription, dueDate)
+	entry.Date = paidOn
+	if err := tx.Create(&entry).Error; err != nil {
+		return nil, err
+	}
+	confirmedAt := now.UTC()
+	occurrence := models.SubscriptionOccurrence{
+		UserID: subscription.UserID, SubscriptionID: subscription.ID, EntryID: entry.ID,
+		DueDate: dueDate, Status: subscriptionOccurrenceConfirmed, ConfirmedAt: &confirmedAt,
+	}
+	if err := tx.Create(&occurrence).Error; err != nil {
+		return nil, err
+	}
+	return &entry, nil
 }
 
 func normalizedOccurrencePaymentMode(subscription models.Subscription) string {

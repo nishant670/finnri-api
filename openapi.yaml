@@ -1477,9 +1477,27 @@ paths:
                 paid_date:
                   type: string
                   format: date
+                log_transaction:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Also write the payment to the transactions, as a confirmed
+                    entry dated paid_date and filed against the due date it
+                    settles. Without it the call only moves the schedule on.
+                account_id:
+                  type: integer
+                  description: >-
+                    With log_transaction, the account this payment came from
+                    when it differs from the item's own. The item is not
+                    changed.
+                payment_mode:
+                  type: string
+                  enum: [Cash, Bank Account, UPI, Credit Card, Wallets]
       responses:
         "200":
-          description: Updated subscription
+          description: >-
+            Updated subscription. Carries logged_entry_id when an entry was
+            written.
           content:
             application/json:
               schema:

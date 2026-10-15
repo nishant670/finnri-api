@@ -28,6 +28,8 @@ type subscriptionResponse struct {
 	DueState     string `json:"due_state"`
 	// Schedule is the item's figures worked out for display; see recurring.go.
 	Schedule recurringSchedule `json:"schedule"`
+	// Set by mark-paid when it wrote the payment to the transactions.
+	LoggedEntryID *uint `json:"logged_entry_id,omitempty"`
 }
 
 func (s *Server) createSubscription(c *gin.Context) {
@@ -75,7 +77,7 @@ func (s *Server) createSubscription(c *gin.Context) {
 			return nil
 		}
 		entry, err := logSubscriptionPayment(tx, &subscription, *loggedOn, now)
-		loggedEntry = &entry
+		loggedEntry = entry
 		return err
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_subscription"})
@@ -211,8 +213,22 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 		paidDate = parsed
 	}
 
+	if mode := strings.TrimSpace(input.PaymentMode); mode != "" && normalizeSubscriptionPaymentMode(mode) == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"payment_mode": "must be Cash, Bank Account, UPI, Credit Card, or Wallets"}})
+		return
+	}
+	if input.AccountID != nil {
+		if ok, err := userOwnsAccount(userID, *input.AccountID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "account_lookup_failed"})
+			return
+		} else if !ok {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"account_id": "must belong to the current user"}})
+			return
+		}
+	}
+
 	var subscription models.Subscription
-	if err := database.DB.Where("id = ? AND user_id = ?", id, userID).First(&subscription).Error; err != nil {
+	if err := database.DB.Preload("Account").Where("id = ? AND user_id = ?", id, userID).First(&subscription).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found"})
 		return
 	}
@@ -220,6 +236,11 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"next_due_date": "must use YYYY-MM-DD"}})
 		return
+	}
+	// The due date this payment settles, before the schedule moves past it.
+	settledDue := subscription.NextDueDate
+	if parsed, err := parseAPIDate(settledDue); err == nil {
+		settledDue = parsed.Format("2006-01-02")
 	}
 
 	subscription.LastChargedDate = paidDate.Format("2006-01-02")
@@ -236,15 +257,45 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 			finished = true
 		}
 	}
-	if err := database.DB.Save(&subscription).Error; err != nil {
+	// Marking it paid used to move the date on and nothing else, so the
+	// payment never reached the transactions. Asked to, it is written there
+	// too — from the account the user names for this payment, else the item's
+	// own — and filed against the due date it settled, so autopay cannot add
+	// that date again.
+	var loggedEntry *models.Entry
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if input.LogTransaction {
+			payer := subscription
+			if input.AccountID != nil {
+				payer.AccountID = input.AccountID
+				payer.Account = nil
+			}
+			if mode := normalizeSubscriptionPaymentMode(input.PaymentMode); mode != "" {
+				payer.PaymentMode = mode
+			}
+			entry, err := recordSubscriptionPayment(tx, payer, paidDate.Format("2006-01-02"), settledDue, time.Now())
+			if err != nil {
+				return err
+			}
+			loggedEntry = entry
+		}
+		return tx.Omit("Account").Save(&subscription).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_mark_subscription_paid"})
 		return
+	}
+	if loggedEntry != nil {
+		_ = maybeCreateBudgetAlertsForEntry(*loggedEntry)
 	}
 	if finished {
 		notifyRecurringCompleted(subscription)
 	}
 	_ = database.DB.Preload("Account").First(&subscription, subscription.ID).Error
-	c.JSON(http.StatusOK, buildSubscriptionResponse(subscription, paidDate))
+	response := buildSubscriptionResponse(subscription, paidDate)
+	if loggedEntry != nil {
+		response.LoggedEntryID = &loggedEntry.ID
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func (s *Server) createSubscriptionReminders(c *gin.Context) {

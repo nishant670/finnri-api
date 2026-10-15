@@ -85,6 +85,13 @@ type subscriptionInput struct {
 
 type markSubscriptionPaidInput struct {
 	PaidDate string `json:"paid_date"`
+	// Also write the payment to the transactions. Off unless asked, so an
+	// older app that only moves the schedule on keeps doing just that.
+	LogTransaction bool `json:"log_transaction"`
+	// Where this payment came from, when it differs from the item's own
+	// account. Only read with log_transaction; the item is not changed.
+	AccountID   *uint  `json:"account_id"`
+	PaymentMode string `json:"payment_mode"`
 }
 
 func (input subscriptionInput) validate() map[string]string {
