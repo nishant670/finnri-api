@@ -2148,22 +2148,64 @@ func (s *Server) markCardPaidOff(c *gin.Context) {
 		})
 		return
 	}
-	now := timepkg.Now().UTC()
-	var lastEntryID uint
-	if err := database.DB.Model(&models.Entry{}).
-		Where("user_id = ? AND account_id = ?", userID, account.ID).
-		Select("COALESCE(MAX(id), 0)").Scan(&lastEntryID).Error; err != nil {
-		c.JSON(500, gin.H{"error": "failed_mark_card_paid_off"})
+
+	// Optional, as on a statement: where the money came from. Named, it is
+	// shown leaving that account as a card payment — not spending, since the
+	// card's spends are already logged — so that account's balance stays
+	// right. Left out (an older app, or a bill somebody else paid), the card
+	// is only cleared.
+	var input cardStatementPaymentInput
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(400, gin.H{"error": "invalid_json"})
 		return
 	}
-	if err := database.DB.Model(&account).Updates(map[string]any{
-		"card_ledger_reset_at": now, "card_ledger_reset_entry_id": lastEntryID,
-	}).Error; err != nil {
+	var paymentEntry *models.Entry
+	if input.FromAccountID != nil {
+		if fields := input.validate(); len(fields) > 0 {
+			c.JSON(422, gin.H{"error": "invalid_payment", "fields": fields})
+			return
+		}
+		if *input.FromAccountID == account.ID {
+			c.JSON(422, gin.H{"error": "invalid_payment", "fields": gin.H{"from_account_id": "cannot be the card being paid"}})
+			return
+		}
+		if ok, err := userOwnsAccount(userID, *input.FromAccountID); err != nil {
+			c.JSON(500, gin.H{"error": "failed_mark_card_paid_off"})
+			return
+		} else if !ok {
+			c.JSON(422, gin.H{"error": "invalid_payment", "fields": gin.H{"from_account_id": "account not found"}})
+			return
+		}
+		paidOn := strings.TrimSpace(input.PaidOn)
+		if paidOn == "" {
+			paidOn = truncateDate(timepkg.Now()).Format(apiDateLayout)
+		}
+		entry := newCardPaymentEntry(userID, input.FromAccountID, input.Amount, "INR", paidOn, input.Note)
+		paymentEntry = &entry
+	}
+
+	now := timepkg.Now().UTC()
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var lastEntryID uint
+		if err := tx.Model(&models.Entry{}).
+			Where("user_id = ? AND account_id = ?", userID, account.ID).
+			Select("COALESCE(MAX(id), 0)").Scan(&lastEntryID).Error; err != nil {
+			return err
+		}
+		if paymentEntry != nil {
+			if err := tx.Create(paymentEntry).Error; err != nil {
+				return err
+			}
+		}
+		account.CardLedgerResetEntryID = &lastEntryID
+		return tx.Model(&account).Updates(map[string]any{
+			"card_ledger_reset_at": now, "card_ledger_reset_entry_id": lastEntryID,
+		}).Error
+	}); err != nil {
 		c.JSON(500, gin.H{"error": "failed_mark_card_paid_off"})
 		return
 	}
 	account.CardLedgerResetAt = &now
-	account.CardLedgerResetEntryID = &lastEntryID
 	c.JSON(200, account)
 }
 

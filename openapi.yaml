@@ -1039,6 +1039,35 @@ paths:
           type: integer
     post:
       summary: Reset a statement-less credit card's ledger outstanding after it is paid off
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >-
+                Optional, as on a statement payment. With from_account_id, the
+                payment is written to that account as a card payment
+                (purpose_type card_payment) — never spending, since the card's
+                spends are already logged — so its balance stays right.
+                Without it the card is only cleared.
+              properties:
+                from_account_id:
+                  type: integer
+                  description: Must be the user's, and not this card.
+                amount:
+                  type: number
+                  exclusiveMinimum: 0
+                  description: Required with from_account_id.
+                paid_on:
+                  type: string
+                  format: date
+                  description: Defaults to today.
+                method:
+                  type: string
+                  maxLength: 24
+                note:
+                  type: string
       responses:
         "200":
           description: Card fallback balance reset
