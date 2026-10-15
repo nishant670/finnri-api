@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -129,4 +130,82 @@ func TestAutopaySkipsAPaymentAlreadyLogged(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected the logged payment alone, got %d occurrences", count)
 	}
+}
+
+// Marking a recurring payment paid moved its date on and wrote nothing, so
+// the payment never reached the transactions. Asked to, it now does — from
+// the account named for this payment — and an older app that does not ask
+// keeps the old behaviour.
+func TestMarkPaidCanLogTheTransaction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	user, token := createPaidBillingTestUserSession(t)
+
+	bank := models.Account{UserID: user.ID, Name: "SBI Savings", Type: "bank"}
+	if err := database.DB.Create(&bank).Error; err != nil {
+		t.Fatal(err)
+	}
+	netflix := performJSONRequest[subscriptionResponse](t, router, http.MethodPost,
+		"/v1/subscriptions", token, map[string]any{
+			"name":             "Netflix",
+			"merchant":         "Netflix",
+			"category":         "Entertainment",
+			"amount":           "649.00",
+			"billing_interval": "monthly",
+			"next_due_date":    "2026-10-20",
+			"payment_mode":     "Cash",
+		}, http.StatusCreated)
+
+	paid := performJSONRequest[subscriptionResponse](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/subscriptions/%d/mark-paid", netflix.ID), token, map[string]any{
+			"paid_date":       "2026-10-15",
+			"log_transaction": true,
+			"account_id":      bank.ID,
+			"payment_mode":    "Bank Account",
+		}, http.StatusOK)
+	if paid.NextDueDate != "2026-11-20" || paid.LoggedEntryID == nil {
+		t.Fatalf("expected the schedule moved on and an entry logged: %#v", paid)
+	}
+	var entry models.Entry
+	if err := database.DB.First(&entry, *paid.LoggedEntryID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if entry.Date != "2026-10-15" || entry.Amount.String() != "649.00" || entry.Type != "expense" ||
+		entry.AccountID == nil || *entry.AccountID != bank.ID || entry.Mode != "Bank Account" ||
+		entry.Category != "Entertainment" {
+		t.Fatalf("expected ₹649 from SBI on the day it was paid, got %#v", entry)
+	}
+	var occurrence models.SubscriptionOccurrence
+	if err := database.DB.Where("entry_id = ?", entry.ID).First(&occurrence).Error; err != nil {
+		t.Fatal(err)
+	}
+	if occurrence.DueDate[:10] != "2026-10-20" || occurrence.Status != subscriptionOccurrenceConfirmed {
+		t.Fatalf("the payment should settle the 20th, confirmed: %#v", occurrence)
+	}
+	var stored models.Subscription
+	if err := database.DB.First(&stored, netflix.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.AccountID != nil || stored.PaymentMode != "Cash" {
+		t.Fatalf("this payment's account must not change the item's: %#v", stored)
+	}
+
+	// Without log_transaction it only moves the date, as before.
+	again := performJSONRequest[subscriptionResponse](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/subscriptions/%d/mark-paid", netflix.ID), token,
+		map[string]any{"paid_date": "2026-11-18"}, http.StatusOK)
+	if again.NextDueDate != "2026-12-20" || again.LoggedEntryID != nil {
+		t.Fatalf("expected the date moved and nothing logged: %#v", again)
+	}
+	var count int64
+	database.DB.Model(&models.SubscriptionOccurrence{}).Where("subscription_id = ?", netflix.ID).Count(&count)
+	if count != 1 {
+		t.Fatalf("expected the one logged payment, got %d", count)
+	}
+
+	// Someone else's account is refused.
+	performJSONRequest[map[string]any](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/subscriptions/%d/mark-paid", netflix.ID), token,
+		map[string]any{"log_transaction": true, "account_id": bank.ID + 999}, http.StatusUnprocessableEntity)
 }
