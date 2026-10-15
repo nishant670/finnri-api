@@ -144,6 +144,40 @@ type splitActivityItem struct {
 	// On settlement rows: when the other side confirmed or denied it.
 	RespondedAt *time.Time `json:"responded_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+	// When this row last happened: added, edited, or — for a settlement —
+	// answered. The feed is ordered on it; see sortSplitActivity.
+	ActivityAt time.Time `json:"activity_at"`
+}
+
+// latestTime is the later of a row's timestamps, ignoring the ones not set.
+func latestTime(first time.Time, rest ...*time.Time) time.Time {
+	latest := first
+	for _, candidate := range rest {
+		if candidate != nil && candidate.After(latest) {
+			latest = *candidate
+		}
+	}
+	return latest
+}
+
+// sortSplitActivity orders the feed newest first.
+//
+// By default that is the order things happened in, not the dates they carry.
+// It used to be the bill's date, so an expense added today for last Tuesday
+// slid in below a week of older entries, and the feed stopped saying what had
+// just happened — which is all a feed is for. A friend's settlement history
+// asks for "date": there it is a ledger of payments, read by when each was
+// paid.
+func sortSplitActivity(items []splitActivityItem, order string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if order == "date" && items[i].Date != items[j].Date {
+			return items[i].Date > items[j].Date
+		}
+		if !items[i].ActivityAt.Equal(items[j].ActivityAt) {
+			return items[i].ActivityAt.After(items[j].ActivityAt)
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
 }
 
 type splitGroupInviteResponse struct {
@@ -1999,20 +2033,22 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			Group:            &groupCopy,
 			ParticipantCount: len(group.Members),
 			CreatedAt:        group.CreatedAt,
+			ActivityAt:       group.CreatedAt,
 		})
 	}
 	for _, friend := range friends {
 		friendID := friend.ID
 		friendCopy := friend
 		items = append(items, splitActivityItem{
-			ID:        fmt.Sprintf("friend-%d", friend.ID),
-			Type:      "friend_created",
-			RecordID:  friend.ID,
-			Title:     fmt.Sprintf("%s added", fallbackSplitFriendName(friend)),
-			Date:      friend.CreatedAt.Format("2006-01-02"),
-			FriendID:  &friendID,
-			Friend:    &friendCopy,
-			CreatedAt: friend.CreatedAt,
+			ID:         fmt.Sprintf("friend-%d", friend.ID),
+			Type:       "friend_created",
+			RecordID:   friend.ID,
+			Title:      fmt.Sprintf("%s added", fallbackSplitFriendName(friend)),
+			Date:       friend.CreatedAt.Format("2006-01-02"),
+			FriendID:   &friendID,
+			Friend:     &friendCopy,
+			CreatedAt:  friend.CreatedAt,
+			ActivityAt: friend.CreatedAt,
 		})
 	}
 	friendsByID := map[uint]models.SplitFriend{}
@@ -2069,6 +2105,9 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			Notes:     bill.Notes,
 			ActorName: actorName(bill.GroupID, bill.UserID),
 			CreatedAt: bill.CreatedAt,
+			// An edit is news too: the feed is the only place a changed
+			// amount in a shared group shows up for the others.
+			ActivityAt: latestTime(bill.CreatedAt, &bill.UpdatedAt),
 		}
 		items = append(items, item)
 	}
@@ -2117,6 +2156,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			GroupName:   groupNameOf(settlement.GroupID),
 			RespondedAt: settlement.RespondedAt,
 			CreatedAt:   settlement.CreatedAt,
+			ActivityAt:  latestTime(settlement.CreatedAt, settlement.RespondedAt),
 		})
 	}
 
@@ -2139,6 +2179,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			// group you joined announces itself as having nobody in it.
 			ParticipantCount: len(group.Members),
 			CreatedAt:        membership.CreatedAt,
+			ActivityAt:       membership.CreatedAt,
 		})
 	}
 	for _, settlement := range settlements {
@@ -2166,6 +2207,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			GroupName:   groupNameOf(settlement.GroupID),
 			RespondedAt: settlement.RespondedAt,
 			CreatedAt:   settlement.CreatedAt,
+			ActivityAt:  latestTime(settlement.CreatedAt, settlement.RespondedAt),
 		}
 		if settlement.Friend.ID != 0 {
 			friend := settlement.Friend
@@ -2188,12 +2230,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		items = kept
 	}
 
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Date != items[j].Date {
-			return items[i].Date > items[j].Date
-		}
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
+	sortSplitActivity(items, strings.TrimSpace(c.Query("order")))
 
 	total := len(items)
 	start := (page - 1) * pageSize
