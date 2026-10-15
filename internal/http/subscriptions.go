@@ -51,14 +51,44 @@ func (s *Server) createSubscription(c *gin.Context) {
 		}
 	}
 
+	now := time.Now()
+	var loggedOn *time.Time
+	if raw := strings.TrimSpace(input.LogPaymentOn); raw != "" {
+		parsed, _ := parseStrictAPIDate(raw) // validate() has checked the format
+		// A day of slack: the app sends the phone's date, which in India runs
+		// up to five and a half hours ahead of the server's.
+		if parsed.After(truncateDate(now.UTC()).AddDate(0, 0, 1)) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": gin.H{"log_payment_on": "must not be in the future"}})
+			return
+		}
+		loggedOn = &parsed
+	}
+
 	subscription := models.Subscription{UserID: userID}
 	input.apply(&subscription)
-	if err := database.DB.Create(&subscription).Error; err != nil {
+	var loggedEntry *models.Entry
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&subscription).Error; err != nil {
+			return err
+		}
+		if loggedOn == nil {
+			return nil
+		}
+		entry, err := logSubscriptionPayment(tx, &subscription, *loggedOn, now)
+		loggedEntry = &entry
+		return err
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_subscription"})
 		return
 	}
+	if loggedEntry != nil {
+		_ = maybeCreateBudgetAlertsForEntry(*loggedEntry)
+		if subscription.Status == subscriptionStatusCancelled {
+			notifyRecurringCompleted(subscription)
+		}
+	}
 	_ = database.DB.Preload("Account").First(&subscription, subscription.ID).Error
-	c.JSON(http.StatusCreated, buildSubscriptionResponse(subscription, time.Now()))
+	c.JSON(http.StatusCreated, buildSubscriptionResponse(subscription, now))
 }
 
 func (s *Server) listSubscriptions(c *gin.Context) {

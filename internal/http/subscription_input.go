@@ -75,6 +75,12 @@ type subscriptionInput struct {
 	StartDate            *string       `json:"start_date"`
 	Platform             *string       `json:"platform"`
 	StepUpPct            *float64      `json:"step_up_pct"`
+
+	// Create only: a payment already made, to record as a transaction now.
+	// Without it, nothing reached the ledger until the next due date, so an
+	// SIP added on the day it was paid — or the month before its next date —
+	// left that month's instalment out. See logSubscriptionPayment.
+	LogPaymentOn string `json:"log_payment_on"`
 }
 
 type markSubscriptionPaidInput struct {
@@ -159,6 +165,16 @@ func (input subscriptionInput) validate() map[string]string {
 	if input.StartDate != nil && strings.TrimSpace(*input.StartDate) != "" {
 		if _, err := parseStrictAPIDate(*input.StartDate); err != nil {
 			fields["start_date"] = "must use YYYY-MM-DD"
+		}
+	}
+	if strings.TrimSpace(input.LogPaymentOn) != "" {
+		logged, err := parseStrictAPIDate(input.LogPaymentOn)
+		if err != nil {
+			fields["log_payment_on"] = "must use YYYY-MM-DD"
+		} else if due, err := parseStrictAPIDate(input.NextDueDate); err == nil && logged.After(due) {
+			// A payment after the next due date is a later instalment, not
+			// the one being caught up on.
+			fields["log_payment_on"] = "must not be after next_due_date"
 		}
 	}
 	if input.InstalmentsPaid != nil {
