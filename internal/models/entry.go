@@ -9,6 +9,28 @@ import (
 	"gorm.io/gorm"
 )
 
+// Where an entry came from. A client may send manual, text, voice or receipt;
+// the server itself writes recurring (autopay, and recurring payments the user
+// logs or marks paid) and statement (rows imported from a card statement).
+//
+// EntrySources is also what the database's entries_source_check allows, so a
+// source the server writes cannot be missing from it: when it was, every
+// autopay entry and every statement import failed in PostgreSQL while the
+// SQLite tests, which have no CHECK constraints, passed.
+const (
+	EntrySourceManual    = "manual"
+	EntrySourceText      = "text"
+	EntrySourceVoice     = "voice"
+	EntrySourceReceipt   = "receipt"
+	EntrySourceRecurring = "recurring"
+	EntrySourceStatement = "statement"
+)
+
+var EntrySources = []string{
+	EntrySourceManual, EntrySourceText, EntrySourceVoice, EntrySourceReceipt,
+	EntrySourceRecurring, EntrySourceStatement,
+}
+
 type Entry struct {
 	ID          uint        `gorm:"primaryKey" json:"id"`
 	Title       string      `json:"title"`

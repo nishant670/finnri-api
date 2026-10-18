@@ -167,3 +167,92 @@ func TestLaunchOfferShowsSpotsOnlyWhenFewRemain(t *testing.T) {
 		t.Fatal("the lifetime quote is not part of the launch offer")
 	}
 }
+
+// The review's case: Monthly then Quarterly at the launch price, neither paid
+// yet. Only the newest order may be paid; switching plan keeps the discount.
+func TestLaunchOfferReservesTheFirstOpenCheckoutPerPerson(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake), withLaunchOfferStartedAt(yesterday()))
+	user, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+	seedPurchasablePlan(t, "quarterly", "quarterly", 32900, 11000)
+
+	monthly := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	again := startCheckout(t, router, token, "monthly", http.StatusOK)
+	if again.OrderID != monthly.OrderID {
+		t.Fatalf("a second tap on the same plan reuses the open order: %s vs %s", again.OrderID, monthly.OrderID)
+	}
+
+	quarterly := startCheckout(t, router, token, "quarterly", http.StatusCreated)
+	if quarterly.AmountMinor != 8200 || quarterly.OfferLabel != launchOfferLabel {
+		t.Fatalf("switching plan keeps the launch price: %+v", quarterly)
+	}
+	if first := loadPayment(t, monthly.OrderID); !isSupersededLaunchOrder(first) {
+		t.Fatalf("the earlier discounted order must be superseded: %+v", first)
+	}
+	if fresh := loadPayment(t, quarterly.OrderID); fresh.Status != models.PaymentStatusCreated {
+		t.Fatalf("the newest order stays payable: %+v", fresh)
+	}
+
+	// The pay page refuses the superseded order, and still opens the new one.
+	performJSONRequest[map[string]any](t, router, http.MethodGet, "/v1/billing/checkout/"+monthly.OrderID, "", nil, http.StatusGone)
+	performJSONRequest[map[string]any](t, router, http.MethodGet, "/v1/billing/checkout/"+quarterly.OrderID, "", nil, http.StatusOK)
+
+	// Once the newest is paid, nothing else is discounted.
+	if response := postWebhook(t, router, captureBody(quarterly.OrderID, "pay_launch_q", 8200), "evt_launch_q"); response.Code != http.StatusOK {
+		t.Fatalf("webhook status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if _, found, _ := currentUserSubscription(user.ID); !found {
+		t.Fatal("the paid launch order grants the plan")
+	}
+	later := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	if later.AmountMinor != 14900 || later.OfferLabel != "" {
+		t.Fatalf("after one launch purchase, checkout is full price: %+v", later)
+	}
+}
+
+// Open launch-priced orders hold places under the cap, so 500 people holding
+// orders cannot become more than 500 launch-price buyers. The holder of the
+// last place is not crowded out by their own order.
+func TestLaunchOfferCapCountsOpenOrders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake), withLaunchOfferStartedAt(yesterday()))
+	plan := seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	buyers := make([]models.User, 0, launchOfferMaxBuyers-1)
+	for index := 0; index < launchOfferMaxBuyers-1; index++ {
+		buyers = append(buyers, models.User{UUID: fmt.Sprintf("cap-%d", index), Username: fmt.Sprintf("cap_%d", index)})
+	}
+	if err := database.DB.CreateInBatches(&buyers, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	payments := make([]models.Payment, 0, len(buyers))
+	for index, buyer := range buyers {
+		payments = append(payments, models.Payment{
+			UserID: buyer.ID, PlanID: plan.ID, Provider: "razorpay",
+			ProviderOrderID: fmt.Sprintf("order_cap_%d", index), Status: models.PaymentStatusCaptured,
+			AmountMinor: 3700, Currency: "INR", PromotionCode: launchOfferCode, OriginalAmountMinor: 14900,
+		})
+	}
+	if err := database.DB.CreateInBatches(&payments, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	_, holderToken := createBillingTestUserSession(t)
+	held := startCheckout(t, router, holderToken, "monthly", http.StatusCreated)
+	if held.AmountMinor != 3700 {
+		t.Fatalf("the 500th place is still open: %+v", held)
+	}
+	if again := startCheckout(t, router, holderToken, "monthly", http.StatusOK); again.OrderID != held.OrderID {
+		t.Fatalf("the holder keeps their own place: %+v", again)
+	}
+
+	_, latecomerToken := createBillingTestUserSession(t)
+	if late := startCheckout(t, router, latecomerToken, "monthly", http.StatusCreated); late.AmountMinor != 14900 {
+		t.Fatalf("with every place held, the next person pays full price: %+v", late)
+	}
+}

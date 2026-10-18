@@ -1,8 +1,12 @@
 package http
 
 import (
+	"context"
+	"database/sql/driver"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 
 	"finnri/internal/database"
 	"finnri/internal/models"
@@ -19,6 +23,14 @@ The price is enforced here, at checkout, when the Razorpay order is created.
 What the app displays is only ever a reflection of this. The webhook checks
 a capture against the order's own amount, so a discounted order is granted
 exactly like any other.
+
+That makes an open discounted order a claim on the offer, not just a captured
+one. Counting only captures let one person open Monthly and Quarterly at the
+launch price before paying either, then pay both; and let more than 500
+people hold launch-priced orders at once. So an open order reserves its
+holder's one launch price and a place under the cap, and a newer discounted
+checkout supersedes the person's older open ones, which the pay page then
+refuses to open. Switching plan keeps the discount; paying twice does not.
 */
 
 const (
@@ -63,17 +75,78 @@ func launchOfferWindow(startsAt string) (start, end time.Time, ok bool) {
 	return parsed, parsed.Add(launchOfferDuration), true
 }
 
-// launchOfferBuyers counts people who have paid at the launch price. A fully
-// refunded purchase gives its place back.
-func launchOfferBuyers() (int64, error) {
+// launchOfferSupersededReason marks a discounted order replaced by a newer
+// one from the same person. It is stored as a failure so nothing reuses it.
+const launchOfferSupersededReason = "superseded by a newer launch-offer checkout"
+
+// launchOfferBuyers counts people who have paid at the launch price, or hold
+// a launch-priced order opened in the last checkoutOrderReuseWindow. A fully
+// refunded purchase gives its place back, and an abandoned order gives it
+// back once it is that old. exceptUserID is left out of the count, so the
+// person whose own reservation is open does not crowd themselves out.
+func launchOfferBuyers(now time.Time, exceptUserID uint) (int64, error) {
 	var buyers int64
 	err := database.DB.Model(&models.Payment{}).
-		Where("promotion_code = ? AND status = ?", launchOfferCode, models.PaymentStatusCaptured).
+		Where("promotion_code = ? AND user_id <> ?", launchOfferCode, exceptUserID).
+		Where("status = ? OR (status = ? AND created_at > ?)",
+			models.PaymentStatusCaptured, models.PaymentStatusCreated, now.Add(-checkoutOrderReuseWindow)).
 		Distinct("user_id").Count(&buyers).Error
 	return buyers, err
 }
 
-// userHasUsedLaunchOffer is the once-per-person rule.
+// supersedeOpenLaunchOrders retires a person's other open launch-priced
+// orders once a new one is recorded, so only the newest can be paid.
+func supersedeOpenLaunchOrders(tx *gorm.DB, userID, keepPaymentID uint, now time.Time) error {
+	return tx.Model(&models.Payment{}).
+		Where("user_id = ? AND promotion_code = ? AND status = ? AND id <> ?",
+			userID, launchOfferCode, models.PaymentStatusCreated, keepPaymentID).
+		Updates(map[string]any{
+			"status":         models.PaymentStatusFailed,
+			"failure_reason": launchOfferSupersededReason,
+			"updated_at":     now,
+		}).Error
+}
+
+// isSupersededLaunchOrder is an order a newer discounted checkout replaced.
+func isSupersededLaunchOrder(payment models.Payment) bool {
+	return payment.Status == models.PaymentStatusFailed && payment.FailureReason == launchOfferSupersededReason
+}
+
+// checkoutLockNamespace keys the per-person advisory lock below.
+const checkoutLockNamespace int32 = 0x46_4e_52 // "FNR"
+
+// lockCheckoutFor serialises one person's checkouts, so two taps cannot both
+// find the offer unclaimed. It holds a PostgreSQL advisory lock on its own
+// connection, which leaves the person's other writes unblocked; SQLite, used
+// only by tests, runs one statement at a time and needs none.
+func lockCheckoutFor(ctx context.Context, userID uint) (func(), error) {
+	if database.DB.Dialector.Name() != "postgres" {
+		return func() {}, nil
+	}
+	sqlDB, err := database.DB.DB()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1, $2)", checkoutLockNamespace, int32(userID)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return func() {
+		if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1, $2)", checkoutLockNamespace, int32(userID)); err != nil {
+			// A session lock outlives Close on a pooled connection, so a
+			// connection that could not unlock is thrown away instead.
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+		_ = conn.Close()
+	}, nil
+}
+
+// userHasUsedLaunchOffer is the once-per-person rule: it counts purchases.
+// An open order is handled at checkout, which supersedes it.
 func userHasUsedLaunchOffer(userID uint) (bool, error) {
 	var count int64
 	err := database.DB.Model(&models.Payment{}).
@@ -90,6 +163,12 @@ type launchOfferState struct {
 }
 
 func (s *Server) currentLaunchOffer(now time.Time) (launchOfferState, error) {
+	return s.currentLaunchOfferFor(now, 0)
+}
+
+// currentLaunchOfferFor is the offer as one person at checkout sees it: their
+// own open reservation does not count against the cap.
+func (s *Server) currentLaunchOfferFor(now time.Time, userID uint) (launchOfferState, error) {
 	if s.cfg == nil {
 		return launchOfferState{}, nil
 	}
@@ -97,7 +176,7 @@ func (s *Server) currentLaunchOffer(now time.Time) (launchOfferState, error) {
 	if !ok || now.Before(start) || !now.Before(end) {
 		return launchOfferState{}, nil
 	}
-	buyers, err := launchOfferBuyers()
+	buyers, err := launchOfferBuyers(now, userID)
 	if err != nil {
 		return launchOfferState{}, err
 	}
