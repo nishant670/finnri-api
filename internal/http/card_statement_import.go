@@ -265,7 +265,7 @@ func buildEntryFromStatementLine(statement *models.CardStatement, line statement
 		Type:           entryType,
 		Amount:         line.Amount,
 		Currency:       statement.Currency,
-		Source:         "statement",
+		Source:         models.EntrySourceStatement,
 		Category:       statementLineCategory(line),
 		Merchant:       statementLineTitle(line),
 		Tag:            unitemizedTag,

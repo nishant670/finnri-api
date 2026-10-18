@@ -1,6 +1,10 @@
 package database
 
-import "finnri/internal/models"
+import (
+	"strings"
+
+	"finnri/internal/models"
+)
 
 // Migrate is the sole production schema-change path. It is invoked by the
 // dedicated migrate binary during Railway's pre-deploy phase; the server boot
@@ -150,6 +154,15 @@ func legacyConstraintRenames() []string {
 	return []string{
 		renameUniqueConstraint("plans", "plans_code_key", "uni_plans_code"),
 	}
+}
+
+// entrySourceList is models.EntrySources as a SQL list: ('manual', 'text', …).
+func entrySourceList() string {
+	quoted := make([]string, len(models.EntrySources))
+	for index, source := range models.EntrySources {
+		quoted[index] = "'" + source + "'"
+	}
+	return "(" + strings.Join(quoted, ", ") + ")"
 }
 
 func EnsureRuntimeSchema() error {
@@ -1148,7 +1161,7 @@ func runtimeSchemaStatements() []string {
 			WHERE LOWER(type) IN ('expense', 'income')`,
 		`UPDATE entries
 			SET source = LOWER(source)
-			WHERE LOWER(source) IN ('manual', 'text', 'voice', 'receipt')`,
+			WHERE LOWER(source) IN ` + entrySourceList(),
 		`ALTER TABLE accounts
 			DROP CONSTRAINT IF EXISTS accounts_type_check`,
 		`ALTER TABLE accounts
@@ -1169,7 +1182,7 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE entries
 			DROP CONSTRAINT IF EXISTS entries_source_check`,
 		`ALTER TABLE entries
-			ADD CONSTRAINT entries_source_check CHECK (source IN ('manual', 'text', 'voice', 'receipt'))`, // 'receipt': see migrations/0051_allow_receipt_entry_source.sql.
+			ADD CONSTRAINT entries_source_check CHECK (source IN ` + entrySourceList() + `)`, // See migrations/0051 and 0060.
 		`ALTER TABLE entries
 			DROP CONSTRAINT IF EXISTS fk_entries_owned_account`,
 		`ALTER TABLE entries

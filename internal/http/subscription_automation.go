@@ -213,7 +213,7 @@ func newSubscriptionEntry(subscription models.Subscription, due string) models.E
 	return models.Entry{
 		UserID: subscription.UserID, AccountID: subscription.AccountID,
 		Title: subscription.Name, Type: "expense", Amount: subscription.Amount,
-		Currency: "INR", Source: "recurring", Mode: normalizedOccurrencePaymentMode(subscription),
+		Currency: "INR", Source: models.EntrySourceRecurring, Mode: normalizedOccurrencePaymentMode(subscription),
 		Category: category, Merchant: subscription.Merchant, PurposeType: purpose, Tag: tag,
 		Tags: models.StringArray{tag}, Notes: subscription.Notes, Date: due,
 		Time: "9:00 AM", IdempotencyKey: &idempotencyKey,

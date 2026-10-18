@@ -209,3 +209,24 @@ func TestMarkPaidCanLogTheTransaction(t *testing.T) {
 		fmt.Sprintf("/v1/subscriptions/%d/mark-paid", netflix.ID), token,
 		map[string]any{"log_transaction": true, "account_id": bank.ID + 999}, http.StatusUnprocessableEntity)
 }
+
+// The two entries the server writes on its own must carry a source the
+// database allows. SQLite enforces no CHECK, so this is the guard: when
+// 'recurring' and 'statement' were missing from entries_source_check, every
+// autopay entry and statement import failed in PostgreSQL alone.
+func TestServerWrittenEntriesUseAnAllowedSource(t *testing.T) {
+	allowed := map[string]bool{}
+	for _, source := range models.EntrySources {
+		allowed[source] = true
+	}
+	recurring := newSubscriptionEntry(models.Subscription{Name: "Netflix", Amount: 649}, "2026-10-18")
+	imported := buildEntryFromStatementLine(
+		&models.CardStatement{AccountID: 1, StatementDate: "2026-10-01", Currency: "INR"},
+		statementLine{Date: "2026-09-20", Description: "SWIGGY", Amount: 420},
+	)
+	for name, source := range map[string]string{"recurring": recurring.Source, "statement import": imported.Source} {
+		if !allowed[source] {
+			t.Errorf("%s entry has source %q, which entries_source_check rejects", name, source)
+		}
+	}
+}
