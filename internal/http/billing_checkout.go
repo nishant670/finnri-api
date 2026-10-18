@@ -148,12 +148,19 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 	}
 	amountMinor := *plan.PriceMinor
 
+	unlock, err := lockCheckoutFor(c.Request.Context(), user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_lock_checkout"})
+		return
+	}
+	defer unlock()
+
 	// The launch price is decided here and only here. The app's displayed
 	// price is a courtesy; this is what Razorpay will be asked to collect.
 	promotionCode := ""
 	originalAmountMinor := int64(0)
 	if launchOfferApplies(plan.BillingInterval) {
-		offer, err := s.currentLaunchOffer(time.Now())
+		offer, err := s.currentLaunchOfferFor(time.Now(), user.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_launch_offer"})
 			return
@@ -223,7 +230,15 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 		PromotionCode:       promotionCode,
 		OriginalAmountMinor: originalAmountMinor,
 	}
-	if err := database.DB.Create(&payment).Error; err != nil {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&payment).Error; err != nil {
+			return err
+		}
+		if payment.PromotionCode == "" {
+			return nil
+		}
+		return supersedeOpenLaunchOrders(tx, user.ID, payment.ID, time.Now().UTC())
+	}); err != nil {
 		// The order exists at Razorpay but we cannot track it. Refusing here
 		// is the honest answer: an untracked order that is later paid would
 		// arrive at a webhook with nothing to match, and the person would be
@@ -272,6 +287,14 @@ func (s *Server) getBillingCheckoutOrder(c *gin.Context) {
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_payment"})
+		return
+	}
+
+	if isSupersededLaunchOrder(payment) {
+		c.JSON(http.StatusGone, gin.H{
+			"error":   "order_superseded",
+			"message": "This order was replaced by a newer one. Start again from the Finnri app.",
+		})
 		return
 	}
 
