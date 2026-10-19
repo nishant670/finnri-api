@@ -103,3 +103,14 @@ func TestLegacyConstraintRenameIsSafeOnFreshAndExistingDatabases(t *testing.T) {
 		t.Fatal("legacy constraint rename must not cast a possibly missing table to regclass")
 	}
 }
+
+// The CHECK is built from models.EntrySources, which lists every source the
+// server writes as well as the ones clients send. Missing 'recurring' and
+// 'statement' made every autopay entry and statement import fail.
+func TestEntrySourceCheckAllowsEverySourceTheServerWrites(t *testing.T) {
+	joined := strings.Join(runtimeSchemaStatements(), "\n")
+	want := "CHECK (source IN ('manual', 'text', 'voice', 'receipt', 'recurring', 'statement'))"
+	if !strings.Contains(joined, want) {
+		t.Fatalf("entries_source_check must read %q", want)
+	}
+}

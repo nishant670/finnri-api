@@ -24,7 +24,19 @@ const (
 	maxSubscriptionReminderDays     = 30
 	maxSubscriptionNameLength       = 120
 	maxSubscriptionInstalments      = 600
+
+	recurringKindSubscription = "subscription"
+	recurringKindLoan         = "loan"
+	recurringKindInvestment   = "investment"
+	recurringKindBill         = "bill"
+
+	maxRecurringRatePct = 60.0
 )
+
+var recurringLoanTypes = map[string]bool{
+	"personal": true, "car": true, "two_wheeler": true, "home": true, "education": true,
+	"gold": true, "consumer": true, "business": true, "other": true,
+}
 
 type subscriptionInput struct {
 	AccountID       *uint        `json:"account_id"`
@@ -48,10 +60,38 @@ type subscriptionInput struct {
 	// Both optional. Left out, an update keeps what is stored.
 	TotalInstalments *int `json:"total_instalments"`
 	InstalmentsPaid  *int `json:"instalments_paid"`
+
+	// Everything below is optional and, like the instalment counts, leaves
+	// the stored value alone when omitted — an older client that knows only
+	// subscriptions must not wipe a loan's details by editing its name.
+	// Kind is inferred on create when absent; see inferRecurringKind.
+	Kind                 *string       `json:"kind"`
+	LoanType             *string       `json:"loan_type"`
+	Lender               *string       `json:"lender"`
+	Principal            *models.Money `json:"principal"`
+	AnnualRatePct        *float64      `json:"annual_rate_pct"`
+	ProcessingFee        *models.Money `json:"processing_fee"`
+	ForeclosureChargePct *float64      `json:"foreclosure_charge_pct"`
+	StartDate            *string       `json:"start_date"`
+	Platform             *string       `json:"platform"`
+	StepUpPct            *float64      `json:"step_up_pct"`
+
+	// Create only: a payment already made, to record as a transaction now.
+	// Without it, nothing reached the ledger until the next due date, so an
+	// SIP added on the day it was paid — or the month before its next date —
+	// left that month's instalment out. See logSubscriptionPayment.
+	LogPaymentOn string `json:"log_payment_on"`
 }
 
 type markSubscriptionPaidInput struct {
 	PaidDate string `json:"paid_date"`
+	// Also write the payment to the transactions. Off unless asked, so an
+	// older app that only moves the schedule on keeps doing just that.
+	LogTransaction bool `json:"log_transaction"`
+	// Where this payment came from, when it differs from the item's own
+	// account. Only read with log_transaction; the item is not changed.
+	AccountID   *uint  `json:"account_id"`
+	PaymentMode string `json:"payment_mode"`
 }
 
 func (input subscriptionInput) validate() map[string]string {
@@ -107,6 +147,43 @@ func (input subscriptionInput) validate() map[string]string {
 	if input.TotalInstalments != nil && (*input.TotalInstalments < 0 || *input.TotalInstalments > maxSubscriptionInstalments) {
 		fields["total_instalments"] = "must be between 0 and 600"
 	}
+	if input.Kind != nil && normalizeRecurringKind(*input.Kind) == "" {
+		fields["kind"] = "must be subscription, loan, investment, or bill"
+	}
+	if input.LoanType != nil && strings.TrimSpace(*input.LoanType) != "" &&
+		!recurringLoanTypes[strings.ToLower(strings.TrimSpace(*input.LoanType))] {
+		fields["loan_type"] = "must be personal, car, two_wheeler, home, education, gold, consumer, business, or other"
+	}
+	if input.Principal != nil && *input.Principal < 0 {
+		fields["principal"] = "must not be negative"
+	}
+	if input.ProcessingFee != nil && *input.ProcessingFee < 0 {
+		fields["processing_fee"] = "must not be negative"
+	}
+	if input.AnnualRatePct != nil && (*input.AnnualRatePct < 0 || *input.AnnualRatePct > maxRecurringRatePct) {
+		fields["annual_rate_pct"] = "must be between 0 and 60"
+	}
+	if input.ForeclosureChargePct != nil && (*input.ForeclosureChargePct < 0 || *input.ForeclosureChargePct > 20) {
+		fields["foreclosure_charge_pct"] = "must be between 0 and 20"
+	}
+	if input.StepUpPct != nil && (*input.StepUpPct < 0 || *input.StepUpPct > 100) {
+		fields["step_up_pct"] = "must be between 0 and 100"
+	}
+	if input.StartDate != nil && strings.TrimSpace(*input.StartDate) != "" {
+		if _, err := parseStrictAPIDate(*input.StartDate); err != nil {
+			fields["start_date"] = "must use YYYY-MM-DD"
+		}
+	}
+	if strings.TrimSpace(input.LogPaymentOn) != "" {
+		logged, err := parseStrictAPIDate(input.LogPaymentOn)
+		if err != nil {
+			fields["log_payment_on"] = "must use YYYY-MM-DD"
+		} else if due, err := parseStrictAPIDate(input.NextDueDate); err == nil && logged.After(due) {
+			// A payment after the next due date is a later instalment, not
+			// the one being caught up on.
+			fields["log_payment_on"] = "must not be after next_due_date"
+		}
+	}
 	if input.InstalmentsPaid != nil {
 		if *input.InstalmentsPaid < 0 {
 			fields["instalments_paid"] = "must not be negative"
@@ -148,23 +225,109 @@ func (input subscriptionInput) apply(subscription *models.Subscription) {
 	if subscription.PaymentMode == "" {
 		subscription.PaymentMode = "Cash"
 	}
-	subscription.TransactionTag = strings.TrimSpace(input.TransactionTag)
-	if subscription.TransactionTag == "" {
-		subscription.TransactionTag = "Subscription"
-	}
-	subscription.PurposeType = strings.ToLower(strings.TrimSpace(input.PurposeType))
-	if subscription.PurposeType == "" {
-		subscription.PurposeType = "normal_spend"
-	}
-	if subscription.BillingInterval == subscriptionIntervalDaily || subscription.BillingInterval == subscriptionIntervalBusinessDaily {
-		subscription.ReminderDays = 0
-	}
-	subscription.Notes = strings.TrimSpace(input.Notes)
 	if input.TotalInstalments != nil {
 		subscription.TotalInstalments = *input.TotalInstalments
 	}
 	if input.InstalmentsPaid != nil {
 		subscription.InstalmentsPaid = *input.InstalmentsPaid
+	}
+	input.applyRecurringDetails(subscription)
+
+	// Tag and purpose follow the kind when the client leaves them out, so the
+	// entries a loan or SIP writes are filed as EMI or Investment.
+	subscription.TransactionTag = strings.TrimSpace(input.TransactionTag)
+	if subscription.TransactionTag == "" {
+		subscription.TransactionTag = defaultRecurringTag(subscription.Kind)
+	}
+	subscription.PurposeType = strings.ToLower(strings.TrimSpace(input.PurposeType))
+	if subscription.PurposeType == "" {
+		subscription.PurposeType = "normal_spend"
+		if subscription.Kind == recurringKindInvestment {
+			subscription.PurposeType = "investment"
+		}
+	}
+	if subscription.BillingInterval == subscriptionIntervalDaily || subscription.BillingInterval == subscriptionIntervalBusinessDaily {
+		subscription.ReminderDays = 0
+	}
+	subscription.Notes = strings.TrimSpace(input.Notes)
+}
+
+// applyRecurringDetails sets the kind and the loan and investment details,
+// touching only what the request names.
+func (input subscriptionInput) applyRecurringDetails(subscription *models.Subscription) {
+	switch {
+	case input.Kind != nil:
+		subscription.Kind = normalizeRecurringKind(*input.Kind)
+	case subscription.Kind == "":
+		subscription.Kind = inferRecurringKind(input.TransactionTag, input.PurposeType, subscription.TotalInstalments)
+	}
+	if input.LoanType != nil {
+		subscription.LoanType = strings.ToLower(strings.TrimSpace(*input.LoanType))
+	}
+	if input.Lender != nil {
+		subscription.Lender = strings.TrimSpace(*input.Lender)
+	}
+	if input.Principal != nil {
+		subscription.Principal = *input.Principal
+	}
+	if input.AnnualRatePct != nil {
+		subscription.AnnualRatePct = *input.AnnualRatePct
+	}
+	if input.ProcessingFee != nil {
+		subscription.ProcessingFee = *input.ProcessingFee
+	}
+	if input.ForeclosureChargePct != nil {
+		subscription.ForeclosureChargePct = *input.ForeclosureChargePct
+	}
+	if input.StartDate != nil {
+		subscription.StartDate = strings.TrimSpace(*input.StartDate)
+	}
+	if input.Platform != nil {
+		subscription.Platform = strings.TrimSpace(*input.Platform)
+	}
+	if input.StepUpPct != nil {
+		subscription.StepUpPct = *input.StepUpPct
+	}
+}
+
+func normalizeRecurringKind(value string) string {
+	switch kind := strings.ToLower(strings.TrimSpace(value)); kind {
+	case recurringKindSubscription, recurringKindLoan, recurringKindInvestment, recurringKindBill:
+		return kind
+	case "emi":
+		return recurringKindLoan
+	case "sip":
+		return recurringKindInvestment
+	default:
+		return ""
+	}
+}
+
+// inferRecurringKind files a payment made by a client that does not send a
+// kind — the current app's EMI tag and its SIP-style investments — the same
+// way the migration filed the existing rows.
+func inferRecurringKind(tag, purpose string, totalInstalments int) string {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(tag), "EMI") || totalInstalments > 0:
+		return recurringKindLoan
+	case strings.EqualFold(strings.TrimSpace(tag), "Investment") ||
+		strings.EqualFold(strings.TrimSpace(purpose), "investment"):
+		return recurringKindInvestment
+	default:
+		return recurringKindSubscription
+	}
+}
+
+func defaultRecurringTag(kind string) string {
+	switch kind {
+	case recurringKindLoan:
+		return "EMI"
+	case recurringKindInvestment:
+		return "Investment"
+	case recurringKindBill:
+		return "General"
+	default:
+		return "Subscription"
 	}
 }
 

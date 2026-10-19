@@ -226,6 +226,19 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 		return "", "", err
 	}
 
+	// Checkout keeps one launch price per person by superseding older open
+	// orders, but a Razorpay window already open on one can still be paid.
+	// The money is taken by then, so the period is granted; the log is what
+	// lets support refund the difference.
+	if payment.PromotionCode == launchOfferCode {
+		if used, err := userHasUsedLaunchOffer(payment.UserID); err != nil {
+			return "", "", err
+		} else if used || isSupersededLaunchOrder(payment) {
+			log.Printf("[WARN] launch offer paid a second time order=%s user=%d superseded=%t",
+				entity.OrderID, payment.UserID, isSupersededLaunchOrder(payment))
+		}
+	}
+
 	now := time.Now().UTC()
 	var subscription models.UserSubscription
 	err = database.DB.Transaction(func(tx *gorm.DB) error {

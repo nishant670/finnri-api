@@ -132,6 +132,7 @@ func syncSubscriptionAutomation(userID uint, today time.Time) ([]models.Subscrip
 				return created, err
 			}
 			if finished {
+				notifyRecurringCompleted(*subscription)
 				break
 			}
 		}
@@ -152,33 +153,7 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 			return err
 		}
 
-		tag := strings.TrimSpace(subscription.TransactionTag)
-		if tag == "" {
-			tag = "Subscription"
-		}
-		purpose := strings.TrimSpace(subscription.PurposeType)
-		if purpose == "" {
-			purpose = "normal_spend"
-		}
-		// Autopay writes an entry directly, so it never passes through the entry
-		// input validation that canonicalizes categories. Route it through the
-		// same resolver, otherwise a subscription filed under the old
-		// subscription-only vocabulary ("Cloud", "Membership") would put that
-		// value straight into the ledger and fragment the category rollups.
-		category, ok := categoryForSave(subscription.Category, "expense")
-		if !ok {
-			category = defaultCategory
-		}
-		mode := normalizedOccurrencePaymentMode(*subscription)
-		idempotencyKey := fmt.Sprintf("subscription:%d:%s", subscription.ID, due)
-		entry := models.Entry{
-			UserID: subscription.UserID, AccountID: subscription.AccountID,
-			Title: subscription.Name, Type: "expense", Amount: subscription.Amount,
-			Currency: "INR", Source: "recurring", Mode: mode, Category: category,
-			Merchant: subscription.Merchant, PurposeType: purpose, Tag: tag,
-			Tags: models.StringArray{tag}, Notes: subscription.Notes, Date: due,
-			Time: "9:00 AM", IdempotencyKey: &idempotencyKey,
-		}
+		entry := newSubscriptionEntry(*subscription, due)
 		if err := tx.Create(&entry).Error; err != nil {
 			return err
 		}
@@ -192,8 +167,8 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 		}
 		notification := models.Notification{
 			UserID: subscription.UserID, Type: "subscription.autopay",
-			Title:     "Autopay transaction added",
-			Body:      fmt.Sprintf("Added %s for ₹%s from %s. Confirm it or open it to make changes.", subscription.Name, subscription.Amount.String(), occurrenceAccountLabel(*subscription)),
+			Title:     recurringAutopayTitle(subscription.Kind),
+			Body:      fmt.Sprintf("Added %s for %s from %s. Confirm it or open it to make changes.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(*subscription)),
 			ActionURL: fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID),
 		}
 		if err := tx.Create(&notification).Error; err != nil {
@@ -212,6 +187,102 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 		_ = maybeCreateBudgetAlertsForEntry(occurrence.Entry)
 	}
 	return occurrence, didCreate, err
+}
+
+// newSubscriptionEntry is the transaction one payment of a recurring item
+// writes, whether autopay added it or the user logged it.
+func newSubscriptionEntry(subscription models.Subscription, due string) models.Entry {
+	tag := strings.TrimSpace(subscription.TransactionTag)
+	if tag == "" {
+		tag = "Subscription"
+	}
+	purpose := strings.TrimSpace(subscription.PurposeType)
+	if purpose == "" {
+		purpose = "normal_spend"
+	}
+	// Autopay writes an entry directly, so it never passes through the entry
+	// input validation that canonicalizes categories. Route it through the
+	// same resolver, otherwise a subscription filed under the old
+	// subscription-only vocabulary ("Cloud", "Membership") would put that
+	// value straight into the ledger and fragment the category rollups.
+	category, ok := categoryForSave(subscription.Category, "expense")
+	if !ok {
+		category = defaultCategory
+	}
+	idempotencyKey := fmt.Sprintf("subscription:%d:%s", subscription.ID, due)
+	return models.Entry{
+		UserID: subscription.UserID, AccountID: subscription.AccountID,
+		Title: subscription.Name, Type: "expense", Amount: subscription.Amount,
+		Currency: "INR", Source: models.EntrySourceRecurring, Mode: normalizedOccurrencePaymentMode(subscription),
+		Category: category, Merchant: subscription.Merchant, PurposeType: purpose, Tag: tag,
+		Tags: models.StringArray{tag}, Notes: subscription.Notes, Date: due,
+		Time: "9:00 AM", IdempotencyKey: &idempotencyKey,
+	}
+}
+
+// logSubscriptionPayment records a payment the user says is already made: a
+// confirmed transaction, filed against the schedule the way an autopay one is,
+// so autopay can never add the same date again. When it is the payment that
+// was due, the schedule moves past it, and a loan counts the EMI, exactly as
+// marking it paid does. An earlier payment — last month's, while the next is
+// still to come — leaves the schedule alone.
+func logSubscriptionPayment(tx *gorm.DB, subscription *models.Subscription, paid, now time.Time) (*models.Entry, error) {
+	due := paid.Format("2006-01-02")
+	entry, err := recordSubscriptionPayment(tx, *subscription, due, due, now)
+	if err != nil {
+		return nil, err
+	}
+
+	subscription.LastChargedDate = due
+	updates := map[string]any{"last_charged_date": due}
+	if nextDue, err := parseAPIDate(subscription.NextDueDate); err == nil && !paid.Before(nextDue) {
+		next, err := advanceSubscriptionDueDate(subscription.NextDueDate, subscription.BillingInterval, paid)
+		if err != nil {
+			return entry, err
+		}
+		subscription.NextDueDate = next
+		updates["next_due_date"] = next
+		if subscription.TotalInstalments > 0 {
+			subscription.InstalmentsPaid++
+			updates["instalments_paid"] = subscription.InstalmentsPaid
+			if subscription.InstalmentsPaid >= subscription.TotalInstalments {
+				subscription.Status = subscriptionStatusCancelled
+				updates["status"] = subscriptionStatusCancelled
+			}
+		}
+	}
+	return entry, tx.Model(&models.Subscription{}).Where("id = ?", subscription.ID).Updates(updates).Error
+}
+
+// recordSubscriptionPayment writes one payment the user made: a confirmed
+// entry dated when it was paid, and the occurrence that files it against the
+// due date it settled. That occurrence is what keeps a payment from being
+// written twice — autopay, logging and marking paid all check it — so when
+// the due date already has one, nothing is written and the entry is nil.
+func recordSubscriptionPayment(tx *gorm.DB, subscription models.Subscription, paidOn, dueDate string, now time.Time) (*models.Entry, error) {
+	var existing int64
+	if err := tx.Model(&models.SubscriptionOccurrence{}).
+		Where("user_id = ? AND subscription_id = ? AND due_date = ?", subscription.UserID, subscription.ID, dueDate).
+		Count(&existing).Error; err != nil {
+		return nil, err
+	}
+	if existing > 0 {
+		return nil, nil
+	}
+	entry := newSubscriptionEntry(subscription, dueDate)
+	entry.Date = paidOn
+	if err := tx.Create(&entry).Error; err != nil {
+		return nil, err
+	}
+	confirmedAt := now.UTC()
+	occurrence := models.SubscriptionOccurrence{
+		UserID: subscription.UserID, SubscriptionID: subscription.ID, EntryID: entry.ID,
+		DueDate: dueDate, Status: subscriptionOccurrenceConfirmed, ConfirmedAt: &confirmedAt,
+	}
+	if err := tx.Create(&occurrence).Error; err != nil {
+		return nil, err
+	}
+	return &entry, nil
 }
 
 func normalizedOccurrencePaymentMode(subscription models.Subscription) string {

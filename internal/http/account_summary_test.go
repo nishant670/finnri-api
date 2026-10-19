@@ -361,3 +361,95 @@ func TestAccountSummaryMatchesDashboardAccountSpending(t *testing.T) {
 // testToday fixes the date these summaries are computed against, so a test
 // cannot start failing because the calendar moved.
 const testToday = "2026-08-18"
+
+// The report: three ₹25,000 spends on a card are already logged one by one,
+// so the ₹75,000 bill that pays them must not be counted again as spending.
+// Paying it off can now say where the money came from — that account goes
+// down, filed as a card payment — or say nothing, as when family paid it.
+func TestMarkCardPaidOffCanSayWhereTheMoneyCameFrom(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	auth := performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{
+		"device_id": "card-paid-from-device",
+	}, http.StatusOK)
+	card := models.Account{UserID: auth.User.ID, Type: "credit_card", Name: "HDFC Regalia"}
+	bank := models.Account{UserID: auth.User.ID, Type: "bank", Name: "SBI Savings"}
+	for _, account := range []*models.Account{&card, &bank} {
+		if err := database.DB.Create(account).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		spend := models.Entry{
+			UserID: auth.User.ID, AccountID: &card.ID, Type: "expense", Amount: mustMoney(t, "25000"),
+			Date: testToday, Currency: "INR", Source: "manual", Category: "Shopping",
+		}
+		if err := database.DB.Create(&spend).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	performJSONRequest[map[string]any](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/accounts/%d/paid-off", card.ID), auth.Token,
+		map[string]any{"amount": "75000", "paid_on": testToday, "from_account_id": card.ID},
+		http.StatusUnprocessableEntity)
+	performJSONRequest[map[string]any](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/accounts/%d/paid-off", card.ID), auth.Token,
+		map[string]any{"from_account_id": bank.ID}, http.StatusUnprocessableEntity)
+
+	performJSONRequest[models.Account](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/accounts/%d/paid-off", card.ID), auth.Token,
+		map[string]any{"amount": "75000", "paid_on": testToday, "from_account_id": bank.ID, "method": "UPI"},
+		http.StatusOK)
+
+	var payments []models.Entry
+	if err := database.DB.Where("user_id = ? AND account_id = ?", auth.User.ID, bank.ID).Find(&payments).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(payments) != 1 || payments[0].Amount.String() != "75000.00" ||
+		payments[0].PurposeType != cardPaymentPurposeType || payments[0].Date != testToday {
+		t.Fatalf("expected one ₹75,000 card payment out of SBI, got %#v", payments)
+	}
+
+	var spent float64
+	if err := database.DB.Model(&models.Entry{}).
+		Where("user_id = ? AND LOWER(type) = 'expense'"+spendingRollupClause, auth.User.ID).
+		Select("COALESCE(SUM(amount), 0)").Scan(&spent).Error; err != nil {
+		t.Fatal(err)
+	}
+	if spent != 75000 {
+		t.Fatalf("spending should be the three card spends alone, ₹75,000; got %v", spent)
+	}
+
+	accounts := performJSONRequest[[]accountWithSummary](
+		t, router, http.MethodGet, "/v1/accounts?tz=Asia/Kolkata", auth.Token, nil, http.StatusOK,
+	)
+	for _, result := range accounts {
+		if result.ID == card.ID && (result.Summary.Outstanding == nil || *result.Summary.Outstanding != 0) {
+			t.Fatalf("the card should be cleared, outstanding = %v", result.Summary.Outstanding)
+		}
+	}
+
+	// Paid by somebody else: no account named, nothing deducted anywhere.
+	other := models.Account{UserID: auth.User.ID, Type: "credit_card", Name: "Family card"}
+	if err := database.DB.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	spend := models.Entry{
+		UserID: auth.User.ID, AccountID: &other.ID, Type: "expense", Amount: mustMoney(t, "900"),
+		Date: testToday, Currency: "INR", Source: "manual",
+	}
+	if err := database.DB.Create(&spend).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before int64
+	database.DB.Model(&models.Entry{}).Where("user_id = ?", auth.User.ID).Count(&before)
+	performJSONRequest[models.Account](t, router, http.MethodPost,
+		fmt.Sprintf("/v1/accounts/%d/paid-off", other.ID), auth.Token,
+		map[string]any{"amount": "900", "paid_on": testToday}, http.StatusOK)
+	var after int64
+	database.DB.Model(&models.Entry{}).Where("user_id = ?", auth.User.ID).Count(&after)
+	if after != before {
+		t.Fatalf("with no account named, nothing should be written: %d → %d entries", before, after)
+	}
+}

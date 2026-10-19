@@ -61,6 +61,8 @@ func TestEntryInputValidation(t *testing.T) {
 	invalidCurrency.Currency = "USD"
 	invalidSource := validEntryInput()
 	invalidSource.Source = "import"
+	receiptSource := validEntryInput()
+	receiptSource.Source = "receipt"
 	invalidMode := validEntryInput()
 	invalidMode.Mode = "Cheque"
 	missingMode := validEntryInput()
@@ -80,6 +82,7 @@ func TestEntryInputValidation(t *testing.T) {
 		{"invalid date", invalidDate, false},
 		{"invalid currency", invalidCurrency, false},
 		{"invalid source", invalidSource, false},
+		{"receipt scan source", receiptSource, true},
 		{"invalid mode", invalidMode, false},
 		{"mode may be derived from account", missingMode, true},
 		{"missing category", missingCategory, false},

@@ -36,6 +36,31 @@ tidy is not this system's call.
 // letting a card's monthly subscription match the previous month's.
 const matchDateWindowDays = 3
 
+// The "probably the same" tier, tried only on what the strict pass left over.
+// None of these pairs is resolved automatically: each is shown beside the
+// user's own entry and the user says whether it is the same purchase. They
+// exist because the alternative — showing the bank line as missing *and* the
+// entry as unbilled — invites a one-tap duplicate.
+const (
+	// probableDateWindowDays bounds a same-amount pair that the strict window
+	// rejected: logged on the wrong day, or posted late across a weekend and a
+	// holiday. It stays well short of a month so a subscription never pairs
+	// with the previous month's charge.
+	probableDateWindowDays = 10
+	// probableRoundingTolerance is one rupee — a bill rounded on one side only.
+	probableRoundingTolerance = models.Money(100)
+	// probableForexRatio covers a foreign purchase logged at the quoted price
+	// and billed with the issuer's markup and GST on top. It only applies when
+	// the descriptions share a word, because near-equal small amounts are
+	// common and mostly unrelated.
+	probableForexRatio = 0.035
+)
+
+const (
+	probableReasonDate   = "date"
+	probableReasonAmount = "amount"
+)
+
 // Statement line kinds. The distinction that matters most is `payment`: a
 // credit for settling the bill is not a refund and must never be imported, so
 // it is classified out of the diff entirely.
@@ -73,6 +98,11 @@ type ledgerLine struct {
 	Amount   models.Money `json:"amount"`
 	Type     string       `json:"type"`
 	Tag      string       `json:"tag"`
+	// OutsideCycle marks an entry dated just before or after the cycle. It is
+	// loaded so a purchase logged on the day it happened can still match a
+	// line the bank posted into this cycle, but it is never reported as extra:
+	// it belongs to a neighbouring bill.
+	OutsideCycle bool `json:"outside_cycle,omitempty"`
 }
 
 // matchedPair is a statement line and the entry it belongs to.
@@ -85,18 +115,43 @@ type matchedPair struct {
 	Similarity float64 `json:"similarity"`
 }
 
+// probablePair is a statement line that is probably an entry the user
+// already logged, differently enough that the strict pass would not commit.
+type probablePair struct {
+	Line   statementLine `json:"line"`
+	Entry  ledgerLine    `json:"entry"`
+	DayGap int           `json:"day_gap"`
+	// AmountGap is line minus entry: positive when the bank billed more.
+	AmountGap  models.Money `json:"amount_gap"`
+	Similarity float64      `json:"similarity"`
+	// Reason is what differs: "date" (same amount, further apart) or
+	// "amount" (close in time, slightly different amount).
+	Reason string `json:"reason"`
+}
+
 // statementDiff is the whole comparison.
 type statementDiff struct {
-	Matched []matchedPair   `json:"matched"`
-	Missing []statementLine `json:"missing"`
-	Extra   []ledgerLine    `json:"extra"`
+	Matched []matchedPair `json:"matched"`
+	// Probable pairs are excluded from Missing and Extra. Importing one is the
+	// user saying "no, that was a different purchase".
+	Probable []probablePair  `json:"probable"`
+	Missing  []statementLine `json:"missing"`
+	Extra    []ledgerLine    `json:"extra"`
 	// Ignored holds lines that are real but must not become transactions —
 	// bill payments, which Finnri tracks on the statement rather than as card
 	// entries. Surfaced so the user can see they were considered.
-	Ignored []statementLine    `json:"ignored"`
+	Ignored []statementLine `json:"ignored"`
+	// Charges are the bank's own fees and interest, wherever they landed —
+	// missing, probable or already tracked. They are surfaced together because
+	// an unexpected annual fee or late charge is worth a look on its own.
+	Charges []statementLine    `json:"charges"`
 	Summary statementDiffTotal `json:"summary"`
-	// Present only for AI screenshot intake. A mismatch is a review warning,
-	// never a reason to hide or reject the parsed rows.
+	// Reconciliation is Finnri's ledger against this bill before anything is
+	// imported, so the screen can say what importing will leave unexplained.
+	Reconciliation *statementReconciliation `json:"reconciliation,omitempty"`
+	// Whether the rows add up to the bill. Absent while the bill has no amount
+	// yet. A mismatch is a review warning, never a reason to hide or reject
+	// the parsed rows.
 	Checksum *statementChecksum `json:"checksum,omitempty"`
 	Source   string             `json:"source,omitempty"`
 
@@ -109,10 +164,15 @@ type statementChecksum struct {
 	ParsedDebits  models.Money `json:"parsed_debits"`
 	ParsedCredits models.Money `json:"parsed_credits"`
 	ParsedNet     models.Money `json:"parsed_net"`
-	ExpectedNet   models.Money `json:"expected_net"`
-	Difference    models.Money `json:"difference"`
-	Matches       bool         `json:"matches"`
-	Message       string       `json:"message"`
+	// Payments are the bill payments found among the rows, kept out of
+	// ParsedNet and used to work out what the purchases should total.
+	Payments models.Money `json:"payments"`
+	// OpeningBalance is the previous bill's total, when Finnri has one.
+	OpeningBalance *models.Money `json:"opening_balance,omitempty"`
+	ExpectedNet    models.Money  `json:"expected_net"`
+	Difference     models.Money  `json:"difference"`
+	Matches        bool          `json:"matches"`
+	Message        string        `json:"message"`
 }
 
 type statementDiffTotal struct {
@@ -121,9 +181,12 @@ type statementDiffTotal struct {
 	MissingCount   int `json:"missing_count"`
 	ExtraCount     int `json:"extra_count"`
 	IgnoredCount   int `json:"ignored_count"`
+	ProbableCount  int `json:"probable_count"`
+	ChargesCount   int `json:"charges_count"`
 	// MissingAmount is what importing everything in Missing would add.
 	MissingAmount models.Money `json:"missing_amount"`
 	ExtraAmount   models.Money `json:"extra_amount"`
+	ChargesAmount models.Money `json:"charges_amount"`
 }
 
 // classifyLine works out what a statement row actually is.
@@ -178,10 +241,12 @@ func classifyLine(line statementLine) string {
 // entries rather than both matching the first.
 func diffStatementLines(lines []statementLine, entries []ledgerLine) statementDiff {
 	diff := statementDiff{
-		Matched: []matchedPair{},
-		Missing: []statementLine{},
-		Extra:   []ledgerLine{},
-		Ignored: []statementLine{},
+		Matched:  []matchedPair{},
+		Missing:  []statementLine{},
+		Extra:    []ledgerLine{},
+		Ignored:  []statementLine{},
+		Probable: []probablePair{},
+		Charges:  []statementLine{},
 	}
 
 	// Payments are set aside before matching: they are not spending, and they
@@ -192,6 +257,10 @@ func diffStatementLines(lines []statementLine, entries []ledgerLine) statementDi
 		if line.Kind == lineKindPayment {
 			diff.Ignored = append(diff.Ignored, line)
 			continue
+		}
+		if line.Kind == lineKindFee || line.Kind == lineKindInterest {
+			diff.Charges = append(diff.Charges, line)
+			diff.Summary.ChargesAmount += line.Amount
 		}
 		matchable = append(matchable, line)
 	}
@@ -250,6 +319,8 @@ func diffStatementLines(lines []statementLine, entries []ledgerLine) statementDi
 		})
 	}
 
+	diff.Probable = pairProbable(matchable, entries, usedLines, usedEntries)
+
 	for index, line := range matchable {
 		if !usedLines[index] {
 			diff.Missing = append(diff.Missing, line)
@@ -257,7 +328,7 @@ func diffStatementLines(lines []statementLine, entries []ledgerLine) statementDi
 		}
 	}
 	for index, entry := range entries {
-		if !usedEntries[index] {
+		if !usedEntries[index] && !entry.OutsideCycle {
 			diff.Extra = append(diff.Extra, entry)
 			diff.Summary.ExtraAmount += entry.Amount
 		}
@@ -268,7 +339,86 @@ func diffStatementLines(lines []statementLine, entries []ledgerLine) statementDi
 	diff.Summary.MissingCount = len(diff.Missing)
 	diff.Summary.ExtraCount = len(diff.Extra)
 	diff.Summary.IgnoredCount = len(diff.Ignored)
+	diff.Summary.ProbableCount = len(diff.Probable)
+	diff.Summary.ChargesCount = len(diff.Charges)
 	return diff
+}
+
+// pairProbable runs the second, looser pass over whatever the strict pass left
+// unpaired, and marks what it pairs as used so neither side is reported again
+// as missing or extra.
+//
+// Ranking prefers an identical amount over a near one, then the smaller
+// amount difference, then the closer date, then the shared words.
+func pairProbable(lines []statementLine, entries []ledgerLine, usedLines, usedEntries map[int]bool) []probablePair {
+	type candidate struct {
+		lineIndex, entryIndex int
+		pair                  probablePair
+	}
+	candidates := []candidate{}
+	for lineIndex, line := range lines {
+		if usedLines[lineIndex] {
+			continue
+		}
+		for entryIndex, entry := range entries {
+			if usedEntries[entryIndex] || line.isCredit() != strings.EqualFold(entry.Type, "income") {
+				continue
+			}
+			gap, ok := dayGap(line.Date, entry.Date)
+			if !ok {
+				continue
+			}
+			similarity := describeSimilarity(line.Description, entry.Title+" "+entry.Merchant)
+			amountGap := line.Amount - entry.Amount
+			reason := ""
+			switch {
+			case amountGap == 0 && gap <= probableDateWindowDays:
+				reason = probableReasonDate
+			case gap <= matchDateWindowDays && absMoney(amountGap) <= probableRoundingTolerance:
+				reason = probableReasonAmount
+			case gap <= matchDateWindowDays && similarity > 0 &&
+				float64(absMoney(amountGap)) <= probableForexRatio*float64(line.Amount):
+				reason = probableReasonAmount
+			}
+			if reason == "" {
+				continue
+			}
+			candidates = append(candidates, candidate{lineIndex, entryIndex, probablePair{
+				Line: line, Entry: entry, DayGap: gap, AmountGap: amountGap,
+				Similarity: similarity, Reason: reason,
+			}})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left, right := candidates[i].pair, candidates[j].pair
+		if (left.AmountGap == 0) != (right.AmountGap == 0) {
+			return left.AmountGap == 0
+		}
+		if absMoney(left.AmountGap) != absMoney(right.AmountGap) {
+			return absMoney(left.AmountGap) < absMoney(right.AmountGap)
+		}
+		if left.DayGap != right.DayGap {
+			return left.DayGap < right.DayGap
+		}
+		return left.Similarity > right.Similarity
+	})
+	pairs := []probablePair{}
+	for _, pick := range candidates {
+		if usedLines[pick.lineIndex] || usedEntries[pick.entryIndex] {
+			continue
+		}
+		usedLines[pick.lineIndex] = true
+		usedEntries[pick.entryIndex] = true
+		pairs = append(pairs, pick.pair)
+	}
+	return pairs
+}
+
+func absMoney(value models.Money) models.Money {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 // dayGap is the absolute distance in days between two dates.

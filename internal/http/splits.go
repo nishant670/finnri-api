@@ -103,6 +103,8 @@ type splitSettlementInput struct {
 	Direction string       `json:"direction"`
 	Date      string       `json:"date"`
 	Notes     string       `json:"notes"`
+	// Optional so that app builds which do not ask can still record one.
+	PaymentMode string `json:"payment_mode"`
 }
 
 type splitBalance struct {
@@ -133,8 +135,49 @@ type splitActivityItem struct {
 	// A settlement's standing, on settlement rows only. The feed carried
 	// claimed payments and agreed ones under the same wording, which is the
 	// difference the person being asked to agree most needs to see.
-	Status    string    `json:"status,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Status string `json:"status,omitempty"`
+	// How a settlement was paid, on settlement rows only.
+	PaymentMode string `json:"payment_mode,omitempty"`
+	// On settlement rows: the group it settled, by name, so a history of
+	// payments between two people can say which shared ledger each one closed.
+	GroupName string `json:"group_name,omitempty"`
+	// On settlement rows: when the other side confirmed or denied it.
+	RespondedAt *time.Time `json:"responded_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	// When this row last happened: added, edited, or — for a settlement —
+	// answered. The feed is ordered on it; see sortSplitActivity.
+	ActivityAt time.Time `json:"activity_at"`
+}
+
+// latestTime is the later of a row's timestamps, ignoring the ones not set.
+func latestTime(first time.Time, rest ...*time.Time) time.Time {
+	latest := first
+	for _, candidate := range rest {
+		if candidate != nil && candidate.After(latest) {
+			latest = *candidate
+		}
+	}
+	return latest
+}
+
+// sortSplitActivity orders the feed newest first.
+//
+// By default that is the order things happened in, not the dates they carry.
+// It used to be the bill's date, so an expense added today for last Tuesday
+// slid in below a week of older entries, and the feed stopped saying what had
+// just happened — which is all a feed is for. A friend's settlement history
+// asks for "date": there it is a ledger of payments, read by when each was
+// paid.
+func sortSplitActivity(items []splitActivityItem, order string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if order == "date" && items[i].Date != items[j].Date {
+			return items[i].Date > items[j].Date
+		}
+		if !items[i].ActivityAt.Equal(items[j].ActivityAt) {
+			return items[i].ActivityAt.After(items[j].ActivityAt)
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
 }
 
 type splitGroupInviteResponse struct {
@@ -1876,6 +1919,23 @@ func (s *Server) listSplitSettlements(c *gin.Context) {
 func (s *Server) listSplitActivity(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	page, pageSize := parseBillingPagination(c.Query("page"), c.Query("page_size"))
+	// Optional narrowing, applied before paging so a filtered page is a full
+	// one. A friend's page asks for type=settlement&friend_id=N: every payment
+	// between the viewer and that one person, whichever of them recorded it and
+	// whether or not the other side agreed.
+	typeFilter := strings.TrimSpace(c.Query("type"))
+	var friendFilter uint
+	if raw := strings.TrimSpace(c.Query("friend_id")); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil || parsed == 0 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":  "invalid_filters",
+				"fields": gin.H{"friend_id": "must be a positive integer"},
+			})
+			return
+		}
+		friendFilter = uint(parsed)
+	}
 
 	// Activity is a history of the ledger the user still has, not of everything
 	// that ever happened to it. A deleted group kept narrating itself here —
@@ -1896,8 +1956,13 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		return
 	}
 
+	// Bare rows: the feed is sorted and paged on a bill's date, title and
+	// author alone. Its participants and group are loaded below for the page
+	// being returned, not for every bill the user has ever split — which is
+	// what every page used to pay for, and the app now reads the feed a page
+	// at a time all the way to the end.
 	var bills []models.SplitBill
-	billQuery := database.DB.Preload("Group").Preload("Participants.Friend")
+	billQuery := database.DB.Model(&models.SplitBill{})
 	if len(accessibleGroupIDs) > 0 {
 		billQuery = billQuery.Where(
 			"(split_bills.user_id = ? AND split_bills.group_id IS NULL) OR split_bills.group_id IN ?",
@@ -1968,25 +2033,42 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			Group:            &groupCopy,
 			ParticipantCount: len(group.Members),
 			CreatedAt:        group.CreatedAt,
+			ActivityAt:       group.CreatedAt,
 		})
 	}
 	for _, friend := range friends {
 		friendID := friend.ID
 		friendCopy := friend
 		items = append(items, splitActivityItem{
-			ID:        fmt.Sprintf("friend-%d", friend.ID),
-			Type:      "friend_created",
-			RecordID:  friend.ID,
-			Title:     fmt.Sprintf("%s added", fallbackSplitFriendName(friend)),
-			Date:      friend.CreatedAt.Format("2006-01-02"),
-			FriendID:  &friendID,
-			Friend:    &friendCopy,
-			CreatedAt: friend.CreatedAt,
+			ID:         fmt.Sprintf("friend-%d", friend.ID),
+			Type:       "friend_created",
+			RecordID:   friend.ID,
+			Title:      fmt.Sprintf("%s added", fallbackSplitFriendName(friend)),
+			Date:       friend.CreatedAt.Format("2006-01-02"),
+			FriendID:   &friendID,
+			Friend:     &friendCopy,
+			CreatedAt:  friend.CreatedAt,
+			ActivityAt: friend.CreatedAt,
 		})
 	}
 	friendsByID := map[uint]models.SplitFriend{}
 	for _, friend := range friends {
 		friendsByID[friend.ID] = friend
+	}
+	groupNames := map[uint]string{}
+	for _, group := range groups {
+		groupNames[group.ID] = group.Name
+	}
+	for _, membership := range sharedMemberships {
+		if membership.Group.ID != 0 {
+			groupNames[membership.Group.ID] = membership.Group.Name
+		}
+	}
+	groupNameOf := func(groupID *uint) string {
+		if groupID == nil {
+			return ""
+		}
+		return groupNames[*groupID]
 	}
 	// How the viewer knows whoever wrote a line in a shared group. Their account
 	// name would be a name the viewer has never seen; the friend row they keep
@@ -2013,21 +2095,19 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	for _, bill := range bills {
 		amount := bill.TotalAmount
 		item := splitActivityItem{
-			ID:               fmt.Sprintf("bill-%d", bill.ID),
-			Type:             "bill",
-			RecordID:         bill.ID,
-			Title:            bill.Title,
-			Date:             bill.Date,
-			Amount:           &amount,
-			GroupID:          bill.GroupID,
-			ParticipantCount: len(bill.Participants),
-			Participants:     bill.Participants,
-			Notes:            bill.Notes,
-			ActorName:        actorName(bill.GroupID, bill.UserID),
-			CreatedAt:        bill.CreatedAt,
-		}
-		if bill.Group != nil && bill.Group.ID != 0 {
-			item.Group = bill.Group
+			ID:        fmt.Sprintf("bill-%d", bill.ID),
+			Type:      "bill",
+			RecordID:  bill.ID,
+			Title:     bill.Title,
+			Date:      bill.Date,
+			Amount:    &amount,
+			GroupID:   bill.GroupID,
+			Notes:     bill.Notes,
+			ActorName: actorName(bill.GroupID, bill.UserID),
+			CreatedAt: bill.CreatedAt,
+			// An edit is news too: the feed is the only place a changed
+			// amount in a shared group shows up for the others.
+			ActivityAt: latestTime(bill.CreatedAt, &bill.UpdatedAt),
 		}
 		items = append(items, item)
 	}
@@ -2059,20 +2139,24 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		friendID := counterpart.ID
 		friendCopy := counterpart
 		items = append(items, splitActivityItem{
-			ID:        fmt.Sprintf("settlement-%d", settlement.ID),
-			Type:      "settlement",
-			RecordID:  settlement.ID,
-			Title:     title,
-			Date:      settlement.Date,
-			Amount:    &amount,
-			GroupID:   settlement.GroupID,
-			FriendID:  &friendID,
-			Friend:    &friendCopy,
-			Direction: direction,
-			Notes:     settlement.Notes,
-			ActorName: actorName(settlement.GroupID, settlement.UserID),
-			Status:    settlementStatusOrDefault(settlement.Status),
-			CreatedAt: settlement.CreatedAt,
+			ID:          fmt.Sprintf("settlement-%d", settlement.ID),
+			Type:        "settlement",
+			RecordID:    settlement.ID,
+			Title:       title,
+			Date:        settlement.Date,
+			Amount:      &amount,
+			GroupID:     settlement.GroupID,
+			FriendID:    &friendID,
+			Friend:      &friendCopy,
+			Direction:   direction,
+			Notes:       settlement.Notes,
+			ActorName:   actorName(settlement.GroupID, settlement.UserID),
+			Status:      settlementStatusOrDefault(settlement.Status),
+			PaymentMode: settlement.PaymentMode,
+			GroupName:   groupNameOf(settlement.GroupID),
+			RespondedAt: settlement.RespondedAt,
+			CreatedAt:   settlement.CreatedAt,
+			ActivityAt:  latestTime(settlement.CreatedAt, settlement.RespondedAt),
 		})
 	}
 
@@ -2095,6 +2179,7 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			// group you joined announces itself as having nobody in it.
 			ParticipantCount: len(group.Members),
 			CreatedAt:        membership.CreatedAt,
+			ActivityAt:       membership.CreatedAt,
 		})
 	}
 	for _, settlement := range settlements {
@@ -2107,17 +2192,22 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 			title = fmt.Sprintf("You paid %s", fallbackSplitFriendName(settlement.Friend))
 		}
 		item := splitActivityItem{
-			ID:        fmt.Sprintf("settlement-%d", settlement.ID),
-			Type:      "settlement",
-			RecordID:  settlement.ID,
-			Title:     title,
-			Date:      settlement.Date,
-			Amount:    &amount,
-			FriendID:  &friendID,
-			Direction: settlement.Direction,
-			Notes:     settlement.Notes,
-			Status:    settlementStatusOrDefault(settlement.Status),
-			CreatedAt: settlement.CreatedAt,
+			ID:          fmt.Sprintf("settlement-%d", settlement.ID),
+			Type:        "settlement",
+			RecordID:    settlement.ID,
+			Title:       title,
+			Date:        settlement.Date,
+			Amount:      &amount,
+			GroupID:     settlement.GroupID,
+			FriendID:    &friendID,
+			Direction:   settlement.Direction,
+			Notes:       settlement.Notes,
+			Status:      settlementStatusOrDefault(settlement.Status),
+			PaymentMode: settlement.PaymentMode,
+			GroupName:   groupNameOf(settlement.GroupID),
+			RespondedAt: settlement.RespondedAt,
+			CreatedAt:   settlement.CreatedAt,
+			ActivityAt:  latestTime(settlement.CreatedAt, settlement.RespondedAt),
 		}
 		if settlement.Friend.ID != 0 {
 			friend := settlement.Friend
@@ -2126,12 +2216,21 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 		items = append(items, item)
 	}
 
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Date != items[j].Date {
-			return items[i].Date > items[j].Date
+	if typeFilter != "" || friendFilter != 0 {
+		kept := items[:0]
+		for _, item := range items {
+			if typeFilter != "" && item.Type != typeFilter {
+				continue
+			}
+			if friendFilter != 0 && (item.FriendID == nil || *item.FriendID != friendFilter) {
+				continue
+			}
+			kept = append(kept, item)
 		}
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
+		items = kept
+	}
+
+	sortSplitActivity(items, strings.TrimSpace(c.Query("order")))
 
 	total := len(items)
 	start := (page - 1) * pageSize
@@ -2142,12 +2241,55 @@ func (s *Server) listSplitActivity(c *gin.Context) {
 	if end > total {
 		end = total
 	}
+	pageItems := items[start:end]
+	if err := hydrateSplitActivityBills(database.DB, pageItems); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_split_activity"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"items":     items[start:end],
+		"items":     pageItems,
 		"page":      page,
 		"page_size": pageSize,
 		"total":     total,
 	})
+}
+
+// hydrateSplitActivityBills fills in the participants and group of the bill
+// rows on one page of the feed, in two queries however long the page is.
+func hydrateSplitActivityBills(db *gorm.DB, items []splitActivityItem) error {
+	billIDs := make([]uint, 0, len(items))
+	for _, item := range items {
+		if item.Type == "bill" {
+			billIDs = append(billIDs, item.RecordID)
+		}
+	}
+	if len(billIDs) == 0 {
+		return nil
+	}
+	var bills []models.SplitBill
+	if err := db.Preload("Group").Preload("Participants.Friend").
+		Where("id IN ?", billIDs).Find(&bills).Error; err != nil {
+		return err
+	}
+	byID := make(map[uint]models.SplitBill, len(bills))
+	for _, bill := range bills {
+		byID[bill.ID] = bill
+	}
+	for i := range items {
+		if items[i].Type != "bill" {
+			continue
+		}
+		bill, ok := byID[items[i].RecordID]
+		if !ok {
+			continue
+		}
+		items[i].Participants = bill.Participants
+		items[i].ParticipantCount = len(bill.Participants)
+		if bill.Group != nil && bill.Group.ID != 0 {
+			items[i].Group = bill.Group
+		}
+	}
+	return nil
 }
 
 func (s *Server) listSplitBalances(c *gin.Context) {
@@ -2402,19 +2544,47 @@ func (input splitSettlementInput) validate() map[string]string {
 	if _, err := time.Parse("2006-01-02", input.Date); err != nil {
 		fields["date"] = "must use YYYY-MM-DD"
 	}
+	if _, ok := normalizeSettlementPaymentMode(input.PaymentMode); !ok {
+		fields["payment_mode"] = "must be cash, upi, bank_transfer, card, wallet or other"
+	}
 	return fields
 }
 
 func (input splitSettlementInput) toModel(userID uint) models.SplitSettlement {
+	mode, _ := normalizeSettlementPaymentMode(input.PaymentMode)
 	return models.SplitSettlement{
-		UserID:    userID,
-		FriendID:  input.FriendID,
-		GroupID:   input.GroupID,
-		Amount:    input.Amount,
-		Direction: normalizeSettlementDirection(input.Direction),
-		Date:      input.Date,
-		Notes:     strings.TrimSpace(input.Notes),
+		UserID:      userID,
+		FriendID:    input.FriendID,
+		GroupID:     input.GroupID,
+		Amount:      input.Amount,
+		Direction:   normalizeSettlementDirection(input.Direction),
+		Date:        input.Date,
+		Notes:       strings.TrimSpace(input.Notes),
+		PaymentMode: mode,
 	}
+}
+
+// settlementPaymentModes are the ways a settlement can be paid, with the words
+// a sentence uses for each. Kept to how money actually moves between two
+// people, not the full list of account types an expense can come from.
+var settlementPaymentModes = map[string]string{
+	"cash":          "in cash",
+	"upi":           "by UPI",
+	"bank_transfer": "by bank transfer",
+	"card":          "by card",
+	"wallet":        "from a wallet",
+	"other":         "",
+}
+
+// normalizeSettlementPaymentMode accepts a known mode in any case, and empty
+// for a client that does not ask.
+func normalizeSettlementPaymentMode(raw string) (string, bool) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return "", true
+	}
+	_, ok := settlementPaymentModes[mode]
+	return mode, ok
 }
 
 // splitGroupFrame is one shared group's roster, in every namespace at once.
