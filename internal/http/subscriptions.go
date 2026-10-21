@@ -170,6 +170,10 @@ func (s *Server) deleteSubscription(c *gin.Context) {
 		if err := tx.Where("user_id = ? AND subscription_id = ?", userID, id).Delete(&models.SubscriptionReminder{}).Error; err != nil {
 			return err
 		}
+		// The payments it logged stay in the ledger; only their filings go.
+		if err := deleteSubscriptionOccurrences(tx, userID, "subscription_id", uint(id)); err != nil {
+			return err
+		}
 		result := tx.Where("id = ? AND user_id = ?", id, userID).Delete(&models.Subscription{})
 		if result.Error != nil {
 			return result.Error
