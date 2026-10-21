@@ -285,6 +285,31 @@ func recordSubscriptionPayment(tx *gorm.DB, subscription models.Subscription, pa
 	return &entry, nil
 }
 
+// deleteSubscriptionOccurrences drops the occurrences a delete would otherwise
+// trip over, along with the autopay notification each one raised. The
+// database's own foreign keys cannot be trusted to cascade: tables AutoMigrate
+// created first carry GORM's constraint, which restricts, so a recurring
+// payment's entry — and a schedule that has logged one — refused to delete.
+// The notification goes too because its Confirm and Change buttons act on the
+// occurrence, and would only fail once it is gone.
+func deleteSubscriptionOccurrences(tx *gorm.DB, userID uint, column string, id uint) error {
+	var notificationIDs []uint
+	if err := tx.Model(&models.SubscriptionOccurrence{}).
+		Where("user_id = ? AND "+column+" = ? AND notification_id IS NOT NULL", userID, id).
+		Pluck("notification_id", &notificationIDs).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("user_id = ? AND "+column+" = ?", userID, id).
+		Delete(&models.SubscriptionOccurrence{}).Error; err != nil {
+		return err
+	}
+	if len(notificationIDs) == 0 {
+		return nil
+	}
+	return tx.Where("user_id = ? AND id IN ?", userID, notificationIDs).
+		Delete(&models.Notification{}).Error
+}
+
 func normalizedOccurrencePaymentMode(subscription models.Subscription) string {
 	if mode := normalizeSubscriptionPaymentMode(subscription.PaymentMode); mode != "" {
 		return mode

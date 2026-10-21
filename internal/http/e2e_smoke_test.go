@@ -236,6 +236,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/subscriptions", server.listSubscriptions)
 	authorized.POST("/subscriptions/reminders", server.requireEntitlement(billing.FeatureSubscriptionReminders), server.createSubscriptionReminders)
 	authorized.POST("/subscriptions/:id/mark-paid", server.markSubscriptionPaid)
+	authorized.DELETE("/subscriptions/:id", server.deleteSubscription)
 	authorized.POST("/feedback", server.createFeedback)
 	authorized.POST("/auth/logout", server.authLogout)
 	authorized.POST("/auth/sessions/revoke-all", server.authRevokeAllSessions)
