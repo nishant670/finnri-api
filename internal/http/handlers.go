@@ -854,9 +854,27 @@ func (s *Server) finalizeParseSuccess(
 	audioSize int64,
 	reported ai.Usage,
 ) (map[string]any, error) {
+	return s.finalizeParseSuccessAs("", creditService, usageEventID, subject, actionCode, inputChars, responseBytes, audioSize, reported)
+}
+
+// finalizeParseSuccessAs is finalizeParseSuccess for a call whose intent is
+// known only after the provider answered — a typed question. The intent is
+// recorded on the usage event; the credits are exactly what was reserved.
+func (s *Server) finalizeParseSuccessAs(
+	intent string,
+	creditService *billing.CreditService,
+	usageEventID uint,
+	subject billing.CreditSubject,
+	actionCode ai.ActionCode,
+	inputChars int,
+	responseBytes int,
+	audioSize int64,
+	reported ai.Usage,
+) (map[string]any, error) {
 	prompt, completion, total := tokenPointers(reported)
 	providerUsage := billing.ProviderUsage{
 		Status:           billing.UsageStatusSucceeded,
+		Intent:           intent,
 		Provider:         "openai",
 		Model:            s.cfg.OpenAILlmModel,
 		InputChars:       &inputChars,

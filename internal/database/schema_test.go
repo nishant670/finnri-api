@@ -43,6 +43,7 @@ func TestRuntimeSchemaIncludesDataIntegrityConstraints(t *testing.T) {
 		"idx_credit_ledger_grant_idempotency",
 		"idx_daily_credit_usage_user_date",
 		"ai_usage_events_status_check",
+		"ai_usage_events_intent_check",
 		"lifetime_quote_requests_status_check",
 		"ai_usage_limit_events_reason_check",
 		"ai_model_pricings_operation_check",

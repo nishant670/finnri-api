@@ -53,6 +53,11 @@ const (
 	UsageStatusCancelled            = "cancelled"
 )
 
+// UsageIntentQuestion marks a parse that resolved to a ledger question (an
+// Ask Finnri answer) rather than a draft. The action code, and so the price,
+// stays whatever was reserved.
+const UsageIntentQuestion = "question"
+
 const (
 	AllowanceAllowed             = "allowed"
 	AllowanceSubjectRequired     = "subject_required"
@@ -138,6 +143,7 @@ type ProviderUsage struct {
 	InputChars             *int
 	ResponseBytes          *int
 	ErrorCode              string
+	Intent                 string
 	ProviderStartedAt      *time.Time
 	FinishedAt             *time.Time
 }
@@ -1187,6 +1193,7 @@ func copyUsageUpdates(updates map[string]any, usage ProviderUsage) {
 		"secondary_provider": usage.SecondaryProvider,
 		"secondary_model":    usage.SecondaryModel,
 		"error_code":         usage.ErrorCode,
+		"intent":             usage.Intent,
 	}
 	for key, value := range stringUpdates {
 		if strings.TrimSpace(value) != "" {
@@ -1407,6 +1414,7 @@ func logAIUsageEvent(event models.AIUsageEvent) {
 		"input_chars":               event.InputChars,
 		"response_bytes":            event.ResponseBytes,
 		"error_code":                event.ErrorCode,
+		"intent":                    event.Intent,
 		"started_at":                event.StartedAt,
 		"finished_at":               event.FinishedAt,
 	})

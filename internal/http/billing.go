@@ -97,6 +97,7 @@ type aiUsageEventResponse struct {
 	InputChars       *int       `json:"input_chars,omitempty"`
 	ResponseBytes    *int       `json:"response_bytes,omitempty"`
 	ErrorCode        string     `json:"error_code,omitempty"`
+	Intent           string     `json:"intent,omitempty"`
 	StartedAt        time.Time  `json:"started_at"`
 	FinishedAt       *time.Time `json:"finished_at,omitempty"`
 }
@@ -278,6 +279,7 @@ func (s *Server) listAIUsage(c *gin.Context) {
 			InputChars:       event.InputChars,
 			ResponseBytes:    event.ResponseBytes,
 			ErrorCode:        event.ErrorCode,
+			Intent:           event.Intent,
 			StartedAt:        event.StartedAt,
 			FinishedAt:       event.FinishedAt,
 		})

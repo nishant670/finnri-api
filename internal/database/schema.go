@@ -777,6 +777,7 @@ func runtimeSchemaStatements() []string {
 			input_chars INTEGER,
 			response_bytes INTEGER,
 			error_code VARCHAR(80) NOT NULL DEFAULT '',
+			intent VARCHAR(16) NOT NULL DEFAULT '',
 			started_at TIMESTAMPTZ NOT NULL,
 			provider_started_at TIMESTAMPTZ,
 			finished_at TIMESTAMPTZ,
@@ -835,6 +836,15 @@ func runtimeSchemaStatements() []string {
 				AND (input_chars IS NULL OR input_chars >= 0)
 				AND (response_bytes IS NULL OR response_bytes >= 0)
 			)`,
+		// migrations/0061: what a parse turned out to be, so the usage list
+		// can show an Ask Finnri question as one. Empty for everything else.
+		`ALTER TABLE ai_usage_events
+			ADD COLUMN IF NOT EXISTS intent VARCHAR(16) NOT NULL DEFAULT ''`,
+		`ALTER TABLE ai_usage_events
+			DROP CONSTRAINT IF EXISTS ai_usage_events_intent_check`,
+		`ALTER TABLE ai_usage_events
+			ADD CONSTRAINT ai_usage_events_intent_check
+			CHECK (intent IN ('', 'question'))`,
 		`CREATE TABLE IF NOT EXISTS credit_ledger (
 			id BIGSERIAL PRIMARY KEY,
 			user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
