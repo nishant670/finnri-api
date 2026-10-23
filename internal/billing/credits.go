@@ -22,7 +22,7 @@ const (
 	LoggedInFreeTrialCredits = 1000
 	GuestTrialCredits        = 300
 	LoggedInFreeDailyLimit   = 50
-	GuestDailyLimit          = 15
+	GuestDailyLimit          = 50
 	TrialDuration            = 30 * 24 * time.Hour
 	AnonymousGuestRetention  = 90 * 24 * time.Hour
 )
