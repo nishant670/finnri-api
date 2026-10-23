@@ -109,6 +109,20 @@ func TestBillingStatusOmitsLastPassForSomeoneWhoNeverBought(t *testing.T) {
 	}
 }
 
+// The app checks a capture's price against these before it opens the camera or
+// the microphone, so they must be the prices the server charges.
+func TestBillingStatusPricesEachCapturePath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, token := createBillingTestUserSession(t)
+
+	status := performJSONRequest[billingStatusResponse](t, router, http.MethodGet, "/v1/billing/status", token, nil, http.StatusOK)
+	if got, want := status.Credits.CaptureCredits, (captureCreditsResponse{Text: 5, Voice: 12, Receipt: 25}); got != want {
+		t.Fatalf("capture credits = %#v, want %#v", got, want)
+	}
+}
+
 func TestBillingStatusSaysARefundEndedThePass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	useSmokeDatabase(t)

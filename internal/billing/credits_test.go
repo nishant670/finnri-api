@@ -528,6 +528,35 @@ func TestCheckAllowanceSelectsGuestTrialLimits(t *testing.T) {
 	}
 }
 
+// A guest's daily cap once sat below the price of a bill scan, so the scan was
+// refused on a fresh day with the whole trial balance untouched.
+func TestCheckAllowanceLetsGuestScanABillAndStillTypeOnAFreshDay(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	grant, _, err := service.EnsureGuestTrialGrant("guest-device-receipt", "203.0.113.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := SubjectForGuestHash(grant.GuestDeviceIDHash)
+
+	receipt, err := service.CheckAllowance(subject, ai.ActionTransactionParseReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !receipt.Allowed {
+		t.Fatalf("expected a guest to afford a bill scan on a fresh day, got %#v", receipt)
+	}
+	text, err := service.CheckAllowance(subject, ai.ActionTransactionParseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if GuestDailyLimit-receipt.RequiredCredits < text.RequiredCredits {
+		t.Fatalf("a scan leaves %d credits today, below a typed capture's %d", GuestDailyLimit-receipt.RequiredCredits, text.RequiredCredits)
+	}
+}
+
 func TestCheckAllowanceDeniesGuestForNonGuestAction(t *testing.T) {
 	db := setupCreditTestDB(t)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)

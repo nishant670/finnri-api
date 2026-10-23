@@ -934,10 +934,11 @@ func writeCreditReservationError(c *gin.Context, allowance billing.AllowanceResu
 	switch allowance.Reason {
 	case billing.AllowanceDailyLimitReached:
 		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":       billing.AllowanceDailyLimitReached,
-			"daily_limit": allowance.DailyLimit,
-			"used_today":  allowance.UsedToday,
-			"reset_at":    nextCreditResetAt(time.Now().UTC()),
+			"error":            billing.AllowanceDailyLimitReached,
+			"daily_limit":      allowance.DailyLimit,
+			"used_today":       allowance.UsedToday,
+			"required_credits": allowance.RequiredCredits,
+			"reset_at":         nextCreditResetAt(time.Now().UTC()),
 		})
 	case billing.AllowanceInsufficientCredits, billing.AllowanceFeatureLocked, billing.AllowanceGuestNotAllowed:
 		c.JSON(http.StatusPaymentRequired, gin.H{
