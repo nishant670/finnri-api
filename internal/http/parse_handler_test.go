@@ -285,6 +285,10 @@ func TestParseHandlerReturnsDailyLimitReached(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `"daily_limit":50`) {
 		t.Fatalf("daily limit response missing limit: %s", response.Body.String())
 	}
+	// The app says what the capture needed, not just that the day is spent.
+	if !strings.Contains(response.Body.String(), `"required_credits":5`) {
+		t.Fatalf("daily limit response missing required credits: %s", response.Body.String())
+	}
 }
 
 func TestParseHandlerRejectsGlobalKillSwitch(t *testing.T) {

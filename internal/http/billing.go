@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"finnri/internal/ai"
 	"finnri/internal/billing"
 	"finnri/internal/database"
 	"finnri/internal/models"
@@ -46,6 +47,31 @@ type creditSummaryResponse struct {
 	ResetAt               time.Time             `json:"reset_at"`
 	TrialExpiresAt        *time.Time            `json:"trial_expires_at,omitempty"`
 	Grants                []creditGrantResponse `json:"grants,omitempty"`
+	// CaptureCredits is what each way of adding an expense costs, so the app
+	// can turn a capture away before the photo or recording exists rather
+	// than after the server refuses it.
+	CaptureCredits captureCreditsResponse `json:"capture_credits"`
+}
+
+// captureCreditsResponse prices the three capture paths. Voice is the
+// shortest clip's price: a longer one costs more, and the server still decides.
+type captureCreditsResponse struct {
+	Text    int `json:"text"`
+	Voice   int `json:"voice"`
+	Receipt int `json:"receipt"`
+}
+
+func captureCredits() captureCreditsResponse {
+	registry := ai.DefaultActionRegistry()
+	cost := func(code ai.ActionCode) int {
+		action, _ := registry.Lookup(code)
+		return action.DefaultCredits
+	}
+	return captureCreditsResponse{
+		Text:    cost(ai.ActionTransactionParseText),
+		Voice:   cost(ai.ActionTransactionParseVoiceShort),
+		Receipt: cost(ai.ActionTransactionParseReceipt),
+	}
 }
 
 type creditGrantResponse struct {
@@ -529,6 +555,7 @@ func buildCreditSummary(subject billing.CreditSubject, includeGrants bool) (cred
 		DailyCreditsRemaining: dailyRemaining,
 		ResetAt:               nextCreditResetAt(now),
 		TrialExpiresAt:        trialExpiresAt,
+		CaptureCredits:        captureCredits(),
 	}
 	if includeGrants {
 		var grants []models.CreditGrant
