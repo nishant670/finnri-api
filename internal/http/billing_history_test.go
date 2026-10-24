@@ -169,7 +169,7 @@ func TestPurchaseHistoryListsPaymentsNewestFirst(t *testing.T) {
 
 	// An order someone opened and walked away from.
 	if err := database.DB.Create(&models.Payment{
-		UserID: user.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
+		UserID: &user.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
 		ProviderOrderID: "order_abandoned", Status: models.PaymentStatusCreated,
 		AmountMinor: 7900, Currency: "INR", CreatedAt: time.Now().Add(2 * time.Minute),
 	}).Error; err != nil {
@@ -179,7 +179,7 @@ func TestPurchaseHistoryListsPaymentsNewestFirst(t *testing.T) {
 	// Someone else's purchase.
 	other, _ := createBillingTestUserSession(t)
 	if err := database.DB.Create(&models.Payment{
-		UserID: other.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
+		UserID: &other.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
 		ProviderOrderID: "order_other", ProviderPaymentID: "pay_other", Status: models.PaymentStatusCaptured,
 		AmountMinor: 7900, Currency: "INR",
 	}).Error; err != nil {

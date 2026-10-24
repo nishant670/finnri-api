@@ -114,3 +114,21 @@ func TestEntrySourceCheckAllowsEverySourceTheServerWrites(t *testing.T) {
 		t.Fatalf("entries_source_check must read %q", want)
 	}
 }
+
+// AutoMigrate creates payments with GORM's NO ACTION foreign keys, which made
+// deleting anyone who had ever paid fail. The runtime statements must replace
+// them so the payment is kept and only loses the link to the deleted user.
+func TestPaymentForeignKeysLetTheUserGo(t *testing.T) {
+	joined := strings.Join(runtimeSchemaStatements(), "\n")
+	for _, want := range []string{
+		"ALTER TABLE payments ALTER COLUMN user_id DROP NOT NULL",
+		"ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_user",
+		"FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL",
+		"ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_subscription",
+		"FOREIGN KEY (subscription_id) REFERENCES user_subscriptions(id) ON DELETE SET NULL",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("runtime schema must include %q", want)
+		}
+	}
+}
