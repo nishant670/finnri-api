@@ -56,6 +56,7 @@ func Migrate() error {
 		&models.SplitSettlement{},
 		&models.SplitFriendMerge{},
 		&models.Payment{},
+		&models.PaymentRefund{},
 		&models.PaymentWebhookEvent{},
 	); err != nil {
 		return err

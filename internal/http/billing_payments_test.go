@@ -550,6 +550,77 @@ func TestPartialRefundLeavesTheSubscriptionRunning(t *testing.T) {
 	}
 }
 
+// TestPartialRefundAnnouncedTwiceCountsOnce: Razorpay sends refund.created and
+// refund.processed for the same refund. Both used to add the amount, so half
+// back on a pass read as all of it back, which ends the pass.
+func TestPartialRefundAnnouncedTwiceCountsOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	user, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	postWebhook(t, router, captureBody(order.OrderID, "pay_1", 14900), "evt_1")
+	balance := creditBalance(t, user.ID)
+
+	created := `{"event":"refund.created","payload":{"refund":{"entity":{"id":"rfnd_half","payment_id":"pay_1","amount":7450,"status":"created"}}}}`
+	processed := `{"event":"refund.processed","payload":{"refund":{"entity":{"id":"rfnd_half","payment_id":"pay_1","amount":7450,"status":"processed"}}}}`
+	postWebhook(t, router, created, "evt_refund_created")
+	postWebhook(t, router, processed, "evt_refund_processed")
+
+	payment := loadPayment(t, order.OrderID)
+	if payment.AmountRefundedMinor != 7450 || payment.Status != models.PaymentStatusCaptured {
+		t.Fatalf("half a refund, announced twice, must count once: %#v", payment)
+	}
+	if _, found, _ := currentUserSubscription(user.ID); !found {
+		t.Fatal("a half refund must not end the pass")
+	}
+	if got := creditBalance(t, user.ID); got != balance {
+		t.Fatalf("a half refund must not take credits: %d, was %d", got, balance)
+	}
+	var refunds []models.PaymentRefund
+	database.DB.Where("payment_id = ?", payment.ID).Find(&refunds)
+	if len(refunds) != 1 || refunds[0].Status != "processed" || refunds[0].AmountMinor != 7450 {
+		t.Fatalf("expected one refund row, now processed: %#v", refunds)
+	}
+}
+
+// TestTwoPartialRefundsThatMakeTheWholeEndThePass: different refund ids do add
+// up, and reaching the full price ends the pass like a single full refund.
+func TestTwoPartialRefundsThatMakeTheWholeEndThePass(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	user, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	before := creditBalance(t, user.ID)
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	postWebhook(t, router, captureBody(order.OrderID, "pay_1", 14900), "evt_1")
+
+	first := `{"event":"refund.processed","payload":{"refund":{"entity":{"id":"rfnd_a","payment_id":"pay_1","amount":5000,"status":"processed"}}}}`
+	second := `{"event":"refund.processed","payload":{"refund":{"entity":{"id":"rfnd_b","payment_id":"pay_1","amount":9900,"status":"processed"}}}}`
+	postWebhook(t, router, first, "evt_refund_a")
+	if _, found, _ := currentUserSubscription(user.ID); !found {
+		t.Fatal("the first part refund must leave the pass running")
+	}
+	postWebhook(t, router, second, "evt_refund_b")
+
+	payment := loadPayment(t, order.OrderID)
+	if payment.AmountRefundedMinor != 14900 || payment.Status != models.PaymentStatusRefunded {
+		t.Fatalf("two refunds making the whole must read as refunded: %#v", payment)
+	}
+	if _, found, _ := currentUserSubscription(user.ID); found {
+		t.Fatal("a payment refunded in full must not leave an active pass")
+	}
+	if got := creditBalance(t, user.ID); got != before {
+		t.Fatalf("a pass refunded in full kept credits: %d, expected %d", got, before)
+	}
+}
+
 func TestFailedPaymentDoesNotGrantAnything(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	useSmokeDatabase(t)

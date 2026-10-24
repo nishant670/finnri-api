@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"finnri/internal/billing"
 	"finnri/internal/database"
@@ -333,29 +334,69 @@ func applyRefund(entity payments.WebhookRefund) (string, string, error) {
 		return "", "", err
 	}
 
-	refunded := payment.AmountRefundedMinor + entity.AmountMinor
-	if refunded > payment.AmountMinor {
-		refunded = payment.AmountMinor
+	if entity.ID == "" {
+		// Without its id a refund cannot be told apart from its own second
+		// announcement, and counting it twice is the failure this guards.
+		return models.WebhookStatusIgnored, "refund event carried no refund id", nil
 	}
-	fullyRefunded := refunded >= payment.AmountMinor
-	now := time.Now().UTC()
 
+	now := time.Now().UTC()
+	alreadyCounted := false
+	fullyRefunded := false
+	refunded := payment.AmountRefundedMinor
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		updates := map[string]any{
-			"amount_refunded_minor": refunded,
-			"updated_at":            now,
+		refund := models.PaymentRefund{
+			PaymentID:        payment.ID,
+			Provider:         payments.ProviderRazorpay,
+			ProviderRefundID: entity.ID,
+			AmountMinor:      entity.AmountMinor,
+			Status:           entity.Status,
 		}
-		if fullyRefunded {
-			updates["status"] = models.PaymentStatusRefunded
-			updates["refunded_at"] = now
+		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&refund)
+		if inserted.Error != nil {
+			return inserted.Error
 		}
-		if err := tx.Model(&models.Payment{}).Where("id = ?", payment.ID).Updates(updates).Error; err != nil {
+		if inserted.RowsAffected == 0 {
+			// refund.created then refund.processed: the same refund, seen
+			// again. Only its status moves on; the amount is already counted.
+			alreadyCounted = true
+			return tx.Model(&models.PaymentRefund{}).
+				Where("provider = ? AND provider_refund_id = ?", payments.ProviderRazorpay, entity.ID).
+				Updates(map[string]any{"status": entity.Status, "updated_at": now}).Error
+		}
+		// Added in the database, not from the row read above, so two different
+		// refunds landing together both count. Capped at what was paid.
+		if err := tx.Model(&models.Payment{}).Where("id = ?", payment.ID).
+			Updates(map[string]any{
+				"amount_refunded_minor": gorm.Expr(
+					"CASE WHEN amount_refunded_minor + ? > amount_minor THEN amount_minor ELSE amount_refunded_minor + ? END",
+					entity.AmountMinor, entity.AmountMinor),
+				"updated_at": now,
+			}).Error; err != nil {
 			return err
 		}
+		var current models.Payment
+		if err := tx.Select("amount_refunded_minor", "amount_minor", "status").
+			Where("id = ?", payment.ID).First(&current).Error; err != nil {
+			return err
+		}
+		refunded = current.AmountRefundedMinor
 		// A partial refund leaves the subscription running: the person still
 		// paid for some of it, and deciding how much of a period a partial
 		// refund buys is a support judgement, not an automatic one.
-		if !fullyRefunded || payment.SubscriptionID == nil {
+		if refunded < current.AmountMinor || current.Status == models.PaymentStatusRefunded {
+			return nil
+		}
+		fullyRefunded = true
+		if err := tx.Model(&models.Payment{}).Where("id = ?", payment.ID).
+			Updates(map[string]any{
+				"status":      models.PaymentStatusRefunded,
+				"refunded_at": now,
+				"updated_at":  now,
+			}).Error; err != nil {
+			return err
+		}
+		if payment.SubscriptionID == nil {
 			return nil
 		}
 		if err := tx.Model(&models.UserSubscription{}).
@@ -375,6 +416,9 @@ func applyRefund(entity payments.WebhookRefund) (string, string, error) {
 		return "", "", err
 	}
 
+	if alreadyCounted {
+		return models.WebhookStatusProcessed, "refund " + entity.ID + " already counted", nil
+	}
 	if fullyRefunded {
 		return models.WebhookStatusProcessed, "refunded in full, subscription ended", nil
 	}

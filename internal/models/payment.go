@@ -55,6 +55,29 @@ const (
 	PaymentStatusRefunded = "refunded"
 )
 
+// PaymentRefund is one refund Razorpay made against a payment, keyed by its
+// refund id.
+//
+// Razorpay announces a refund twice — refund.created, then refund.processed —
+// under different event ids, so deduplicating events was not enough: each
+// added the amount again, and ₹50 back on a ₹100 pass was recorded as the
+// whole ₹100, which ends the pass. The refund id is the same in both, and this
+// row is what makes the second one a no-op.
+type PaymentRefund struct {
+	ID        uint `gorm:"primaryKey" json:"id"`
+	PaymentID uint `gorm:"index;not null" json:"payment_id"`
+	// Cascade, like payments to users: deleting an account deletes its
+	// payments, and a refund row must not stand in the way.
+	Payment          *Payment `json:"-" gorm:"foreignKey:PaymentID;constraint:OnDelete:CASCADE"`
+	Provider         string   `gorm:"type:varchar(40);not null;uniqueIndex:idx_payment_refunds_identity" json:"provider"`
+	ProviderRefundID string   `gorm:"type:varchar(120);not null;uniqueIndex:idx_payment_refunds_identity" json:"provider_refund_id"`
+	AmountMinor      int64    `gorm:"not null" json:"amount_minor"`
+	// Status is Razorpay's word as last seen: created, then processed.
+	Status    string    `gorm:"type:varchar(24);not null;default:''" json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // PaymentWebhookEvent records every webhook the provider delivers, verified or
 // not. It is the idempotency ledger: the unique index on (provider, event_id)
 // is what stops a retried delivery — which providers do routinely, and which
