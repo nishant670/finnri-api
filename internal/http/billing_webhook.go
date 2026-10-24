@@ -311,13 +311,13 @@ func applyPaymentFailed(entity payments.WebhookPayment) (string, string, error) 
 	return models.WebhookStatusProcessed, "marked payment failed: " + reason, nil
 }
 
-// applyRefund records money going back out and ends the subscription the
-// refunded payment bought.
+// applyRefund records money going back out, ends the subscription the
+// refunded payment bought, and takes back the pass's unspent credits.
 //
 // Credits already spent are not clawed back. They were consumed against real
 // provider cost, the ledger is append-only by design, and driving a balance
-// negative would break every allowance check that reads it. Ending the period
-// stops further entitlement, which is the part that matters.
+// negative would break every allowance check that reads it. The unspent rest
+// does go: left in place, it kept a refunded pass spendable.
 func applyRefund(entity payments.WebhookRefund) (string, string, error) {
 	if entity.PaymentID == "" {
 		return models.WebhookStatusIgnored, "refund event carried no payment id", nil
@@ -358,14 +358,18 @@ func applyRefund(entity payments.WebhookRefund) (string, string, error) {
 		if !fullyRefunded || payment.SubscriptionID == nil {
 			return nil
 		}
-		return tx.Model(&models.UserSubscription{}).
+		if err := tx.Model(&models.UserSubscription{}).
 			Where("id = ? AND status = ?", *payment.SubscriptionID, "active").
 			Updates(map[string]any{
 				"status":               "cancelled",
 				"current_period_end":   now,
 				"cancel_at_period_end": true,
 				"updated_at":           now,
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+		_, err := billing.RevokeSubscriptionCreditsTx(tx, *payment.SubscriptionID)
+		return err
 	})
 	if err != nil {
 		return "", "", err

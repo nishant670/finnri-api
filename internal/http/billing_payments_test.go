@@ -484,6 +484,47 @@ func TestFullRefundEndsTheSubscription(t *testing.T) {
 	}
 }
 
+// TestFullRefundTakesBackThePassCredits: a refunded pass read "No active
+// plan" with 3,525 credits still spendable on it, beside a free-tier daily cap.
+func TestFullRefundTakesBackThePassCredits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	user, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	before := creditBalance(t, user.ID)
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	postWebhook(t, router, captureBody(order.OrderID, "pay_1", 14900), "evt_1")
+	if got := creditBalance(t, user.ID); got != before+3600 {
+		t.Fatalf("setup failed: expected %d credits after the purchase, got %d", before+3600, got)
+	}
+	payment := loadPayment(t, order.OrderID)
+	var grant models.CreditGrant
+	if err := database.DB.Where("subscription_id = ?", *payment.SubscriptionID).First(&grant).Error; err != nil {
+		t.Fatalf("setup failed: no period grant: %v", err)
+	}
+	// Some of the pass was used before the refund; that part stays used.
+	database.DB.Model(&models.CreditGrant{}).Where("id = ?", grant.ID).Update("credits_remaining", 3525)
+
+	refund := `{"event":"refund.processed","payload":{"refund":{"entity":{"id":"rfnd_1","payment_id":"pay_1","amount":14900,"status":"processed"}}}}`
+	postWebhook(t, router, refund, "evt_refund")
+	// Razorpay sends refund.created as well; the second event must not take
+	// anything twice.
+	created := `{"event":"refund.created","payload":{"refund":{"entity":{"id":"rfnd_1","payment_id":"pay_1","amount":14900,"status":"created"}}}}`
+	postWebhook(t, router, created, "evt_refund_created")
+
+	if got := creditBalance(t, user.ID); got != before {
+		t.Fatalf("a refunded pass left credits behind: balance %d, expected %d", got, before)
+	}
+	var ledger []models.CreditLedger
+	database.DB.Where("grant_id = ? AND reason_code = ?", grant.ID, billing.ReasonSubscriptionRefunded).Find(&ledger)
+	if len(ledger) != 1 || ledger[0].Credits != 3525 || ledger[0].Direction != billing.LedgerDirectionExpiry || ledger[0].BalanceAfter != 0 {
+		t.Fatalf("expected one expiry row for the 3525 unspent credits, got %#v", ledger)
+	}
+}
+
 // TestPartialRefundLeavesTheSubscriptionRunning: how much of a period a part
 // refund buys is a support judgement, not an automatic one.
 func TestPartialRefundLeavesTheSubscriptionRunning(t *testing.T) {
