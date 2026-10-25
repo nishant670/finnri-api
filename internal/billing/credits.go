@@ -38,6 +38,7 @@ const (
 	ReasonGuestTrial              = "guest_trial_grant"
 	ReasonSubscriptionPeriod      = "subscription_period_grant"
 	ReasonGrantExpiry             = "credit_grant_expiry"
+	ReasonSubscriptionRefunded    = "subscription_refund_revoked"
 	ReasonReservationDebit        = "ai_credit_reservation"
 	ReasonReservationRefund       = "ai_credit_refund"
 	ReasonManualAdjustment        = "manual_credit_adjustment"
@@ -717,6 +718,41 @@ func (s *CreditService) GrantSubscriptionPeriod(subscription models.UserSubscrip
 	}
 
 	return grant, created, nil
+}
+
+// RevokeSubscriptionCreditsTx takes back what is left of a refunded pass.
+//
+// Ending the subscription alone was not enough: the period's grant has its own
+// expiry, so its unspent credits stayed spendable after the money went back.
+// The pass read "No active plan" with 3,525 credits still on it, while the
+// daily cap had already fallen back to the free tier's 50 — "No AI credits
+// left today · 3525 total credits left". Only the unspent remainder goes; what
+// was used stays used (see applyRefund). A queued renewal on the same
+// subscription is revoked with it. Safe to call twice.
+func RevokeSubscriptionCreditsTx(tx *gorm.DB, subscriptionID uint) (int, error) {
+	var grants []models.CreditGrant
+	if err := tx.Where("subscription_id = ? AND source = ? AND credits_remaining > 0", subscriptionID, GrantSourceSubscriptionPeriod).
+		Find(&grants).Error; err != nil {
+		return 0, err
+	}
+	revoked := 0
+	for _, grant := range grants {
+		remaining := grant.CreditsRemaining
+		result := tx.Model(&models.CreditGrant{}).Where("id = ? AND credits_remaining = ?", grant.ID, remaining).
+			Update("credits_remaining", 0)
+		if result.Error != nil {
+			return revoked, result.Error
+		}
+		if result.RowsAffected == 0 {
+			continue
+		}
+		grant.CreditsRemaining = 0
+		if err := createGrantLedger(tx, grant, LedgerDirectionExpiry, remaining, ReasonSubscriptionRefunded, fmt.Sprintf("refund:grant:%d", grant.ID)); err != nil {
+			return revoked, err
+		}
+		revoked += remaining
+	}
+	return revoked, nil
 }
 
 func (s *CreditService) ExpireCredits() (int, error) {
