@@ -253,3 +253,170 @@ func TestGiftedPassesStayOutOfRevenueAndLifetimeEligibility(t *testing.T) {
 		t.Fatalf("user detail should list both gifts and value them at zero: %#v", detail)
 	}
 }
+
+func revokeGiftPass(t *testing.T, router *gin.Engine, token string, userID, passID uint, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/admin/users/"+strconv.Itoa(int(userID))+"/passes/"+strconv.Itoa(int(passID))+"/revoke", reader)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func TestAdminRevokeRunningGiftEndsItAndTakesBackCredits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	support, supportToken := createAdminSessionForTest(t, models.AdminRoleSupport)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+	user, _ := createBillingTestUserSession(t)
+
+	gift := decodeGiftPass(t, postGiftPass(t, router, supportToken, user.ID, "", map[string]any{
+		"plan_code": "monthly", "note": "Wrong person",
+	}), http.StatusCreated)
+	pass := gift.Subscriptions[0]
+	// Some of the pass's credits get used before the revoke.
+	if err := database.DB.Model(&models.CreditGrant{}).Where("subscription_id = ?", pass.ID).Update("credits_remaining", 3000).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	response := revokeGiftPass(t, router, supportToken, user.ID, pass.ID, map[string]any{"note": "gifted to the wrong account"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var revoked struct {
+		Subscription   models.UserSubscription `json:"subscription"`
+		CreditsRevoked int                     `json:"credits_revoked"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &revoked); err != nil {
+		t.Fatal(err)
+	}
+	if revoked.Subscription.Status != "cancelled" || revoked.CreditsRevoked != 3000 {
+		t.Fatalf("unexpected revoke result: %#v", revoked)
+	}
+	if time.Since(revoked.Subscription.CurrentPeriodEnd) > time.Minute || revoked.Subscription.CurrentPeriodEnd.After(time.Now()) {
+		t.Fatalf("a running gift should end now, ends %s", revoked.Subscription.CurrentPeriodEnd)
+	}
+
+	entitlement, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureBudgets)
+	if err != nil || entitlement.Allowed {
+		t.Fatalf("paid features should lock again after the revoke: %#v %v", entitlement, err)
+	}
+	var grant models.CreditGrant
+	database.DB.Where("subscription_id = ?", pass.ID).First(&grant)
+	if grant.CreditsRemaining != 0 {
+		t.Fatalf("revoked gift should leave no credits, has %d", grant.CreditsRemaining)
+	}
+	var ledger models.CreditLedger
+	if err := database.DB.Where("grant_id = ? AND reason_code = ?", grant.ID, billing.ReasonGiftPassRevoked).First(&ledger).Error; err != nil || ledger.Credits != 3000 {
+		t.Fatalf("revoke should leave a ledger row for the 3000 credits: %#v %v", ledger, err)
+	}
+
+	var audit models.AdminAuditLog
+	if err := database.DB.Where("admin_user_id = ? AND action = ?", support.ID, "post_users_passes_revoke").First(&audit).Error; err != nil {
+		t.Fatalf("revoke should be audited as post_users_passes_revoke: %v", err)
+	}
+	if !strings.Contains(audit.Payload, "wrong account") || !strings.Contains(audit.Payload, `"credits_revoked":3000`) {
+		t.Fatalf("audit row should carry the note and credits: %s", audit.Payload)
+	}
+
+	again := revokeGiftPass(t, router, supportToken, user.ID, pass.ID, nil)
+	if again.Code != http.StatusConflict {
+		t.Fatalf("revoking twice should conflict, got %d: %s", again.Code, again.Body.String())
+	}
+}
+
+func TestAdminRevokeQueuedGiftCancelsItWithoutTouchingOthers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, supportToken := createAdminSessionForTest(t, models.AdminRoleSupport)
+	seedPurchasablePlan(t, "weekly_pass", "weekly", 7900, 800)
+	user, _ := createBillingTestUserSession(t)
+
+	gift := decodeGiftPass(t, postGiftPass(t, router, supportToken, user.ID, "", map[string]any{
+		"plan_code": "weekly_pass", "periods": 2, "note": "Friend",
+	}), http.StatusCreated)
+	first, second := gift.Subscriptions[0], gift.Subscriptions[1]
+
+	response := revokeGiftPass(t, router, supportToken, user.ID, second.ID, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("revoke status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var queued, running models.UserSubscription
+	database.DB.First(&queued, second.ID)
+	database.DB.First(&running, first.ID)
+	if queued.Status != "cancelled" || !queued.CurrentPeriodEnd.Equal(second.CurrentPeriodEnd) {
+		t.Fatalf("a queued gift should be cancelled with its dates kept: %#v", queued)
+	}
+	if running.Status != "active" {
+		t.Fatalf("the other week should be untouched: %#v", running)
+	}
+	var queuedGrant models.CreditGrant
+	database.DB.Where("subscription_id = ?", second.ID).First(&queuedGrant)
+	if queuedGrant.CreditsRemaining != 0 {
+		t.Fatalf("the queued week's credits should be revoked, has %d", queuedGrant.CreditsRemaining)
+	}
+}
+
+func TestAdminRevokeRefusals(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, viewerToken := createAdminSessionForTest(t, models.AdminRoleViewer)
+	_, supportToken := createAdminSessionForTest(t, models.AdminRoleSupport)
+	monthly := seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+	user, _ := createBillingTestUserSession(t)
+	other, _ := createBillingTestUserSession(t)
+
+	gift := decodeGiftPass(t, postGiftPass(t, router, supportToken, user.ID, "", map[string]any{
+		"plan_code": "monthly", "note": "Family",
+	}), http.StatusCreated).Subscriptions[0]
+	paidAfter := models.UserSubscription{
+		UserID: user.ID, PlanID: monthly.ID, Status: "active", Provider: "razorpay",
+		CurrentPeriodStart: gift.CurrentPeriodEnd, CurrentPeriodEnd: gift.CurrentPeriodEnd.Add(30 * 24 * time.Hour), CancelAtPeriodEnd: true,
+	}
+	if err := database.DB.Create(&paidAfter).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name   string
+		token  string
+		userID uint
+		passID uint
+		status int
+		error  string
+	}{
+		{"viewer cannot revoke", viewerToken, user.ID, gift.ID, http.StatusForbidden, ""},
+		{"another user's pass", supportToken, other.ID, gift.ID, http.StatusNotFound, "pass_not_found"},
+		{"paid pass", supportToken, user.ID, paidAfter.ID, http.StatusUnprocessableEntity, "not_a_gift"},
+		{"paid pass queued behind", supportToken, user.ID, gift.ID, http.StatusConflict, "paid_pass_queued_after"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := revokeGiftPass(t, router, tc.token, tc.userID, tc.passID, nil)
+			if response.Code != tc.status || (tc.error != "" && !strings.Contains(response.Body.String(), tc.error)) {
+				t.Fatalf("status = %d, want %d %s, body = %s", response.Code, tc.status, tc.error, response.Body.String())
+			}
+		})
+	}
+	var still models.UserSubscription
+	database.DB.First(&still, gift.ID)
+	if still.Status != "active" {
+		t.Fatalf("refused revokes should change nothing: %#v", still)
+	}
+}

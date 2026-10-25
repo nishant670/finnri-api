@@ -278,9 +278,16 @@ func auditActor(c *gin.Context) (*uint, string) {
 }
 
 func auditAction(c *gin.Context) string {
-	route := strings.TrimPrefix(c.FullPath(), "/v1/admin/")
-	route = strings.NewReplacer("/:id", "", "/:code", "", "/", "_").Replace(route)
-	return strings.ToLower(c.Request.Method) + "_" + route
+	// Path parameters drop out, so "/users/:id/passes/:pass_id/revoke" is
+	// recorded as "post_users_passes_revoke".
+	segments := strings.Split(strings.TrimPrefix(c.FullPath(), "/v1/admin/"), "/")
+	kept := segments[:0]
+	for _, segment := range segments {
+		if !strings.HasPrefix(segment, ":") {
+			kept = append(kept, segment)
+		}
+	}
+	return strings.ToLower(c.Request.Method) + "_" + strings.Join(kept, "_")
 }
 
 func (s *Server) hashAdminIP(ip string) string {

@@ -3,7 +3,9 @@ package http
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -174,4 +176,112 @@ func (s *Server) createAdminGiftPass(c *gin.Context) {
 		status = http.StatusOK
 	}
 	c.JSON(status, gin.H{"subscriptions": subscriptions, "created": created})
+}
+
+var (
+	errGiftPassNotFound = errors.New("gift pass not found")
+	errNotAGiftPass     = errors.New("not a gifted pass")
+	errGiftPassEnded    = errors.New("gift pass already ended")
+	errPaidPassQueuedOn = errors.New("paid pass queued after gift")
+)
+
+// revokeAdminGiftPass ends a gifted pass now, or cancels it outright if it
+// hasn't started, and takes back its unspent credits.
+//
+// Only gifts can be revoked here — a paid pass ends through a refund, which
+// moves money. A gift with a paid pass queued behind it is refused: the paid
+// pass would keep its later start, and the person would sit without a pass
+// for the gap in between.
+func (s *Server) revokeAdminGiftPass(c *gin.Context) {
+	userID, ok := parseAdminID(c)
+	if !ok {
+		return
+	}
+	passID, err := strconv.ParseUint(c.Param("pass_id"), 10, 64)
+	if err != nil || passID == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return
+	}
+	var input struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	note := strings.TrimSpace(input.Note)
+	if utf8.RuneCountInString(note) > maxGiftPassNoteRunes {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_gift_revoke", "fields": gin.H{"note": fmt.Sprintf("must be %d characters or fewer", maxGiftPassNoteRunes)}})
+		return
+	}
+
+	now := time.Now().UTC()
+	var pass models.UserSubscription
+	wasRunning := false
+	creditsRevoked := 0
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Preload("Plan").Where("id = ? AND user_id = ?", passID, userID).First(&pass).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return errGiftPassNotFound
+		} else if err != nil {
+			return err
+		}
+		if pass.Provider != giftPassProvider {
+			return errNotAGiftPass
+		}
+		if pass.Status != "active" || !pass.CurrentPeriodEnd.After(now) {
+			return errGiftPassEnded
+		}
+		var paidAfter int64
+		if err := tx.Model(&models.UserSubscription{}).
+			Where("user_id = ? AND provider <> ? AND status IN ? AND current_period_start >= ?",
+				userID, giftPassProvider, []string{"trialing", "active"}, pass.CurrentPeriodEnd).
+			Count(&paidAfter).Error; err != nil {
+			return err
+		}
+		if paidAfter > 0 {
+			return errPaidPassQueuedOn
+		}
+
+		updates := map[string]any{"status": "cancelled", "updated_at": now}
+		// A running gift ends now; a queued one keeps its dates, since a
+		// cancelled row is never read as a pass anyway.
+		if now.After(pass.CurrentPeriodStart) {
+			wasRunning = true
+			updates["current_period_end"] = now
+		}
+		if err := tx.Model(&models.UserSubscription{}).Where("id = ?", pass.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		creditsRevoked, err = billing.RevokeGiftedPassCreditsTx(tx, pass.ID)
+		if err != nil {
+			return err
+		}
+		return tx.Preload("Plan").First(&pass, pass.ID).Error
+	})
+	switch {
+	case errors.Is(err, errGiftPassNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "pass_not_found"})
+		return
+	case errors.Is(err, errNotAGiftPass):
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "not_a_gift", "message": "Only gifted passes can be revoked. A paid pass ends through a refund."})
+		return
+	case errors.Is(err, errGiftPassEnded):
+		c.JSON(http.StatusConflict, gin.H{"error": "gift_already_ended", "message": "This gift has already ended or been revoked."})
+		return
+	case errors.Is(err, errPaidPassQueuedOn):
+		c.JSON(http.StatusConflict, gin.H{"error": "paid_pass_queued_after", "message": "A paid pass is queued after this gift. Revoking it would leave a gap before the paid pass starts."})
+		return
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_gift_pass"})
+		return
+	}
+
+	c.Set(adminAuditDetailKey, gin.H{
+		"pass_id":         pass.ID,
+		"plan_code":       pass.Plan.Code,
+		"was_running":     wasRunning,
+		"credits_revoked": creditsRevoked,
+		"note":            note,
+	})
+	c.JSON(http.StatusOK, gin.H{"subscription": pass, "credits_revoked": creditsRevoked})
 }
