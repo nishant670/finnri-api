@@ -158,6 +158,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/users/:id/credits", s.getAdminUserCredits)
 		admin.GET("/users/:id/activity", s.getAdminUserActivity)
 		admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), s.createUserCreditAdjustment)
+		admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), s.createAdminGiftPass)
 		admin.GET("/ai/metrics", s.getAIMetrics)
 		admin.GET("/ai/metrics/timeseries", s.getAIMetricsTimeseries)
 		admin.GET("/ai/usage", s.listAdminAIUsage)

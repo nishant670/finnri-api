@@ -26,6 +26,7 @@ type adminRevenueSnapshot struct {
 	RenewalsDue7Days     int64           `json:"renewals_due_7_days"`
 	RenewalsDue30Days    int64           `json:"renewals_due_30_days"`
 	CancelAtPeriodEnd    int64           `json:"cancel_at_period_end"`
+	GiftedActive         int64           `json:"gifted_active"`
 	ByPlan               map[string]any  `json:"by_plan"`
 	Trend                []adminMRRPoint `json:"trend"`
 }
@@ -40,7 +41,9 @@ func buildRevenueSnapshot(start, end time.Time) adminRevenueSnapshot {
 	now := time.Now().UTC()
 	result := adminRevenueSnapshot{Basis: "modelled_from_plan_prices", Currency: "INR", ByPlan: map[string]any{}}
 	var subs []models.UserSubscription
-	_ = database.DB.Preload("Plan").Where("status = ? AND current_period_end > ?", "active", now).Find(&subs).Error
+	// Gifted passes bring in nothing, so every figure below leaves them out
+	// and they are counted on their own instead.
+	_ = database.DB.Preload("Plan").Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ?", "active", now).Find(&subs).Error
 	for _, sub := range subs {
 		factor := monthlyFactor(sub.Plan.BillingInterval)
 		if sub.Plan.BillingInterval == "lifetime_quote" {
@@ -63,13 +66,14 @@ func buildRevenueSnapshot(start, end time.Time) adminRevenueSnapshot {
 	}
 	_, registered, _ := userCounts()
 	result.PaidConversion = ratio(float64(result.ActiveSubscribers), float64(registered))
-	_ = database.DB.Model(&models.UserSubscription{}).Where("created_at >= ? AND created_at < ?", start, end).Count(&result.NewInWindow).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("current_period_end >= ? AND current_period_end < ? AND status <> ?", start, end, "active").Count(&result.ChurnedInWindow).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(7*24*time.Hour)).Count(&result.RenewalsDue7Days).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(30*24*time.Hour)).Count(&result.RenewalsDue30Days).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("status = ? AND cancel_at_period_end = ?", "active", true).Count(&result.CancelAtPeriodEnd).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("created_at >= ? AND created_at < ?", start, end).Count(&result.NewInWindow).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("current_period_end >= ? AND current_period_end < ? AND status <> ?", start, end, "active").Count(&result.ChurnedInWindow).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(7*24*time.Hour)).Count(&result.RenewalsDue7Days).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(30*24*time.Hour)).Count(&result.RenewalsDue30Days).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND cancel_at_period_end = ?", "active", true).Count(&result.CancelAtPeriodEnd).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider = ? AND status = ? AND current_period_start <= ? AND current_period_end > ?", giftPassProvider, "active", now, now).Count(&result.GiftedActive).Error
 	var historical []models.UserSubscription
-	_ = database.DB.Preload("Plan").Find(&historical).Error
+	_ = database.DB.Preload("Plan").Where("provider <> ?", giftPassProvider).Find(&historical).Error
 	trendStart := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 	if end.Sub(trendStart) > 366*24*time.Hour {
 		trendStart = end.Add(-366 * 24 * time.Hour)

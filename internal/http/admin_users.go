@@ -302,13 +302,19 @@ func (s *Server) getAdminUser(c *gin.Context) {
 	_ = database.DB.Preload("Plan").Where("user_id = ?", id).Order("current_period_end DESC").First(&subscription).Error
 	credits, _ := buildCreditSummary(billing.SubjectForUser(id), true)
 	monthlyRevenue := int64(0)
-	if subscription.ID > 0 && subscription.Status == "active" && subscription.CurrentPeriodEnd.After(time.Now().UTC()) {
-		monthlyRevenue = int64(math.Round(float64(subscription.Plan.PriceMinor) * monthlyFactor(subscription.Plan.BillingInterval)))
+	var subscriptions []models.UserSubscription
+	_ = database.DB.Preload("Plan").Where("user_id = ?", id).Order("current_period_end DESC").Limit(20).Find(&subscriptions).Error
+	now := time.Now().UTC()
+	for _, row := range subscriptions {
+		if row.Status == "active" && row.Provider != giftPassProvider && !row.CurrentPeriodStart.After(now) && row.CurrentPeriodEnd.After(now) {
+			monthlyRevenue = int64(math.Round(float64(row.Plan.PriceMinor) * monthlyFactor(row.Plan.BillingInterval)))
+			break
+		}
 	}
 	var recentAICost int64
 	_ = database.DB.Model(&models.AIUsageEvent{}).Where("user_id = ? AND started_at >= ?", id, time.Now().UTC().Add(-30*24*time.Hour)).Select("COALESCE(SUM(COALESCE(actual_cost_usd_micros, estimated_cost_usd_micros)),0)").Scan(&recentAICost).Error
 	aiCostMinorINR := int64(math.Round(float64(recentAICost) / 1_000_000 * s.cfg.USDINRRate * 100))
-	c.JSON(200, gin.H{"user": identity, "summary": summary, "counts": counts, "feature_adoption": features, "subscription": subscription, "credits": credits, "recent_feedback": feedback, "active_abuse_blocks": blocks, "lifetime_quote_requests": quotes, "economics": gin.H{"basis": "modelled_from_plan_prices", "monthly_plan_value_minor": monthlyRevenue, "ai_cost_30d_usd_micros": recentAICost, "ai_cost_30d_minor_inr": aiCostMinorINR, "gross_margin_30d_minor": monthlyRevenue - aiCostMinorINR}})
+	c.JSON(200, gin.H{"user": identity, "summary": summary, "counts": counts, "feature_adoption": features, "subscription": subscription, "subscriptions": subscriptions, "credits": credits, "recent_feedback": feedback, "active_abuse_blocks": blocks, "lifetime_quote_requests": quotes, "economics": gin.H{"basis": "modelled_from_plan_prices", "monthly_plan_value_minor": monthlyRevenue, "ai_cost_30d_usd_micros": recentAICost, "ai_cost_30d_minor_inr": aiCostMinorINR, "gross_margin_30d_minor": monthlyRevenue - aiCostMinorINR}})
 }
 
 func adminFeatureFlags(userID uint) gin.H {

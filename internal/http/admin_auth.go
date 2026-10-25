@@ -234,6 +234,10 @@ func (s *Server) getAdminMe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": safeAdminIdentity(admin.User), "role": admin.Role})
 }
 
+// adminAuditDetailKey is where a handler leaves what it did, beyond the route,
+// for the audit row — the plan and note on a gifted pass, say.
+const adminAuditDetailKey = "admin_audit_detail"
+
 func (s *Server) adminAuditMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
@@ -241,7 +245,11 @@ func (s *Server) adminAuditMiddleware() gin.HandlerFunc {
 			return
 		}
 		adminUserID, actor := auditActor(c)
-		payload, _ := json.Marshal(gin.H{"method": c.Request.Method, "path": c.FullPath()})
+		fields := gin.H{"method": c.Request.Method, "path": c.FullPath()}
+		if detail, ok := c.Get(adminAuditDetailKey); ok {
+			fields["detail"] = detail
+		}
+		payload, _ := json.Marshal(fields)
 		entry := models.AdminAuditLog{
 			AdminUserID: adminUserID,
 			Actor:       actor,
