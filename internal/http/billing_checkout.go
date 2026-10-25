@@ -218,7 +218,7 @@ func (s *Server) createBillingCheckout(c *gin.Context) {
 	}
 
 	payment := models.Payment{
-		UserID:          user.ID,
+		UserID:          &user.ID,
 		PlanID:          planModel.ID,
 		Provider:        payments.ProviderRazorpay,
 		ProviderOrderID: order.ID,
@@ -373,18 +373,22 @@ func reusableCheckoutOrder(userID, planID uint, amountMinor int64, now time.Time
 // is currently running — a renewal queues behind the period it renews, and a
 // lapsed user starts today.
 func activateSubscriptionForPayment(tx *gorm.DB, payment *models.Payment, plan models.Plan, now time.Time) (models.UserSubscription, error) {
+	if payment.UserID == nil {
+		return models.UserSubscription{}, fmt.Errorf("payment %d belongs to a deleted account", payment.ID)
+	}
+	userID := *payment.UserID
 	period, ok := subscriptionPeriodFor(plan.BillingInterval)
 	if !ok {
 		return models.UserSubscription{}, fmt.Errorf("plan %q has no self-serve billing period", plan.Code)
 	}
 
-	start, err := nextPassPeriodStart(tx, payment.UserID, now)
+	start, err := nextPassPeriodStart(tx, userID, now)
 	if err != nil {
 		return models.UserSubscription{}, err
 	}
 
 	subscription := models.UserSubscription{
-		UserID:             payment.UserID,
+		UserID:             userID,
 		PlanID:             plan.ID,
 		Status:             "active",
 		CurrentPeriodStart: start,

@@ -1771,6 +1771,22 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 		}
 		attachments = append(attachments, splitAttachments...)
 
+		var feedbackAttachments []models.StringArray
+		if err := tx.Model(&models.Feedback{}).Where("user_id = ?", user.ID).Pluck("attachments", &feedbackAttachments).Error; err != nil {
+			return err
+		}
+		for _, files := range feedbackAttachments {
+			attachments = append(attachments, files...)
+		}
+
+		// Payments are kept as the financial record (GST, Razorpay
+		// reconciliation); only the link to the person goes. Clearing
+		// subscription_id too lets the user_subscriptions delete below run.
+		if err := tx.Model(&models.Payment{}).Where("user_id = ?", user.ID).
+			Updates(map[string]any{"user_id": nil, "subscription_id": nil}).Error; err != nil {
+			return fmt.Errorf("detach payments: %w", err)
+		}
+
 		guestDeviceHash := ""
 		if user.DeviceID != nil {
 			guestDeviceHash = billing.HashUsageKey(*user.DeviceID)
@@ -1821,6 +1837,13 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.SplitFriend{}, "split friends"},
 			{&models.BudgetAlert{}, "budget alerts"},
 			{&models.Budget{}, "budgets"},
+			{&models.CardStatementReminder{}, "card statement reminders"},
+			{&models.CardStatementPayment{}, "card statement payments"},
+			{&models.CardEMIInstallment{}, "card EMI installments"},
+			{&models.CardEMIPlan{}, "card EMI plans"},
+			{&models.CardStatement{}, "card statements"},
+			{&models.MonthlyReview{}, "monthly reviews"},
+			{&models.Feedback{}, "feedback"},
 			{&models.SubscriptionReminder{}, "subscription reminders"},
 			{&models.SubscriptionOccurrence{}, "subscription occurrences"},
 			{&models.Subscription{}, "subscriptions"},
