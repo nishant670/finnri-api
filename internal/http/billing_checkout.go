@@ -382,15 +382,8 @@ func activateSubscriptionForPayment(tx *gorm.DB, payment *models.Payment, plan m
 		return models.UserSubscription{}, fmt.Errorf("plan %q has no self-serve billing period", plan.Code)
 	}
 
-	start := now
-	var latest models.UserSubscription
-	err := tx.Where("user_id = ? AND status IN ? AND current_period_end > ?",
-		userID, []string{"trialing", "active"}, now).
-		Order("current_period_end DESC").
-		First(&latest).Error
-	if err == nil && latest.CurrentPeriodEnd.After(start) {
-		start = latest.CurrentPeriodEnd
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	start, err := nextPassPeriodStart(tx, userID, now)
+	if err != nil {
 		return models.UserSubscription{}, err
 	}
 
@@ -410,6 +403,26 @@ func activateSubscriptionForPayment(tx *gorm.DB, payment *models.Payment, plan m
 		return models.UserSubscription{}, err
 	}
 	return subscription, nil
+}
+
+// nextPassPeriodStart is when a newly bought or gifted period begins: the end
+// of whatever the user has running or queued, or now if nothing is.
+func nextPassPeriodStart(tx *gorm.DB, userID uint, now time.Time) (time.Time, error) {
+	var latest models.UserSubscription
+	err := tx.Where("user_id = ? AND status IN ? AND current_period_end > ?",
+		userID, []string{"trialing", "active"}, now).
+		Order("current_period_end DESC").
+		First(&latest).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return now, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if latest.CurrentPeriodEnd.After(now) {
+		return latest.CurrentPeriodEnd, nil
+	}
+	return now, nil
 }
 
 // grantCreditsForSubscription issues the credits a newly bought period comes

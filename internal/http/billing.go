@@ -600,7 +600,7 @@ func paidMonthsCompleted(userID uint) (int, error) {
 	now := time.Now().UTC()
 	var subscriptions []models.UserSubscription
 	if err := database.DB.Preload("Plan").
-		Where("user_id = ? AND status IN ?", userID, []string{"active", "cancelled", "expired"}).
+		Where("user_id = ? AND status IN ? AND provider <> ?", userID, []string{"active", "cancelled", "expired"}, giftPassProvider).
 		Find(&subscriptions).Error; err != nil {
 		return 0, err
 	}
