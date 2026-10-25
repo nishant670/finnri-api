@@ -646,7 +646,7 @@ func runtimeSchemaStatements() []string {
 		// between Razorpay and the ledger.
 		`CREATE TABLE IF NOT EXISTS payments (
 			id BIGSERIAL PRIMARY KEY,
-			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
 			plan_id BIGINT NOT NULL REFERENCES plans(id),
 			provider VARCHAR(40) NOT NULL,
 			provider_order_id VARCHAR(120) NOT NULL UNIQUE,
@@ -682,6 +682,20 @@ func runtimeSchemaStatements() []string {
 		// was taken - that would be money invented by an arithmetic slip.
 		`ALTER TABLE payments ADD CONSTRAINT payments_amount_check
 			CHECK (amount_minor > 0 AND amount_refunded_minor >= 0 AND amount_refunded_minor <= amount_minor)`,
+		// A deleted account keeps its payments as the financial record, with
+		// user_id cleared. AutoMigrate creates this table, so the live foreign
+		// keys are GORM's NO ACTION ones, not the CREATE TABLE above; until they
+		// are replaced, deleting anyone who ever paid fails. See
+		// migrations/0063_keep_payments_of_deleted_users.sql.
+		`ALTER TABLE payments ALTER COLUMN user_id DROP NOT NULL`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_user`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_user_id_fkey`,
+		`ALTER TABLE payments ADD CONSTRAINT fk_payments_user
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_subscription`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_subscription_id_fkey`,
+		`ALTER TABLE payments ADD CONSTRAINT fk_payments_subscription
+			FOREIGN KEY (subscription_id) REFERENCES user_subscriptions(id) ON DELETE SET NULL`,
 		`CREATE TABLE IF NOT EXISTS payment_webhook_events (
 			id BIGSERIAL PRIMARY KEY,
 			provider VARCHAR(40) NOT NULL,

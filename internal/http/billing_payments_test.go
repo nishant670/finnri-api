@@ -201,7 +201,7 @@ func TestCheckoutCreatesOrderAndPendingPayment(t *testing.T) {
 	if payment.Status != models.PaymentStatusCreated {
 		t.Fatalf("a new order must be pending, got %q", payment.Status)
 	}
-	if payment.UserID != user.ID || payment.PlanID != plan.ID {
+	if payment.UserID == nil || *payment.UserID != user.ID || payment.PlanID != plan.ID {
 		t.Fatalf("payment not attributed correctly: %#v", payment)
 	}
 	// Creating an order grants nothing. Only the webhook does that.
@@ -829,4 +829,38 @@ func TestPublicOrderLookupRejectsUnknownOrders(t *testing.T) {
 	performJSONRequest[map[string]any](
 		t, router, http.MethodGet, "/v1/billing/checkout/order_nope", "", nil, http.StatusNotFound,
 	)
+}
+
+// TestCaptureAfterAccountDeletionGrantsNothing: someone opens a checkout,
+// deletes their account, then pays in the Razorpay window still open. The
+// money is taken, so the capture is recorded on the kept payment, but there
+// is no one left to grant a pass to.
+func TestCaptureAfterAccountDeletionGrantsNothing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	fake := newFakeRazorpay(t)
+	router := smokeRouter(t, withRazorpay(fake))
+	user, token := createBillingTestUserSession(t)
+	seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+
+	order := startCheckout(t, router, token, "monthly", http.StatusCreated)
+	if _, err := deleteUserData(database.DB, user); err != nil {
+		t.Fatalf("deleteUserData failed: %v", err)
+	}
+	if code := postWebhook(t, router, captureBody(order.OrderID, "pay_orphan", 14900), "evt_orphan").Code; code != http.StatusOK {
+		t.Fatalf("capture webhook returned %d", code)
+	}
+
+	payment := loadPayment(t, order.OrderID)
+	if payment.Status != models.PaymentStatusCaptured || payment.ProviderPaymentID != "pay_orphan" {
+		t.Fatalf("the capture must still be recorded: %#v", payment)
+	}
+	if payment.UserID != nil || payment.SubscriptionID != nil {
+		t.Fatalf("a capture for a deleted account must not grant a pass: %#v", payment)
+	}
+	var subscriptions int64
+	database.DB.Model(&models.UserSubscription{}).Count(&subscriptions)
+	if subscriptions != 0 {
+		t.Fatalf("no pass may be created, found %d", subscriptions)
+	}
 }

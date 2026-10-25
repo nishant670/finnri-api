@@ -10,9 +10,12 @@ import "time"
 // for, which is what makes a duplicate webhook harmless: the second delivery
 // finds the payment already captured and stops.
 type Payment struct {
-	ID     uint  `gorm:"primaryKey" json:"id"`
-	UserID uint  `gorm:"index;not null" json:"user_id"`
-	User   *User `json:"-" gorm:"foreignKey:UserID"`
+	ID uint `gorm:"primaryKey" json:"id"`
+	// UserID is nil once the person has deleted their account. The payment
+	// itself is kept as the financial record (GST, Razorpay reconciliation),
+	// so deleting the user sets this to NULL instead of deleting the row.
+	UserID *uint `gorm:"index" json:"user_id"`
+	User   *User `json:"-" gorm:"foreignKey:UserID;constraint:OnDelete:SET NULL"`
 	PlanID uint  `gorm:"index;not null" json:"plan_id"`
 	Plan   *Plan `json:"plan,omitempty" gorm:"foreignKey:PlanID"`
 
@@ -33,7 +36,7 @@ type Payment struct {
 	// SubscriptionID is set when the capture actually granted a period, which
 	// is what a refund needs in order to know what to take back.
 	SubscriptionID *uint             `gorm:"index" json:"subscription_id,omitempty"`
-	Subscription   *UserSubscription `json:"-" gorm:"foreignKey:SubscriptionID"`
+	Subscription   *UserSubscription `json:"-" gorm:"foreignKey:SubscriptionID;constraint:OnDelete:SET NULL"`
 
 	// PromotionCode names the offer this order was priced under ("" for full
 	// price), and OriginalAmountMinor is what it would have cost without it.

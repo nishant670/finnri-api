@@ -222,6 +222,25 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 		return models.WebhookStatusRejected, fmt.Sprintf("amount mismatch: paid %d, expected %d", entity.AmountMinor, payment.AmountMinor), nil
 	}
 
+	// The person deleted their account after opening this order. The money
+	// is taken, so the capture is still recorded, but there is no one to grant
+	// a period to; the log is what lets support refund it.
+	if payment.UserID == nil {
+		now := time.Now().UTC()
+		if err := database.DB.Model(&models.Payment{}).Where("id = ?", payment.ID).Updates(map[string]any{
+			"status":              models.PaymentStatusCaptured,
+			"provider_payment_id": entity.ID,
+			"method":              entity.Method,
+			"captured_at":         now,
+			"updated_at":          now,
+		}).Error; err != nil {
+			return "", "", err
+		}
+		log.Printf("[WARN] payment captured for a deleted account order=%s payment=%s, refund it", entity.OrderID, entity.ID)
+		return models.WebhookStatusIgnored, "captured for a deleted account", nil
+	}
+	userID := *payment.UserID
+
 	var plan models.Plan
 	if err := database.DB.First(&plan, payment.PlanID).Error; err != nil {
 		return "", "", err
@@ -232,11 +251,11 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 	// The money is taken by then, so the period is granted; the log is what
 	// lets support refund the difference.
 	if payment.PromotionCode == launchOfferCode {
-		if used, err := userHasUsedLaunchOffer(payment.UserID); err != nil {
+		if used, err := userHasUsedLaunchOffer(userID); err != nil {
 			return "", "", err
 		} else if used || isSupersededLaunchOrder(payment) {
 			log.Printf("[WARN] launch offer paid a second time order=%s user=%d superseded=%t",
-				entity.OrderID, payment.UserID, isSupersededLaunchOrder(payment))
+				entity.OrderID, userID, isSupersededLaunchOrder(payment))
 		}
 	}
 
@@ -272,7 +291,7 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 	}
 
 	log.Printf("[INFO] payment captured order=%s user=%d plan=%s subscription=%d period=%s..%s",
-		entity.OrderID, payment.UserID, plan.Code, subscription.ID,
+		entity.OrderID, userID, plan.Code, subscription.ID,
 		subscription.CurrentPeriodStart.Format(time.RFC3339), subscription.CurrentPeriodEnd.Format(time.RFC3339))
 
 	return models.WebhookStatusProcessed, "activated subscription " + fmt.Sprint(subscription.ID), nil
