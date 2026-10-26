@@ -56,6 +56,7 @@ func Migrate() error {
 		&models.SplitSettlement{},
 		&models.SplitFriendMerge{},
 		&models.Payment{},
+		&models.PaymentRefund{},
 		&models.PaymentWebhookEvent{},
 	); err != nil {
 		return err
@@ -645,7 +646,7 @@ func runtimeSchemaStatements() []string {
 		// between Razorpay and the ledger.
 		`CREATE TABLE IF NOT EXISTS payments (
 			id BIGSERIAL PRIMARY KEY,
-			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
 			plan_id BIGINT NOT NULL REFERENCES plans(id),
 			provider VARCHAR(40) NOT NULL,
 			provider_order_id VARCHAR(120) NOT NULL UNIQUE,
@@ -681,6 +682,20 @@ func runtimeSchemaStatements() []string {
 		// was taken - that would be money invented by an arithmetic slip.
 		`ALTER TABLE payments ADD CONSTRAINT payments_amount_check
 			CHECK (amount_minor > 0 AND amount_refunded_minor >= 0 AND amount_refunded_minor <= amount_minor)`,
+		// A deleted account keeps its payments as the financial record, with
+		// user_id cleared. AutoMigrate creates this table, so the live foreign
+		// keys are GORM's NO ACTION ones, not the CREATE TABLE above; until they
+		// are replaced, deleting anyone who ever paid fails. See
+		// migrations/0063_keep_payments_of_deleted_users.sql.
+		`ALTER TABLE payments ALTER COLUMN user_id DROP NOT NULL`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_user`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_user_id_fkey`,
+		`ALTER TABLE payments ADD CONSTRAINT fk_payments_user
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_subscription`,
+		`ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_subscription_id_fkey`,
+		`ALTER TABLE payments ADD CONSTRAINT fk_payments_subscription
+			FOREIGN KEY (subscription_id) REFERENCES user_subscriptions(id) ON DELETE SET NULL`,
 		`CREATE TABLE IF NOT EXISTS payment_webhook_events (
 			id BIGSERIAL PRIMARY KEY,
 			provider VARCHAR(40) NOT NULL,
@@ -1537,6 +1552,43 @@ func runtimeSchemaStatements() []string {
 				time = COALESCE(entry.time, ''), attachment = COALESCE(entry.attachment, '')
 			FROM entries AS entry WHERE bill.entry_id = entry.id AND bill.user_id = entry.user_id;
 			INSERT INTO schema_repairs (name) VALUES ('0049_add_split_transaction_details');
+		END
+		$$`,
+		// A full refund used to end the pass but leave its unspent credits
+		// spendable. applyRefund now revokes them; this takes back what earlier
+		// refunds left behind, once. See migrations/0062_revoke_refunded_pass_credits.sql.
+		`DO $$
+		BEGIN
+			IF EXISTS (SELECT 1 FROM schema_repairs WHERE name = '0062_revoke_refunded_pass_credits') THEN
+				RETURN;
+			END IF;
+			WITH targets AS (
+				SELECT grant_row.id, grant_row.user_id, grant_row.guest_device_id_hash, grant_row.credits_remaining
+				FROM credit_grants AS grant_row
+				WHERE grant_row.source = 'subscription_period'
+					AND grant_row.credits_remaining > 0
+					AND EXISTS (
+						SELECT 1 FROM payments AS payment
+						WHERE payment.subscription_id = grant_row.subscription_id
+							AND payment.status = 'refunded'
+					)
+				FOR UPDATE
+			), cleared AS (
+				UPDATE credit_grants AS grant_row
+				SET credits_remaining = 0, updated_at = NOW()
+				FROM targets
+				WHERE grant_row.id = targets.id
+				RETURNING grant_row.id
+			)
+			INSERT INTO credit_ledger
+				(user_id, guest_device_id_hash, grant_id, direction, credits, balance_after,
+				 reason_code, idempotency_key, created_at)
+			SELECT targets.user_id, targets.guest_device_id_hash, targets.id, 'expiry',
+				targets.credits_remaining, 0, 'subscription_refund_revoked',
+				'refund:grant:' || targets.id, NOW()
+			FROM targets JOIN cleared ON cleared.id = targets.id
+			ON CONFLICT DO NOTHING;
+			INSERT INTO schema_repairs (name) VALUES ('0062_revoke_refunded_pass_credits');
 		END
 		$$`,
 		// The monthly review's once-per-month guarantee lives in this index
