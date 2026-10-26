@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -160,6 +161,11 @@ func (s *Server) createAdminGiftPass(c *gin.Context) {
 		}
 	}
 
+	// Only a new gift is announced; a replayed request already was.
+	if created {
+		notifyGiftedPass(user.ID, plan, subscriptions, now)
+	}
+
 	subscriptionIDs := make([]uint, 0, len(subscriptions))
 	for _, subscription := range subscriptions {
 		subscriptionIDs = append(subscriptionIDs, subscription.ID)
@@ -284,4 +290,53 @@ func (s *Server) revokeAdminGiftPass(c *gin.Context) {
 		"note":            note,
 	})
 	c.JSON(http.StatusOK, gin.H{"subscription": pass, "credits_revoked": creditsRevoked})
+}
+
+const giftPassNotificationType = "billing.pass.gifted"
+
+// giftPassActionURL is where the gift notification opens: the app's billing
+// screen, which shows the pass and its dates.
+const giftPassActionURL = "/billing"
+
+// notifyGiftedPass tells the person about their gift, in the app's
+// notification list and as a push. Without it a gift lands silently: the
+// pass is simply active the next time they look, or, if it is queued behind
+// one they already have, nothing visible changes for days. A failure here
+// is logged rather than returned — the gift itself has already been given.
+func notifyGiftedPass(userID uint, plan models.Plan, periods []models.UserSubscription, now time.Time) {
+	if len(periods) == 0 {
+		return
+	}
+	title, body := giftPassNotificationCopy(plan, periods, now)
+	if err := createNotification(userID, giftPassNotificationType, title, body, giftPassActionURL); err != nil {
+		log.Printf("[WARN] gift pass notification failed user=%d: %v", userID, err)
+		return
+	}
+	go sendUserPush(database.DB, userID, title, body, map[string]any{"action_url": giftPassActionURL})
+}
+
+// giftPassNotificationCopy words the gift for the person receiving it. Dates
+// are India time, and a pass queued behind a running one says when it starts
+// so it doesn't read as already active.
+func giftPassNotificationCopy(plan models.Plan, periods []models.UserSubscription, now time.Time) (string, string) {
+	kind := "free pass"
+	switch plan.BillingInterval {
+	case "weekly", "monthly", "quarterly", "yearly":
+		kind = "free " + plan.BillingInterval + " pass"
+	}
+	location := indiaLocation()
+	start := periods[0].CurrentPeriodStart
+	until := periods[len(periods)-1].CurrentPeriodEnd.In(location).Format("2 Jan")
+	perks := "every paid feature"
+	if credits := plan.IncludedCredits * len(periods); credits > 0 {
+		// rupeesForCopy does the Indian digit grouping; the credits are not money.
+		perks += ", plus " + strings.TrimPrefix(rupeesForCopy(models.Money(int64(credits)*100)), "₹") + " AI credits"
+	}
+
+	title := "You've been gifted a free pass"
+	if start.After(now) {
+		return title, fmt.Sprintf("A %s is yours from %s, when your current pass ends, until %s: %s.",
+			kind, start.In(location).Format("2 Jan"), until, perks)
+	}
+	return title, fmt.Sprintf("A %s is yours until %s: %s.", kind, until, perks)
 }

@@ -112,6 +112,16 @@ func TestAdminGiftPassUnlocksPaidPlanAndGrantsCredits(t *testing.T) {
 		t.Fatalf("replay created extra rows: subscriptions=%d grants=%d", rows, grants)
 	}
 
+	var notifications []models.Notification
+	database.DB.Where("user_id = ?", user.ID).Find(&notifications)
+	if len(notifications) != 1 {
+		t.Fatalf("the gift should notify once, even when replayed; got %d", len(notifications))
+	}
+	if notifications[0].Type != giftPassNotificationType || notifications[0].ActionURL != "/billing" ||
+		!strings.Contains(notifications[0].Body, "free monthly pass is yours until") {
+		t.Fatalf("unexpected gift notification: %#v", notifications[0])
+	}
+
 	var audit models.AdminAuditLog
 	if err := database.DB.Where("admin_user_id = ? AND action = ?", support.ID, "post_users_passes").Order("created_at ASC").First(&audit).Error; err != nil {
 		t.Fatalf("gift should be audited: %v", err)
@@ -158,6 +168,13 @@ func TestAdminGiftPassQueuesBehindRunningPass(t *testing.T) {
 	database.DB.Model(&models.CreditGrant{}).Where("subscription_id IN ? AND credits_granted = ?", []uint{first.ID, second.ID}, 800).Count(&grants)
 	if grants != 2 {
 		t.Fatalf("each gifted week should carry its own 800 credits, got %d grants", grants)
+	}
+	var notification models.Notification
+	if err := database.DB.Where("user_id = ? AND type = ?", user.ID, giftPassNotificationType).First(&notification).Error; err != nil {
+		t.Fatalf("queued gift should still notify: %v", err)
+	}
+	if !strings.Contains(notification.Body, "when your current pass ends") || !strings.Contains(notification.Body, "1,600 AI credits") {
+		t.Fatalf("a queued gift should say when it starts and carry both weeks' credits: %q", notification.Body)
 	}
 }
 
@@ -333,6 +350,12 @@ func TestAdminRevokeRunningGiftEndsItAndTakesBackCredits(t *testing.T) {
 		t.Fatalf("audit row should carry the note and credits: %s", audit.Payload)
 	}
 
+	var notifications int64
+	database.DB.Model(&models.Notification{}).Where("user_id = ?", user.ID).Count(&notifications)
+	if notifications != 1 {
+		t.Fatalf("a revoke should be silent: only the gift's notification should exist, got %d", notifications)
+	}
+
 	again := revokeGiftPass(t, router, supportToken, user.ID, pass.ID, nil)
 	if again.Code != http.StatusConflict {
 		t.Fatalf("revoking twice should conflict, got %d: %s", again.Code, again.Body.String())
@@ -418,5 +441,38 @@ func TestAdminRevokeRefusals(t *testing.T) {
 	database.DB.First(&still, gift.ID)
 	if still.Status != "active" {
 		t.Fatalf("refused revokes should change nothing: %#v", still)
+	}
+}
+
+func TestGiftPassNotificationCopy(t *testing.T) {
+	now := time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC) // 11:30 in India
+	period := func(start time.Time, length time.Duration) models.UserSubscription {
+		return models.UserSubscription{CurrentPeriodStart: start, CurrentPeriodEnd: start.Add(length)}
+	}
+	week, month, year := 7*24*time.Hour, 30*24*time.Hour, 365*24*time.Hour
+
+	monthly := models.Plan{BillingInterval: "monthly", IncludedCredits: 3600}
+	title, body := giftPassNotificationCopy(monthly, []models.UserSubscription{period(now, month)}, now)
+	if title != "You've been gifted a free pass" {
+		t.Fatalf("title = %q", title)
+	}
+	if want := "A free monthly pass is yours until 25 Nov: every paid feature, plus 3,600 AI credits."; body != want {
+		t.Fatalf("running gift:\n got %q\nwant %q", body, want)
+	}
+
+	weekly := models.Plan{BillingInterval: "weekly", IncludedCredits: 800}
+	queuedStart := time.Date(2026, 11, 3, 6, 0, 0, 0, time.UTC)
+	_, body = giftPassNotificationCopy(weekly, []models.UserSubscription{period(queuedStart, week), period(queuedStart.Add(week), week)}, now)
+	if want := "A free weekly pass is yours from 3 Nov, when your current pass ends, until 17 Nov: every paid feature, plus 1,600 AI credits."; body != want {
+		t.Fatalf("queued gift:\n got %q\nwant %q", body, want)
+	}
+
+	yearly := models.Plan{BillingInterval: "yearly", IncludedCredits: 48000}
+	periods := make([]models.UserSubscription, 12)
+	for index := range periods {
+		periods[index] = period(now.Add(time.Duration(index)*year), year)
+	}
+	if _, body = giftPassNotificationCopy(yearly, periods, now); !strings.Contains(body, "5,76,000 AI credits") {
+		t.Fatalf("large credit counts should use Indian grouping: %q", body)
 	}
 }
