@@ -164,35 +164,64 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 		return statementReadResponse{}, false
 	}
 
-	today := s.statementToday()
-	localLines := parseStatementText(text, today.Year())
+	result, ok := s.readStatementPDFText(c, text, s.statementToday().Year())
+	if !ok {
+		return statementReadResponse{}, false
+	}
+	response := statementReadResponse{Summary: result.summary, Lines: result.lines, Source: "pdf"}
+	var diff statementDiff
+	setStatementDiffCredits(&diff, result.credits)
+	response.CreditsCharged = diff.CreditsCharged
+	response.CreditsRemainingToday = diff.CreditsRemainingToday
+	response.CreditsRemainingTotal = diff.CreditsRemainingTotal
+	return response, true
+}
+
+// pdfStatementText is what one PDF read produced. credits is nil when nothing
+// was charged.
+type pdfStatementText struct {
+	summary statementSummary
+	lines   []statementLine
+	credits map[string]any
+}
+
+// readStatementPDFText is the paid read shared by both PDF routes — the Add
+// statement sheet and the check of a saved bill. It writes its own error
+// response and returns false when there is nothing to show.
+//
+// `fallbackYear` dates the local parser's rows; the model is told today's date
+// and resolves its own.
+func (s *Server) readStatementPDFText(c *gin.Context, text string, fallbackYear int) (pdfStatementText, bool) {
+	localLines := parseStatementText(text, fallbackYear)
+	local := func() (pdfStatementText, bool) {
+		if len(localLines) == 0 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
+			return pdfStatementText{}, false
+		}
+		return pdfStatementText{lines: localLines}, true
+	}
 
 	reader, ok := s.parser.(ai.StatementSummaryReader)
 	if !ok || s.cfg.AIParseDisabled || s.providerCircuitOpen() {
-		if len(localLines) == 0 {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
-			return statementReadResponse{}, false
-		}
-		return statementReadResponse{Lines: localLines, Source: "pdf"}, true
+		return local()
 	}
 	action, err := ai.DefaultActionRegistry().RequireImplemented(ai.ActionStatementPDFRead)
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "statement_reader_unavailable"})
-		return statementReadResponse{}, false
+		return local()
 	}
 	subject, subjectOK := parseCreditSubject(c)
 	if !subjectOK {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
-		return statementReadResponse{}, false
+		return pdfStatementText{}, false
 	}
 	if s.rejectIfAIAbuseBlocked(c, subject) || s.rejectIfAIFailureCooldown(c, subject) {
-		return statementReadResponse{}, false
+		return pdfStatementText{}, false
 	}
 	creditService := billing.NewCreditService(database.DB)
 	usageEvent, allowance, reserveErr := creditService.ReserveCredits(subject, action.Code, parseIdempotencyHeader(c))
 	if reserveErr != nil {
 		writeCreditReservationError(c, allowance, reserveErr)
-		return statementReadResponse{}, false
+		return pdfStatementText{}, false
 	}
 
 	timeout := s.cfg.ReqTimeoutSec
@@ -201,7 +230,7 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	raw, usage, err := reader.ReadStatementText(ctx, text, today.Format(apiDateLayout))
+	raw, usage, err := reader.ReadStatementText(ctx, text, s.statementToday().Format(apiDateLayout))
 	if err != nil {
 		s.recordAIProviderFailure()
 		log.Printf("statement pdf read failed: %v", err)
@@ -209,10 +238,10 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_pdf_read_failed",
 		})
 		if len(localLines) > 0 {
-			return statementReadResponse{Lines: localLines, Source: "pdf"}, true
+			return pdfStatementText{lines: localLines}, true
 		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "statement_read_failed"})
-		return statementReadResponse{}, false
+		return pdfStatementText{}, false
 	}
 	responseBytes := len(raw)
 	summary, _ := decodeStatementSummary(raw, text)
@@ -226,21 +255,14 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_pdf_response", ResponseBytes: &responseBytes,
 		}, usage, s.cfg.OpenAILlmModel))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
-		return statementReadResponse{}, false
+		return pdfStatementText{}, false
 	}
 	credits, err := s.finalizeParseSuccess(creditService, usageEvent.ID, subject, action.Code, len(text), responseBytes, 0, usage)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})
-		return statementReadResponse{}, false
+		return pdfStatementText{}, false
 	}
-
-	response := statementReadResponse{Summary: summary, Lines: dedupeStatementLines(0, lines), Source: "pdf"}
-	var diff statementDiff
-	setStatementDiffCredits(&diff, credits)
-	response.CreditsCharged = diff.CreditsCharged
-	response.CreditsRemainingToday = diff.CreditsRemainingToday
-	response.CreditsRemainingTotal = diff.CreditsRemainingTotal
-	return response, true
+	return pdfStatementText{summary: summary, lines: dedupeStatementLines(0, lines), credits: credits}, true
 }
 
 // printedStatementLines is the model's rows less any whose amount is not

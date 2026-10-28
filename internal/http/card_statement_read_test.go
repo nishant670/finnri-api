@@ -336,3 +336,48 @@ func TestReadStatementPDFFailedReadIsFree(t *testing.T) {
 		t.Fatalf("a failed model call should fall back to the local rows, free: %d %s", response.Code, response.Body.String())
 	}
 }
+
+// Checking a saved bill against its PDF is the same paid read: the Scapia
+// file that the parser alone could not read must work here too, rather than
+// failing again with "no transactions found".
+func TestUploadStatementPDFUsesTheAIRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	content := "BT /F1 10 Tf 72 720 Td (12 Oct) Tj 0 -14 Td (AMAZON PAY INDIA) Tj 0 -14 Td (1,250.00) Tj ET"
+	if err := writeTextPDF(t, path, content); err != nil {
+		t.Skipf("could not build a test PDF: %v", err)
+	}
+	pdf, _ := os.ReadFile(path)
+	server := &Server{
+		cfg: &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{},
+			"lines":[{"date":"2026-10-12","description":"AMAZON PAY INDIA","amount":1250,"type":"expense"}]}`)},
+	}
+	ctx, response, card := newStatementReadContext(t, func(writer *multipart.Writer) {
+		part, _ := writer.CreateFormFile("file", "statement.pdf")
+		_, _ = part.Write(pdf)
+	})
+	statement := models.CardStatement{
+		UserID: card.UserID, AccountID: card.ID, CycleStart: "2026-09-26", CycleEnd: "2026-10-25",
+		StatementDate: "2026-10-25", DueDate: "2026-11-12", TotalDue: rupees(1250), Status: "unpaid",
+	}
+	if err := database.DB.Create(&statement).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx.Params = gin.Params{{Key: "id", Value: strconv.FormatUint(uint64(statement.ID), 10)}}
+
+	server.uploadCardStatementPDF(ctx)
+
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var diff statementDiff
+	if err := json.Unmarshal(response.Body.Bytes(), &diff); err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Missing) != 1 || diff.Missing[0].Description != "AMAZON PAY INDIA" {
+		t.Fatalf("the AI-read row should be offered as missing: %+v", diff)
+	}
+	if diff.CreditsCharged == nil || *diff.CreditsCharged != 50 {
+		t.Fatalf("charged %v, want 50", diff.CreditsCharged)
+	}
+}
