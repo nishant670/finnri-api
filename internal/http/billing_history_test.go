@@ -118,7 +118,7 @@ func TestBillingStatusPricesEachCapturePath(t *testing.T) {
 	_, token := createBillingTestUserSession(t)
 
 	status := performJSONRequest[billingStatusResponse](t, router, http.MethodGet, "/v1/billing/status", token, nil, http.StatusOK)
-	if got, want := status.Credits.CaptureCredits, (captureCreditsResponse{Text: 5, Voice: 12, Receipt: 25}); got != want {
+	if got, want := status.Credits.CaptureCredits, (captureCreditsResponse{Text: 5, Voice: 12, VoiceMax: 18, Receipt: 25, StatementPDF: 50, StatementScreenshots: 100}); got != want {
 		t.Fatalf("capture credits = %#v, want %#v", got, want)
 	}
 }

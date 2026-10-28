@@ -95,7 +95,7 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 		s.recordAIProviderFailure()
 		log.Printf("statement image parse failed: %v", parseErr)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_image_parse_failed",
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_image_parse_failed", FinalCredits: statementReadNoCharge(),
 		})
 		c.JSON(http.StatusBadGateway, gin.H{"error": "statement_image_parse_failed"})
 		return
@@ -105,7 +105,7 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 	if decodeErr != nil {
 		responseBytes := len(parsed)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_image_response", ResponseBytes: &responseBytes,
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_image_response", FinalCredits: statementReadNoCharge(), ResponseBytes: &responseBytes,
 		})
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
 		return
@@ -116,7 +116,7 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 	if err != nil {
 		responseBytes := len(parsed)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "failed_build_statement_diff", ResponseBytes: &responseBytes,
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "failed_build_statement_diff", FinalCredits: statementReadNoCharge(), ResponseBytes: &responseBytes,
 		})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_cycle_entries"})
 		return

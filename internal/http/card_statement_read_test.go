@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http/httptest"
 	"os"
@@ -26,7 +27,7 @@ type fixtureStatementReader struct {
 	images  []byte
 }
 
-func (p fixtureStatementReader) ExtractStatementSummary(context.Context, string, string) ([]byte, ai.Usage, error) {
+func (p fixtureStatementReader) ReadStatementText(context.Context, string, string) ([]byte, ai.Usage, error) {
 	return p.summary, ai.Usage{}, nil
 }
 
@@ -178,8 +179,8 @@ func TestReadStatementPDFReturnsRowsAndAVerifiedSummary(t *testing.T) {
 	if read.Summary.CreditLimit != nil {
 		t.Fatalf("a limit that is not in the PDF text must be dropped: %v", *read.Summary.CreditLimit)
 	}
-	if read.CreditsCharged != nil {
-		t.Fatal("a PDF read must stay free")
+	if read.CreditsCharged == nil || *read.CreditsCharged != 50 {
+		t.Fatalf("a PDF read is an AI read and costs 50 credits, got %v", read.CreditsCharged)
 	}
 	found := false
 	for _, update := range read.CardUpdates {
@@ -256,5 +257,134 @@ func TestCompareCardOffersAStatementDayToACardWithoutOne(t *testing.T) {
 	none, _ := compareCardWithStatement(models.Account{StatementDay: 31}, statementSummary{StatementDate: "2026-11-30"})
 	if len(none) != 0 {
 		t.Fatalf("the clamped anchor is not a move: %+v", none)
+	}
+}
+
+// The Scapia case: the PDF's text layer splits each row across lines and
+// prints dates without a year, so the local parser finds nothing. The model
+// reads the rows, every one of them must be printed in the text, and the read
+// is charged once.
+func TestReadStatementPDFReadsRowsTheLocalParserCannot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	content := "BT /F1 10 Tf 72 720 Td (12 Oct) Tj 0 -14 Td (AMAZON PAY INDIA) Tj 0 -14 Td (1,250.00) Tj " +
+		"0 -14 Td (14 Oct) Tj 0 -14 Td (UBER TRIP) Tj 0 -14 Td (340.50) Tj " +
+		"0 -14 Td (Total Amount Due 1,590.50) Tj ET"
+	if err := writeTextPDF(t, path, content); err != nil {
+		t.Skipf("could not build a test PDF: %v", err)
+	}
+	pdf, _ := os.ReadFile(path)
+	server := &Server{
+		cfg: &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{"statement_date":"2026-10-25","total_due":1590.5},
+			"lines":[
+				{"date":"2026-10-12","description":"AMAZON PAY INDIA","amount":1250,"type":"expense"},
+				{"date":"2026-10-14","description":"UBER TRIP","amount":340.5,"type":"expense"},
+				{"date":"2026-10-15","description":"INVENTED","amount":999,"type":"expense"}
+			]}`)},
+	}
+	ctx, response, _ := newStatementReadContext(t, func(writer *multipart.Writer) {
+		part, _ := writer.CreateFormFile("file", "statement.pdf")
+		_, _ = part.Write(pdf)
+	})
+
+	server.readCardStatement(ctx)
+
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var read statementReadResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Lines) != 2 || read.Lines[0].Description != "AMAZON PAY INDIA" || read.Lines[1].Amount != models.Money(34050) {
+		t.Fatalf("the two printed rows, and not the invented one, should come back: %+v", read.Lines)
+	}
+	if read.Summary.TotalDue == nil || *read.Summary.TotalDue != models.Money(159050) {
+		t.Fatalf("summary should still prefill: %+v", read.Summary)
+	}
+	if read.CreditsCharged == nil || *read.CreditsCharged != 50 {
+		t.Fatalf("charged %v, want 50", read.CreditsCharged)
+	}
+}
+
+type failingStatementReader struct{ fixtureStatementReader }
+
+func (failingStatementReader) ReadStatementText(context.Context, string, string) ([]byte, ai.Usage, error) {
+	return nil, ai.Usage{}, errors.New("provider down")
+}
+
+func TestReadStatementPDFFailedReadIsFree(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	if err := writeMinimalPDF(t, path); err != nil {
+		t.Skipf("could not build a test PDF: %v", err)
+	}
+	pdf, _ := os.ReadFile(path)
+	server := &Server{
+		cfg:    &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: failingStatementReader{},
+	}
+	ctx, response, _ := newStatementReadContext(t, func(writer *multipart.Writer) {
+		part, _ := writer.CreateFormFile("file", "statement.pdf")
+		_, _ = part.Write(pdf)
+	})
+
+	server.readCardStatement(ctx)
+
+	var read statementReadResponse
+	_ = json.Unmarshal(response.Body.Bytes(), &read)
+	if response.Code != 200 || len(read.Lines) != 1 || read.CreditsCharged != nil {
+		t.Fatalf("a failed model call should fall back to the local rows, free: %d %s", response.Code, response.Body.String())
+	}
+	var event models.AIUsageEvent
+	if err := database.DB.Order("id DESC").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.FinalCredits != 0 || event.Status != "failed_after_provider" {
+		t.Fatalf("the failed read must be recorded and refunded: %+v", event)
+	}
+}
+
+// Checking a saved bill against its PDF is the same paid read: the Scapia
+// file that the parser alone could not read must work here too, rather than
+// failing again with "no transactions found".
+func TestUploadStatementPDFUsesTheAIRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	content := "BT /F1 10 Tf 72 720 Td (12 Oct) Tj 0 -14 Td (AMAZON PAY INDIA) Tj 0 -14 Td (1,250.00) Tj ET"
+	if err := writeTextPDF(t, path, content); err != nil {
+		t.Skipf("could not build a test PDF: %v", err)
+	}
+	pdf, _ := os.ReadFile(path)
+	server := &Server{
+		cfg: &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{},
+			"lines":[{"date":"2026-10-12","description":"AMAZON PAY INDIA","amount":1250,"type":"expense"}]}`)},
+	}
+	ctx, response, card := newStatementReadContext(t, func(writer *multipart.Writer) {
+		part, _ := writer.CreateFormFile("file", "statement.pdf")
+		_, _ = part.Write(pdf)
+	})
+	statement := models.CardStatement{
+		UserID: card.UserID, AccountID: card.ID, CycleStart: "2026-09-26", CycleEnd: "2026-10-25",
+		StatementDate: "2026-10-25", DueDate: "2026-11-12", TotalDue: rupees(1250), Status: "unpaid",
+	}
+	if err := database.DB.Create(&statement).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx.Params = gin.Params{{Key: "id", Value: strconv.FormatUint(uint64(statement.ID), 10)}}
+
+	server.uploadCardStatementPDF(ctx)
+
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var diff statementDiff
+	if err := json.Unmarshal(response.Body.Bytes(), &diff); err != nil {
+		t.Fatal(err)
+	}
+	if len(diff.Missing) != 1 || diff.Missing[0].Description != "AMAZON PAY INDIA" {
+		t.Fatalf("the AI-read row should be offered as missing: %+v", diff)
+	}
+	if diff.CreditsCharged == nil || *diff.CreditsCharged != 50 {
+		t.Fatalf("charged %v, want 50", diff.CreditsCharged)
 	}
 }
