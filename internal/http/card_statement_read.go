@@ -177,6 +177,15 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 	return response, true
 }
 
+// statementReadNoCharge is what a statement read costs when it ends without a
+// result, as a failed bill scan does: the user gets nothing, so they pay
+// nothing. The event still records failed_after_provider, so the failure
+// cooldown counts it.
+func statementReadNoCharge() *int {
+	zero := 0
+	return &zero
+}
+
 // pdfStatementText is what one PDF read produced. credits is nil when nothing
 // was charged.
 type pdfStatementText struct {
@@ -235,7 +244,7 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, fallbackYear 
 		s.recordAIProviderFailure()
 		log.Printf("statement pdf read failed: %v", err)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_pdf_read_failed",
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_pdf_read_failed", FinalCredits: statementReadNoCharge(),
 		})
 		if len(localLines) > 0 {
 			return pdfStatementText{lines: localLines}, true
@@ -252,7 +261,7 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, fallbackYear 
 	}
 	if len(lines) == 0 && summary.isEmpty() {
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, withStatementTokens(billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_pdf_response", ResponseBytes: &responseBytes,
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_pdf_response", FinalCredits: statementReadNoCharge(), ResponseBytes: &responseBytes,
 		}, usage, s.cfg.OpenAILlmModel))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
 		return pdfStatementText{}, false
@@ -339,7 +348,7 @@ func (s *Server) readStatementScreenshots(c *gin.Context) (statementReadResponse
 		s.recordAIProviderFailure()
 		log.Printf("statement screenshot read failed: %v", err)
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_image_parse_failed",
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_image_parse_failed", FinalCredits: statementReadNoCharge(),
 		})
 		c.JSON(http.StatusBadGateway, gin.H{"error": "statement_image_parse_failed"})
 		return statementReadResponse{}, false
@@ -351,7 +360,7 @@ func (s *Server) readStatementScreenshots(c *gin.Context) (statementReadResponse
 	summary, _ := decodeStatementSummary(raw, "")
 	if linesErr != nil && summary.isEmpty() {
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, withStatementTokens(billing.ProviderUsage{
-			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_image_response", ResponseBytes: &responseBytes,
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_image_response", FinalCredits: statementReadNoCharge(), ResponseBytes: &responseBytes,
 		}, usage, s.cfg.OpenAILlmModel))
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
 		return statementReadResponse{}, false

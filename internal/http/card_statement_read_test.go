@@ -335,6 +335,13 @@ func TestReadStatementPDFFailedReadIsFree(t *testing.T) {
 	if response.Code != 200 || len(read.Lines) != 1 || read.CreditsCharged != nil {
 		t.Fatalf("a failed model call should fall back to the local rows, free: %d %s", response.Code, response.Body.String())
 	}
+	var event models.AIUsageEvent
+	if err := database.DB.Order("id DESC").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.FinalCredits != 0 || event.Status != "failed_after_provider" {
+		t.Fatalf("the failed read must be recorded and refunded: %+v", event)
+	}
 }
 
 // Checking a saved bill against its PDF is the same paid read: the Scapia
