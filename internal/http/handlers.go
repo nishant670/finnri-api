@@ -281,7 +281,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
 
 		// Budgets
-		budgets := authorized.Group("/budgets", s.requireEntitlement(billing.FeatureBudgets))
+		budgets := authorized.Group("/budgets", s.requireBudgetAllowance())
 		{
 			budgets.POST("", s.createBudget)
 			budgets.GET("", s.listBudgets)
