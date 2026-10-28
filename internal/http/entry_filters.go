@@ -158,10 +158,20 @@ func buildFilteredEntriesQuery(
 			fields["q"] = "must not exceed 200 characters"
 		} else {
 			pattern := "%" + strings.ToLower(search) + "%"
-			query = query.Where(
-				"LOWER(entries.title) LIKE ? OR LOWER(entries.merchant) LIKE ? OR LOWER(entries.notes) LIKE ?",
-				pattern, pattern, pattern,
-			)
+			if amount, ok := searchedAmount(search); ok {
+				// A search that reads as a figure — "20938", "20,938", "₹20,938.00" —
+				// is the user looking for a transaction by what it cost. The list
+				// shows amounts formatted, so the commas they copied are allowed.
+				query = query.Where(
+					"LOWER(entries.title) LIKE ? OR LOWER(entries.merchant) LIKE ? OR LOWER(entries.notes) LIKE ? OR entries.amount = ?",
+					pattern, pattern, pattern, amount,
+				)
+			} else {
+				query = query.Where(
+					"LOWER(entries.title) LIKE ? OR LOWER(entries.merchant) LIKE ? OR LOWER(entries.notes) LIKE ?",
+					pattern, pattern, pattern,
+				)
+			}
 		}
 	}
 
@@ -169,6 +179,35 @@ func buildFilteredEntriesQuery(
 		return query, fields
 	}
 	return query, nil
+}
+
+// searchedAmount reads a search as an amount when it is nothing but one: an
+// optional rupee sign or "Rs", digits with thousands commas, and up to two
+// decimals. Anything with a letter in it stays a text search only.
+func searchedAmount(search string) (models.Money, bool) {
+	s := strings.ToLower(strings.TrimSpace(search))
+	s = strings.TrimPrefix(s, "₹")
+	s = strings.TrimPrefix(s, "rs.")
+	s = strings.TrimPrefix(s, "rs")
+	s = strings.ReplaceAll(strings.TrimSpace(s), ",", "")
+	if s == "" {
+		return 0, false
+	}
+	dot := false
+	for i, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r == '.' && !dot && i > 0 && len(s)-i-1 <= 2:
+			dot = true
+		default:
+			return 0, false
+		}
+	}
+	amount, err := models.ParseMoney(s)
+	if err != nil || amount <= 0 {
+		return 0, false
+	}
+	return amount, true
 }
 
 // entrySortOrders maps the sort the client asks for onto SQL.

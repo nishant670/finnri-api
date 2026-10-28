@@ -327,3 +327,80 @@ func TestCategoryCountsFoldLegacyNamesOntoCanonicalOnes(t *testing.T) {
 		t.Fatalf("a legacy name should not be reported on its own, got %#v", page.CategoryCounts)
 	}
 }
+
+// The list shows "₹20,938", so that is what gets typed — or pasted — into the
+// search. Every way of writing the amount must find the entry, and a figure
+// that only appears in the text must still be found by the text match.
+func TestSearchMatchesAmount(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	auth := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "amount-search-device"}, http.StatusOK,
+	)
+	accounts := performJSONRequest[[]models.Account](
+		t, router, http.MethodGet, "/v1/accounts", auth.Token, nil, http.StatusOK,
+	)
+	for _, entry := range []map[string]any{
+		{"title": "HSBC loan EMI", "amount": 20938},
+		{"title": "Groceries", "amount": 20938.5},
+		{"title": "Order 20938", "amount": 450},
+		{"title": "Rent", "amount": 15000},
+	} {
+		entry["type"], entry["currency"], entry["source"] = "expense", "INR", "manual"
+		entry["mode"], entry["category"], entry["date"] = "Cash", "Misc", "2026-10-15"
+		createExportEntry(t, router, auth.Token, accounts[0].ID, entry)
+	}
+
+	for _, test := range []struct {
+		q    string
+		want []string
+	}{
+		{q: "20938", want: []string{"HSBC loan EMI", "Order 20938"}},
+		{q: "20,938", want: []string{"HSBC loan EMI"}},
+		{q: "₹20,938", want: []string{"HSBC loan EMI"}},
+		{q: "Rs 20938.00", want: []string{"HSBC loan EMI"}},
+		{q: "20938.5", want: []string{"Groceries"}},
+		{q: "15,000", want: []string{"Rent"}},
+		{q: "hsbc", want: []string{"HSBC loan EMI"}},
+	} {
+		page := performJSONRequest[entryListPage](
+			t, router, http.MethodGet, "/v1/entries?q="+url.QueryEscape(test.q),
+			auth.Token, nil, http.StatusOK,
+		)
+		got := map[string]bool{}
+		for _, entry := range page.Entries {
+			got[entry.Title] = true
+		}
+		if len(got) != len(test.want) {
+			t.Fatalf("q=%q returned %v, want %v", test.q, got, test.want)
+		}
+		for _, title := range test.want {
+			if !got[title] {
+				t.Fatalf("q=%q returned %v, want %v", test.q, got, test.want)
+			}
+		}
+	}
+}
+
+func TestSearchedAmount(t *testing.T) {
+	for _, test := range []struct {
+		in   string
+		want models.Money
+		ok   bool
+	}{
+		{"20938", 2093800, true},
+		{"20,938.5", 2093850, true},
+		{"₹ 1,200", 120000, true},
+		{"rs.99", 9900, true},
+		{"hsbc", 0, false},
+		{"20938a", 0, false},
+		{"1.234", 0, false},
+		{"0", 0, false},
+		{"-50", 0, false},
+	} {
+		got, ok := searchedAmount(test.in)
+		if ok != test.ok || got != test.want {
+			t.Fatalf("searchedAmount(%q) = %v, %v; want %v, %v", test.in, got, ok, test.want, test.ok)
+		}
+	}
+}
