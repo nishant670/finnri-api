@@ -72,6 +72,16 @@ func (s *Server) rejectIfAIParseDisabled(c *gin.Context) bool {
 	return false
 }
 
+// providerCircuitOpen reports a tripped breaker without writing a response,
+// for a read that has a non-AI way to carry on.
+func (s *Server) providerCircuitOpen() bool {
+	if s.cfg.AIProviderFailureThreshold <= 0 || s.cfg.AIProviderCircuitBreakerSeconds <= 0 {
+		return false
+	}
+	allowed, _ := s.circuitBreaker().allow(time.Now().UTC())
+	return !allowed
+}
+
 func (s *Server) rejectIfProviderCircuitOpen(c *gin.Context) bool {
 	if s.cfg.AIProviderFailureThreshold <= 0 || s.cfg.AIProviderCircuitBreakerSeconds <= 0 {
 		return false

@@ -27,13 +27,17 @@ statement sheet and returns three things, saving none of them:
   - the transaction rows, for the statement check once the bill is saved,
   - what the statement says about the card that Finnri has differently.
 
-A PDF stays free. Its rows are read locally as before; its summary is one
-small text-model call on the masked text, and every amount that call returns
-must be printed in that text or it is dropped. When AI is off or failing, the
-PDF still yields its rows and simply prefills nothing.
+Both routes are paid AI reads, because both call a model. A PDF is the
+cheaper one (statement_pdf_read, 50 credits): its text is extracted locally,
+card numbers masked, and one text-model call returns the summary and every
+row. Every amount it returns must be printed in that text or it is dropped.
+The local line parser still runs too, and its rows win when it found more —
+it is exact on the layouts it knows. A read whose model call fails or returns
+nothing usable is not charged; when AI is off the PDF still yields whatever
+rows the local parser finds, for free, and prefills nothing.
 
-Screenshots are the existing paid read, now returning the summary in the same
-call — no extra charge.
+Screenshots are the screenshot read (100 credits): rows and summary from the
+images in one vision call.
 */
 
 // statementSummary is what the statement says about the bill and the card.
@@ -127,9 +131,9 @@ func (s *Server) readCardStatement(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// readStatementPDF reads the rows locally and asks the text model for the
-// summary. Errors that are the user's to fix (password, not a PDF) are
-// written here; an unavailable model is not an error.
+// readStatementPDF extracts the text locally, then reads the summary and the
+// rows with one paid text-model call. Errors that are the user's to fix
+// (password, not a PDF) are written before anything is charged.
 func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) {
 	file, _ := c.FormFile("file")
 	opened, err := file.Open()
@@ -161,55 +165,107 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 	}
 
 	today := s.statementToday()
-	summary := s.summarizeStatementText(c.Request.Context(), text, today)
+	localLines := parseStatementText(text, today.Year())
 
-	fallbackYear := today.Year()
-	if date, err := parseStrictAPIDate(summary.StatementDate); err == nil {
-		fallbackYear = date.Year()
+	reader, ok := s.parser.(ai.StatementSummaryReader)
+	if !ok || s.cfg.AIParseDisabled || s.providerCircuitOpen() {
+		if len(localLines) == 0 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
+			return statementReadResponse{}, false
+		}
+		return statementReadResponse{Lines: localLines, Source: "pdf"}, true
 	}
-	lines := parseStatementText(text, fallbackYear)
-	if len(lines) == 0 && summary.isEmpty() {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
+	action, err := ai.DefaultActionRegistry().RequireImplemented(ai.ActionStatementPDFRead)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "statement_reader_unavailable"})
 		return statementReadResponse{}, false
 	}
-	return statementReadResponse{Summary: summary, Lines: lines, Source: "pdf"}, true
-}
+	subject, subjectOK := parseCreditSubject(c)
+	if !subjectOK {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
+		return statementReadResponse{}, false
+	}
+	if s.rejectIfAIAbuseBlocked(c, subject) || s.rejectIfAIFailureCooldown(c, subject) {
+		return statementReadResponse{}, false
+	}
+	creditService := billing.NewCreditService(database.DB)
+	usageEvent, allowance, reserveErr := creditService.ReserveCredits(subject, action.Code, parseIdempotencyHeader(c))
+	if reserveErr != nil {
+		writeCreditReservationError(c, allowance, reserveErr)
+		return statementReadResponse{}, false
+	}
 
-// summarizeStatementText is best-effort: a disabled, tripped or failing model
-// returns an empty summary and the PDF read carries on without it.
-func (s *Server) summarizeStatementText(ctx context.Context, text string, today time.Time) statementSummary {
-	reader, ok := s.parser.(ai.StatementSummaryReader)
-	if !ok || s.cfg.AIParseDisabled {
-		return statementSummary{}
-	}
-	if s.cfg.AIProviderFailureThreshold > 0 && s.cfg.AIProviderCircuitBreakerSeconds > 0 {
-		if allowed, _ := s.circuitBreaker().allow(time.Now().UTC()); !allowed {
-			return statementSummary{}
-		}
-	}
 	timeout := s.cfg.ReqTimeoutSec
 	if timeout <= 0 {
 		timeout = 30
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	raw, _, err := reader.ExtractStatementSummary(ctx, text, today.Format(apiDateLayout))
+	raw, usage, err := reader.ReadStatementText(ctx, text, today.Format(apiDateLayout))
 	if err != nil {
 		s.recordAIProviderFailure()
-		log.Printf("statement summary read failed: %v", err)
-		return statementSummary{}
+		log.Printf("statement pdf read failed: %v", err)
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_pdf_read_failed",
+		})
+		if len(localLines) > 0 {
+			return statementReadResponse{Lines: localLines, Source: "pdf"}, true
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "statement_read_failed"})
+		return statementReadResponse{}, false
 	}
-	s.recordAIProviderSuccess()
-	summary, err := decodeStatementSummary(raw, text)
+	responseBytes := len(raw)
+	summary, _ := decodeStatementSummary(raw, text)
+	aiLines := printedStatementLines(raw, text)
+	lines := aiLines
+	if len(localLines) >= len(aiLines) {
+		lines = localLines
+	}
+	if len(lines) == 0 && summary.isEmpty() {
+		_, _ = creditService.FinalizeUsage(usageEvent.ID, withStatementTokens(billing.ProviderUsage{
+			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_pdf_response", ResponseBytes: &responseBytes,
+		}, usage, s.cfg.OpenAILlmModel))
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
+		return statementReadResponse{}, false
+	}
+	credits, err := s.finalizeParseSuccess(creditService, usageEvent.ID, subject, action.Code, len(text), responseBytes, 0, usage)
 	if err != nil {
-		log.Printf("statement summary unusable: %v", err)
-		return statementSummary{}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})
+		return statementReadResponse{}, false
 	}
-	return summary
+
+	response := statementReadResponse{Summary: summary, Lines: dedupeStatementLines(0, lines), Source: "pdf"}
+	var diff statementDiff
+	setStatementDiffCredits(&diff, credits)
+	response.CreditsCharged = diff.CreditsCharged
+	response.CreditsRemainingToday = diff.CreditsRemainingToday
+	response.CreditsRemainingTotal = diff.CreditsRemainingTotal
+	return response, true
 }
 
-// readStatementScreenshots is the paid read: rows and summary in one vision
-// call, charged as the existing statement-screenshot action.
+// printedStatementLines is the model's rows less any whose amount is not
+// printed in the statement text — the same guard the summary's amounts get.
+// A row the model invented or misread would otherwise become a transaction
+// the user has to notice and undo.
+func printedStatementLines(raw []byte, text string) []statementLine {
+	decoded, err := decodeStatementImageLines(raw)
+	if err != nil {
+		return nil
+	}
+	printed := printedAmounts(text)
+	lines := make([]statementLine, 0, len(decoded))
+	for _, line := range decoded {
+		if !printed[line.Amount] {
+			continue
+		}
+		line.Kind = classifyLine(line)
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// readStatementScreenshots is the screenshot read: rows and summary in one
+// vision call, charged as the statement-screenshot action.
 func (s *Server) readStatementScreenshots(c *gin.Context) (statementReadResponse, bool) {
 	if s.rejectIfAIParseDisabled(c) || s.rejectIfProviderCircuitOpen(c) {
 		return statementReadResponse{}, false

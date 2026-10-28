@@ -16,9 +16,10 @@ import (
 // rows. Optional, like the other readers: without it a statement still
 // produces rows, just no prefilled bill.
 type StatementSummaryReader interface {
-	// ExtractStatementSummary reads masked statement text. Card numbers are
-	// masked by the caller before this is reached.
-	ExtractStatementSummary(ctx context.Context, text, today string) ([]byte, Usage, error)
+	// ReadStatementText returns the summary and the rows from masked PDF text
+	// in one call — the paid PDF read. Card numbers are masked by the caller
+	// before this is reached.
+	ReadStatementText(ctx context.Context, text, today string) ([]byte, Usage, error)
 	// ReadStatementImages returns the summary and the rows in one call, so a
 	// screenshot statement costs no more than it did before.
 	ReadStatementImages(ctx context.Context, images []StatementImage, today string) ([]byte, Usage, error)
@@ -43,30 +44,42 @@ const statementSummaryRules = `Rules for the summary:
 - card_last4 is the last four digits of the card number. issuer is the bank's name.
 - Never include names, addresses, phone numbers, email addresses or full card numbers.`
 
-const statementSummaryTextPrompt = `Read this credit-card statement text and return JSON only: {` + statementSummaryKeys + `}
-` + statementSummaryRules + `
-Resolve dates without a year so they are not after %s.
-Statement text:
-%s`
+const statementLinesKeys = `"lines":[{"date":"YYYY-MM-DD","description":"merchant or bank description","amount":123.45,"type":"expense|income"}]`
+
+const statementLinesRules = `Rules for lines: use expense for debits/purchases/fees/interest/EMIs and income for refunds/credits/payments received. Amounts are positive. Include transaction rows only; ignore totals, limits, rewards, headers and footers.`
 
 const statementReadImagesPrompt = `Read these ordered credit-card statement screenshots and return JSON only:
 {` + statementSummaryKeys + `,
- "lines":[{"date":"YYYY-MM-DD","description":"merchant or bank description","amount":123.45,"type":"expense|income"}]}
+ ` + statementLinesKeys + `}
 ` + statementSummaryRules + `
-Rules for lines: use expense for debits/purchases/fees/interest/EMIs and income for refunds/credits/payments received. Amounts are positive. Include transaction rows only; ignore totals, limits, rewards, headers and footers. Screenshots can overlap: emit an identical row only once, but keep two genuinely separate transactions even if their amounts match.
+` + statementLinesRules + ` Screenshots can overlap: emit an identical row only once, but keep two genuinely separate transactions even if their amounts match.
 Resolve dates without a year so they are not after %s. Use the statement date's cycle when it is visible.`
 
-// statementSummaryMaxChars bounds what is sent. The account summary and fee
-// terms sit on the first pages; the rest is transaction rows the caller reads
-// itself, so sending them would only cost tokens and expose more of the
-// statement than the summary needs.
-const statementSummaryMaxChars = 12000
+// statementReadTextPrompt is the PDF read. The text comes from the PDF's own
+// text layer, where an issuer's table can arrive one cell per line or with its
+// columns interleaved — the layouts a line-by-line pattern cannot follow.
+const statementReadTextPrompt = `Read this credit-card statement text and return JSON only:
+{` + statementSummaryKeys + `,
+ ` + statementLinesKeys + `}
+` + statementSummaryRules + `
+` + statementLinesRules + ` Table cells may be split across lines or out of order; put each row's date, description and amount back together. Copy every amount exactly as printed. Two separate transactions with the same amount are both rows.
+Resolve dates without a year so they are not after %s. Use the statement date's cycle when it is visible.
+Statement text:
+%s`
 
-func (c *OpenAIClient) ExtractStatementSummary(ctx context.Context, text, today string) ([]byte, Usage, error) {
-	if runes := []rune(text); len(runes) > statementSummaryMaxChars {
-		text = string(runes[:statementSummaryMaxChars])
+// statementTextMaxChars bounds the full-statement read. A month of card
+// spending is a few pages; past this it is marketing and terms.
+const statementTextMaxChars = 60000
+
+func (c *OpenAIClient) ReadStatementText(ctx context.Context, text, today string) ([]byte, Usage, error) {
+	if runes := []rune(text); len(runes) > statementTextMaxChars {
+		text = string(runes[:statementTextMaxChars])
 	}
-	return c.chatJSON(ctx, "statement summary", fmt.Sprintf(statementSummaryTextPrompt, today, text), 800)
+	maxTokens := c.cfg.OpenAIStatementMaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4000
+	}
+	return c.chatJSON(ctx, "statement text read", fmt.Sprintf(statementReadTextPrompt, today, text), maxTokens)
 }
 
 func (c *OpenAIClient) ReadStatementImages(ctx context.Context, images []StatementImage, today string) ([]byte, Usage, error) {
