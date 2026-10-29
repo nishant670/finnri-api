@@ -3,7 +3,6 @@ package ai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -90,17 +89,7 @@ func (c *OpenAIClient) ReadStatementImages(ctx context.Context, images []Stateme
 	if maxTokens <= 0 {
 		maxTokens = 4000
 	}
-	content := []map[string]any{{"type": "text", "text": fmt.Sprintf(statementReadImagesPrompt, today)}}
-	for _, image := range images {
-		content = append(content, map[string]any{
-			"type": "image_url",
-			"image_url": map[string]string{
-				"url":    "data:" + image.MIME + ";base64," + base64.StdEncoding.EncodeToString(image.Data),
-				"detail": "high",
-			},
-		})
-	}
-	return c.chatJSON(ctx, "statement read", content, maxTokens)
+	return c.completeWithVisionModel(ctx, "statement read", fmt.Sprintf(statementReadImagesPrompt, today), images, maxTokens)
 }
 
 // chatJSON runs one JSON-mode chat completion with a single user message,

@@ -366,16 +366,15 @@ func (s *Server) uploadCardStatementPDF(c *gin.Context) {
 		return
 	}
 
-	cycleEnd, dateErr := parseAPIDate(statement.CycleEnd)
-	fallbackYear := 0
-	if dateErr == nil {
-		fallbackYear = cycleEnd.Year()
+	anchor, dateErr := parseAPIDate(statement.StatementDate)
+	if dateErr != nil {
+		anchor = s.statementToday()
 	}
 
 	// The same paid read as the Add statement sheet. A bill saved with a
 	// summary but no rows sends people here with the same file, and a
 	// parser-only read would fail on it the same way twice.
-	read, ok := s.readStatementPDFText(c, text, fallbackYear)
+	read, ok := s.readStatementPDFText(c, text, anchor)
 	if !ok {
 		return
 	}
