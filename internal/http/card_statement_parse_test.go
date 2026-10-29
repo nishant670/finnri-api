@@ -3,6 +3,7 @@ package http
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"finnri/internal/models"
 )
@@ -217,5 +218,31 @@ func TestReadUploadedPDFRejectsOversizedFiles(t *testing.T) {
 	oversized := "%PDF-1.7\n" + strings.Repeat("x", maxStatementPDFBytes)
 	if _, err := readUploadedPDF(strings.NewReader(oversized)); err == nil {
 		t.Fatal("an oversized upload was accepted")
+	}
+}
+
+func TestAnchorLineYearsFixesOnlyImpossibleYears(t *testing.T) {
+	anchor := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+	lines := []statementLine{
+		{Date: "2023-10-07"}, // gpt-4o-mini's guess for "07 Oct"
+		{Date: "2025-10-07"}, // gpt-4.1-mini's, once
+		{Date: "2026-09-26"}, // right: last cycle, left alone
+		{Date: "2026-10-25"}, // the statement date itself
+		{Date: "2027-10-01"}, // a year ahead
+		{Date: "not a date"},
+	}
+	anchorLineYears(lines, anchor)
+	want := []string{"2026-10-07", "2026-10-07", "2026-09-26", "2026-10-25", "2026-10-01", "not a date"}
+	for index, line := range lines {
+		if line.Date != want[index] {
+			t.Fatalf("row %d = %s, want %s", index, line.Date, want[index])
+		}
+	}
+
+	// A January statement's December rows belong to the year before.
+	january := []statementLine{{Date: "2027-12-28"}, {Date: "2024-12-28"}, {Date: "2027-01-03"}}
+	anchorLineYears(january, time.Date(2027, 1, 10, 0, 0, 0, 0, time.UTC))
+	if january[0].Date != "2026-12-28" || january[1].Date != "2026-12-28" || january[2].Date != "2027-01-03" {
+		t.Fatalf("got %v", january)
 	}
 }

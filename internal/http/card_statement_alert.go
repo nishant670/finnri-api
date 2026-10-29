@@ -217,6 +217,9 @@ func withStatementTokens(usage billing.ProviderUsage, reported ai.Usage, model s
 		usage.Provider = "openai"
 	}
 	if usage.Model == "" {
+		usage.Model = reported.Model
+	}
+	if usage.Model == "" {
 		usage.Model = model
 	}
 	return usage

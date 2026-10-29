@@ -110,6 +110,9 @@ func (s *Server) uploadCardStatementScreenshots(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
 		return
 	}
+	if anchor, err := parseAPIDate(statement.StatementDate); err == nil {
+		anchorLineYears(lines, anchor)
+	}
 	lines = dedupeStatementLines(statement.ID, lines)
 
 	diff, err := buildStatementDiff(statement, lines)

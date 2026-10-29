@@ -46,14 +46,31 @@ func (c *OpenAIClient) ParseStatementImages(ctx context.Context, images []Statem
 	if maxTokens <= 0 {
 		maxTokens = 4000
 	}
-	return c.completeWithImages(ctx, "statement", fmt.Sprintf(statementImagePrompt, cycleStart, cycleEnd), images, maxTokens)
+	return c.completeWithVisionModel(ctx, "statement", fmt.Sprintf(statementImagePrompt, cycleStart, cycleEnd), images, maxTokens)
 }
 
-// completeWithImages runs one JSON-mode chat completion over a text prompt and
-// a set of images. The image bytes are only ever base64-encoded into the
-// request body; they are never logged or written anywhere.
-func (c *OpenAIClient) completeWithImages(ctx context.Context, label, prompt string, images []StatementImage, maxTokens int) ([]byte, Usage, error) {
-	return c.completeWithImagesUsing(ctx, label, c.cfg.OpenAILlmModel, "", prompt, images, maxTokens)
+// completeWithVisionModel sends images to the vision model, the one bills,
+// receipts and statement screenshots are all read with. If this key cannot
+// use it, it retries once on the text model, so a rollout to a key without
+// access degrades to the old reader instead of failing every read.
+//
+// Statement screenshots moved here from the text model (gpt-4o-mini) after a
+// side-by-side on synthetic statements: gpt-4.1-mini read the same rows and
+// summaries (35–36 of 36 on every run, both on a dark app list and a dense
+// bank table), a little faster, for about a third of the cost — gpt-4o-mini
+// bills a high-detail phone screenshot at ~37,000–48,000 input tokens where
+// gpt-4.1-mini counts ~3,000.
+func (c *OpenAIClient) completeWithVisionModel(ctx context.Context, label, prompt string, images []StatementImage, maxTokens int) ([]byte, Usage, error) {
+	model := strings.TrimSpace(c.cfg.OpenAIVisionModel)
+	if model == "" {
+		model = c.cfg.OpenAILlmModel
+	}
+	raw, usage, err := c.completeWithImagesUsing(ctx, label, model, c.cfg.OpenAIVisionReasoningEffort, prompt, images, maxTokens)
+	if err != nil && model != c.cfg.OpenAILlmModel && modelUnavailable(err) {
+		log.Printf("%s vision model %s unavailable, retrying on %s: %v", label, model, c.cfg.OpenAILlmModel, err)
+		return c.completeWithImagesUsing(ctx, label, c.cfg.OpenAILlmModel, "", prompt, images, maxTokens)
+	}
+	return raw, usage, err
 }
 
 // visionHTTPError is a non-2xx answer from the provider. The status lets a
