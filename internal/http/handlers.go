@@ -209,6 +209,13 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/categories/custom", s.listCustomCategories)
 		authorized.POST("/categories/custom", s.addCustomCategory)
 		authorized.DELETE("/categories/custom", s.removeCustomCategory)
+		authorized.GET("/events", s.listEvents)
+		authorized.POST("/events", s.createEvent)
+		authorized.GET("/events/:id", s.getEvent)
+		authorized.PUT("/events/:id", s.updateEvent)
+		authorized.DELETE("/events/:id", s.deleteEvent)
+		authorized.POST("/events/:id/entries", s.addEventEntries)
+		authorized.DELETE("/events/:id/entries", s.removeEventEntries)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
@@ -408,6 +415,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/categories") ||
+		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/account-providers") ||
 		// Statements nested under a card are covered by the line above, but
@@ -1036,6 +1044,15 @@ func (s *Server) saveEntry(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
 	}
+	if input.EventID != nil {
+		if message, err := entryEventProblem(userID, *input.EventID, input.Type, input.PurposeType); err != nil {
+			c.JSON(500, gin.H{"error": "event_lookup_failed"})
+			return
+		} else if message != "" {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"event_id": message}})
+			return
+		}
+	}
 
 	idempotencyKey, idempotencyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
 	if len(idempotencyFields) > 0 {
@@ -1344,6 +1361,28 @@ func (s *Server) updateEntry(c *gin.Context) {
 			return
 		}
 	}
+	purposeType := entry.PurposeType
+	if input.PurposeType != nil {
+		purposeType = *input.PurposeType
+	}
+	eventID := entry.EventID
+	if input.EventID.Set {
+		eventID = input.EventID.Value
+		if eventID != nil {
+			if message, err := entryEventProblem(userID, *eventID, entryType, purposeType); err != nil {
+				c.JSON(500, gin.H{"error": "event_lookup_failed"})
+				return
+			} else if message != "" {
+				c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"event_id": message}})
+				return
+			}
+		}
+	} else if eventID != nil && !entryFitsEvent(entryType, purposeType) {
+		// An expense edited into income leaves its event: events hold
+		// expenses only, and nobody would think to unlink it first.
+		eventID = nil
+	}
+	entry.EventID = eventID
 	if input.Title != nil {
 		entry.Title = *input.Title
 	}
@@ -1853,6 +1892,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
 			{&models.Entry{}, "entries"},
+			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
 			{&models.AuthSession{}, "auth sessions"},
 		}

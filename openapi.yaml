@@ -521,6 +521,11 @@ paths:
           schema:
             type: integer
         - in: query
+          name: event_id
+          description: Return only entries in this owned event.
+          schema:
+            type: integer
+        - in: query
           name: min_amount
           schema:
             type: string
@@ -625,6 +630,11 @@ paths:
         - in: query
           name: account_id
           description: Return only entries linked to this owned account.
+          schema:
+            type: integer
+        - in: query
+          name: event_id
+          description: Return only entries in this owned event.
           schema:
             type: integer
         - in: query
@@ -863,6 +873,11 @@ paths:
           schema:
             type: integer
         - in: query
+          name: event_id
+          description: Return only entries in this owned event.
+          schema:
+            type: integer
+        - in: query
           name: min_amount
           schema:
             type: string
@@ -1079,6 +1094,120 @@ paths:
           description: Card is managed by statements; record a statement payment instead
         "422":
           description: Account is not a credit card
+  /v1/events:
+    get:
+      summary: List the user's events, newest first
+      description: >-
+        Events group a user's own expenses by occasion (a party, a trip). They
+        are private and are not split groups. Each row carries its entry count
+        and what was paid in total.
+      responses:
+        "200":
+          description: The user's events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EventListItem"
+    post:
+      summary: Create an event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventWithSummary"
+        "422":
+          description: Invalid fields, or 500 events already
+  /v1/events/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: An event and what it cost
+      responses:
+        "200":
+          description: The event with its summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventWithSummary"
+        "404":
+          description: Missing, or another user's
+    put:
+      summary: Replace an event's details
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventInput"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventWithSummary"
+        "404":
+          description: Missing, or another user's
+        "422":
+          description: Invalid fields
+    delete:
+      summary: Delete an event and keep its transactions
+      description: Its entries are unlinked, never deleted. Answers {unlinked} with how many.
+      responses:
+        "200":
+          description: Deleted
+        "404":
+          description: Missing, or another user's
+  /v1/events/{id}/entries:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Put transactions in this event
+      description: >-
+        All or nothing. Every id must be the user's own expense and not a card
+        bill payment; otherwise nothing changes and the 422 lists not_found and
+        not_allowed ids. An entry in another event moves. Answers {added, moved}.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventEntryIDs"
+      responses:
+        "200":
+          description: Added
+        "422":
+          description: No ids, more than 200, or ids that cannot be added
+    delete:
+      summary: Take transactions out of this event
+      description: Ids not in the event are ignored. Answers {removed}.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventEntryIDs"
+      responses:
+        "200":
+          description: Removed
   /v1/entries/{id}:
     parameters:
       - in: path
@@ -3198,6 +3327,11 @@ components:
         account_id:
           type: integer
           minimum: 1
+        event_id:
+          type: [integer, "null"]
+          description: >-
+            The event this expense belongs to; null takes it out. Omitted keeps
+            it. An entry edited into income leaves its event.
         mode:
           type: string
           enum: [Cash, Bank Account, UPI, Credit Card, Wallets]
@@ -3333,6 +3467,102 @@ components:
           items:
             type: string
           example: ["Dividend"]
+    EventInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 60
+        emoji:
+          type: string
+          maxLength: 16
+        start_date:
+          type: [string, "null"]
+          format: date
+        end_date:
+          type: [string, "null"]
+          format: date
+          description: On or after start_date. Dates drive display only; entries outside them may still belong.
+        budget:
+          type: [number, "null"]
+          exclusiveMinimum: 0
+        notes:
+          type: string
+          maxLength: 500
+    Event:
+      allOf:
+        - $ref: "#/components/schemas/EventInput"
+        - type: object
+          required: [id, user_id, created_at, updated_at]
+          properties:
+            id:
+              type: integer
+            user_id:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+    EventListItem:
+      allOf:
+        - $ref: "#/components/schemas/Event"
+        - type: object
+          required: [entry_count, total_paid]
+          properties:
+            entry_count:
+              type: integer
+            total_paid:
+              type: number
+    EventSummary:
+      type: object
+      required: [entry_count, total_paid, owed_back, net_cost, split_entry_count]
+      properties:
+        entry_count:
+          type: integer
+        total_paid:
+          type: number
+          description: What the event's entries took out of the user's pocket.
+        owed_back:
+          type: number
+          description: >-
+            What split bills on those entries assign to others where the user
+            paid, capped per entry at its amount. What the bills say, not what
+            has been settled.
+        net_cost:
+          type: number
+          description: total_paid minus owed_back.
+        budget_left:
+          type: number
+          description: Present only when the event has a budget; budget minus net_cost.
+        first_date:
+          type: [string, "null"]
+          format: date
+        last_date:
+          type: [string, "null"]
+          format: date
+        split_entry_count:
+          type: integer
+    EventWithSummary:
+      type: object
+      required: [event, summary]
+      properties:
+        event:
+          $ref: "#/components/schemas/Event"
+        summary:
+          $ref: "#/components/schemas/EventSummary"
+    EventEntryIDs:
+      type: object
+      required: [entry_ids]
+      properties:
+        entry_ids:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: integer
     CustomCategory:
       type: object
       required: [name, type, canonical]

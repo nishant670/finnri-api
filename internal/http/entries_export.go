@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"finnri/internal/database"
 	"finnri/internal/models"
 )
 
@@ -34,6 +35,7 @@ var entryExportCSVHeader = []string{
 	"tags",
 	"created_at",
 	"updated_at",
+	"event",
 }
 
 func (s *Server) exportEntriesCSV(c *gin.Context) {
@@ -97,7 +99,12 @@ func (s *Server) exportEntriesCSV(c *gin.Context) {
 		return
 	}
 
-	body, err := entriesCSV(entries)
+	eventNames, err := eventNamesForEntries(userID, entries)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_export_entries"})
+		return
+	}
+	body, err := entriesCSV(entries, eventNames)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_export_entries"})
 		return
@@ -140,7 +147,33 @@ func prettyStatementDate(value string) string {
 	return parsed.Format("2 Jan 2006")
 }
 
-func entriesCSV(entries []models.Entry) (string, error) {
+// eventNamesForEntries names the events the exported entries belong to.
+func eventNamesForEntries(userID uint, entries []models.Entry) (map[uint]string, error) {
+	ids := []uint{}
+	seen := map[uint]bool{}
+	for _, entry := range entries {
+		if entry.EventID != nil && !seen[*entry.EventID] {
+			seen[*entry.EventID] = true
+			ids = append(ids, *entry.EventID)
+		}
+	}
+	names := make(map[uint]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+	var events []models.Event
+	if err := database.DB.Select("id", "name").
+		Where("user_id = ? AND id IN ?", userID, ids).
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		names[event.ID] = event.Name
+	}
+	return names, nil
+}
+
+func entriesCSV(entries []models.Entry, eventNames map[uint]string) (string, error) {
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
 	if err := writer.Write(entryExportCSVHeader); err != nil {
@@ -154,6 +187,10 @@ func entriesCSV(entries []models.Entry) (string, error) {
 		}
 		if entry.Account != nil {
 			accountName = strings.TrimSpace(entry.Account.Name)
+		}
+		eventName := ""
+		if entry.EventID != nil {
+			eventName = eventNames[*entry.EventID]
 		}
 		if err := writer.Write([]string{
 			fmt.Sprintf("%d", entry.ID),
@@ -173,6 +210,7 @@ func entriesCSV(entries []models.Entry) (string, error) {
 			strings.Join(entry.Tags, "|"),
 			entry.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			entry.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			eventName,
 		}); err != nil {
 			return "", err
 		}

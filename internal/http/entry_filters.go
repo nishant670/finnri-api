@@ -105,6 +105,15 @@ func buildFilteredEntriesQuery(
 		}
 	}
 
+	if eventID := strings.TrimSpace(get("event_id")); eventID != "" {
+		parsed, err := strconv.ParseUint(eventID, 10, 32)
+		if err != nil || parsed == 0 {
+			fields["event_id"] = "must be a positive integer"
+		} else {
+			query = query.Where("entries.event_id = ?", parsed)
+		}
+	}
+
 	var minAmount, maxAmount *models.Money
 	if minStr := get("min_amount"); minStr != "" {
 		min, err := models.ParseMoney(minStr)
