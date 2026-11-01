@@ -3510,12 +3510,18 @@ components:
       allOf:
         - $ref: "#/components/schemas/Event"
         - type: object
-          required: [entry_count, total_paid]
+          required: [entry_count, total_paid, owed_back, net_cost]
           properties:
             entry_count:
               type: integer
             total_paid:
               type: number
+            owed_back:
+              type: number
+              description: Same as EventSummary.owed_back.
+            net_cost:
+              type: number
+              description: Same as EventSummary.net_cost; what the events list shows.
     EventSummary:
       type: object
       required: [entry_count, total_paid, owed_back, net_cost, split_entry_count]
