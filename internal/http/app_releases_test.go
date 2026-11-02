@@ -192,6 +192,48 @@ func TestOnlyAnOwnerCanForceAnUpdate(t *testing.T) {
 	}
 }
 
+// Moving a critical release to another build moves the oldest build still
+// allowed. Raised past the store's newest build, it would lock every phone
+// out, so it is an owner's call like turning the flag on.
+func TestOnlyAnOwnerCanMoveAForcedUpdate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	t.Chdir(t.TempDir())
+	router := smokeRouter(t)
+	_, support := createAdminSessionForTest(t, models.AdminRoleSupport)
+	_, owner := createAdminSessionForTest(t, models.AdminRoleOwner)
+
+	forced := sampleRelease(12)
+	forced["min_supported"] = true
+	release := decodeRelease[AppReleaseView](t, releaseRequest(t, router, http.MethodPost, "/v1/admin/releases", owner, forced), http.StatusCreated)
+	target := "/v1/admin/releases/" + strconv.Itoa(int(release.ID))
+
+	forced["version_code"] = 99
+	if response := releaseRequest(t, router, http.MethodPut, target, support, forced); response.Code != http.StatusForbidden {
+		t.Fatalf("support should not move a forced update, got %d %s", response.Code, response.Body.String())
+	}
+	forced["version_code"] = 12
+	forced["platform"] = "ios"
+	if response := releaseRequest(t, router, http.MethodPut, target, support, forced); response.Code != http.StatusForbidden {
+		t.Fatalf("support should not move a forced update to another platform, got %d %s", response.Code, response.Body.String())
+	}
+
+	// Lowering the floor is safe, so support may still clear the flag.
+	forced["platform"] = "android"
+	forced["min_supported"] = false
+	cleared := decodeRelease[AppReleaseView](t, releaseRequest(t, router, http.MethodPut, target, support, forced), http.StatusOK)
+	if cleared.MinSupported {
+		t.Fatalf("support should be able to clear the flag: %+v", cleared)
+	}
+
+	forced["min_supported"] = true
+	forced["version_code"] = 13
+	moved := decodeRelease[AppReleaseView](t, releaseRequest(t, router, http.MethodPut, target, owner, forced), http.StatusOK)
+	if moved.VersionCode != 13 || !moved.MinSupported {
+		t.Fatalf("an owner may move it: %+v", moved)
+	}
+}
+
 func TestAppReleaseInputIsChecked(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	useSmokeDatabase(t)

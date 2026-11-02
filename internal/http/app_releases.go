@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,13 @@ const (
 	// Screenshots are shown in a card, not full screen. Anything bigger than
 	// this is an unoptimised export that every user would download.
 	maxReleaseMediaBytes = 3 * 1024 * 1024
+
+	// Release screenshots load together — a What's new screen can show a
+	// dozen at once — and many phones share one carrier IP, so they get a
+	// wider limit than the product-wide one. They are immutable and cached
+	// for a year, so each phone fetches one once.
+	releaseMediaRateLimitRPS   = 20
+	releaseMediaRateLimitBurst = 60
 )
 
 // releaseMediaDir sits inside the uploads volume so it survives redeploys,
@@ -113,7 +121,7 @@ func (input *appReleaseInput) normalize() map[string]string {
 	fields := map[string]string{}
 
 	input.Platform = strings.ToLower(strings.TrimSpace(input.Platform))
-	if !containsString(models.AppPlatforms, input.Platform) {
+	if !slices.Contains(models.AppPlatforms, input.Platform) {
 		fields["platform"] = "must be android or ios"
 	}
 	if input.VersionCode < 1 || input.VersionCode > maxReleaseVersionCode {
@@ -155,7 +163,7 @@ func (item *appReleaseItemInput) normalize() map[string]string {
 	item.AfterImage = strings.TrimSpace(item.AfterImage)
 	item.DeepLink = strings.TrimSpace(item.DeepLink)
 
-	if !containsString(models.AppReleaseItemKinds, item.Kind) {
+	if !slices.Contains(models.AppReleaseItemKinds, item.Kind) {
 		fields["kind"] = "must be new, ui, fix or improved"
 		return fields
 	}
@@ -216,15 +224,6 @@ func (item *appReleaseItemInput) normalize() map[string]string {
 		fields["deep_link"] = "must be an in-app path such as /events"
 	}
 	return fields
-}
-
-func containsString(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
 
 func (input appReleaseInput) items(releaseID uint) []models.AppReleaseItem {
@@ -289,7 +288,7 @@ func preloadReleaseItems(db *gorm.DB) *gorm.DB {
 // set it.
 func (s *Server) listAppReleases(c *gin.Context) {
 	platform := strings.ToLower(strings.TrimSpace(c.Query("platform")))
-	if !containsString(models.AppPlatforms, platform) {
+	if !slices.Contains(models.AppPlatforms, platform) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_platform"})
 		return
 	}
@@ -352,7 +351,7 @@ func (s *Server) listAppReleases(c *gin.Context) {
 // show its own notes once.
 func (s *Server) getAppRelease(c *gin.Context) {
 	platform := strings.ToLower(strings.TrimSpace(c.Query("platform")))
-	if !containsString(models.AppPlatforms, platform) {
+	if !slices.Contains(models.AppPlatforms, platform) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_platform"})
 		return
 	}
@@ -451,10 +450,14 @@ func loadAdminAppRelease(c *gin.Context) (models.AppRelease, bool) {
 	return release, true
 }
 
-// bindAppReleaseInput reads and checks an editor save. Turning on "minimum
-// supported" forces everyone on an older build to update, so it is an owner's
-// call even though the rest of a release is support's.
-func bindAppReleaseInput(c *gin.Context, wasMinSupported bool) (appReleaseInput, bool) {
+// bindAppReleaseInput reads and checks an editor save. `current` is the
+// release being edited, nil for a new one.
+//
+// Which builds must update is an owner's call, even though the rest of a
+// release is support's: turning "minimum supported" on, and moving a release
+// that has it to another build or platform. A moved floor can strand every
+// installed build behind an update that does not exist.
+func bindAppReleaseInput(c *gin.Context, current *models.AppRelease) (appReleaseInput, bool) {
 	var input appReleaseInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
@@ -464,13 +467,26 @@ func bindAppReleaseInput(c *gin.Context, wasMinSupported bool) (appReleaseInput,
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_release", "fields": fields})
 		return input, false
 	}
-	if input.MinSupported && !wasMinSupported {
+	if movesUpdateFloor(current, input) {
 		if admin := currentAdmin(c); admin == nil || adminRoleRank(admin.Role) < adminRoleRank(models.AdminRoleOwner) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "admin_role_required", "required_role": models.AdminRoleOwner})
 			return input, false
 		}
 	}
 	return input, true
+}
+
+// movesUpdateFloor reports whether a save raises or moves the oldest build
+// still allowed. Turning "minimum supported" off only lowers it, which any
+// editor may do.
+func movesUpdateFloor(current *models.AppRelease, input appReleaseInput) bool {
+	if !input.MinSupported {
+		return false
+	}
+	if current == nil || !current.MinSupported {
+		return true
+	}
+	return input.VersionCode != current.VersionCode || input.Platform != current.Platform
 }
 
 // releaseVersionTaken reports whether another release already has this build.
@@ -485,7 +501,7 @@ func releaseVersionTaken(platform string, versionCode int, exceptID uint) (bool,
 func (s *Server) listAdminAppReleases(c *gin.Context) {
 	query := database.DB.Preload("Items", preloadReleaseItems)
 	if platform := strings.ToLower(strings.TrimSpace(c.Query("platform"))); platform != "" {
-		if !containsString(models.AppPlatforms, platform) {
+		if !slices.Contains(models.AppPlatforms, platform) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_platform"})
 			return
 		}
@@ -510,7 +526,7 @@ func (s *Server) getAdminAppRelease(c *gin.Context) {
 // createAdminAppRelease starts a release as a draft; nothing reaches the app
 // until it is published.
 func (s *Server) createAdminAppRelease(c *gin.Context) {
-	input, ok := bindAppReleaseInput(c, false)
+	input, ok := bindAppReleaseInput(c, nil)
 	if !ok {
 		return
 	}
@@ -555,7 +571,7 @@ func (s *Server) updateAdminAppRelease(c *gin.Context) {
 	if !ok {
 		return
 	}
-	input, ok := bindAppReleaseInput(c, release.MinSupported)
+	input, ok := bindAppReleaseInput(c, &release)
 	if !ok {
 		return
 	}

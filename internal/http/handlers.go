@@ -150,11 +150,14 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	// Release notes for the update card and "What's new". Public: the app
 	// checks for updates before sign-in, and guests update too.
 	appPublic := r.Group("/v1/app")
-	appPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "app-releases"))
+	appPublic.Use(jsonRequestLimits(cfg))
 	{
-		appPublic.GET("/releases", s.listAppReleases)
-		appPublic.GET("/releases/:version_code", s.getAppRelease)
-		appPublic.GET("/release-media/:name", s.serveReleaseMedia)
+		releasesLimit := rateLimit(cfg, "app-releases")
+		appPublic.GET("/releases", releasesLimit, s.listAppReleases)
+		appPublic.GET("/releases/:version_code", releasesLimit, s.getAppRelease)
+		appPublic.GET("/release-media/:name",
+			rateLimitAt(releaseMediaRateLimitRPS, releaseMediaRateLimitBurst, "app-release-media"),
+			s.serveReleaseMedia)
 	}
 
 	admin := r.Group("/v1/admin")

@@ -122,6 +122,13 @@ func TestCompareCardWithStatementWarnsAboutADifferentCard(t *testing.T) {
 
 func newStatementReadContext(t *testing.T, build func(*multipart.Writer)) (*gin.Context, *httptest.ResponseRecorder, models.Account) {
 	t.Helper()
+	return newStatementReadContextFor(t, true, build)
+}
+
+// newStatementReadContextFor is newStatementReadContext for a user who may
+// have no credits at all.
+func newStatementReadContextFor(t *testing.T, grantCredits bool, build func(*multipart.Writer)) (*gin.Context, *httptest.ResponseRecorder, models.Account) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -132,7 +139,7 @@ func newStatementReadContext(t *testing.T, build func(*multipart.Writer)) (*gin.
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	ctx.Request = request
-	user := attachParseCreditUser(t, ctx)
+	user := attachParseUser(t, ctx, grantCredits)
 	card := models.Account{UserID: user.ID, Type: "credit_card", Name: "Regalia", Last4: "4321", StatementDay: 5, DueDay: 20}
 	if err := database.DB.Create(&card).Error; err != nil {
 		t.Fatal(err)
@@ -414,5 +421,91 @@ func TestReadStatementPDFCorrectsWrongYears(t *testing.T) {
 	_ = json.Unmarshal(response.Body.Bytes(), &read)
 	if response.Code != 200 || len(read.Lines) != 1 || read.Lines[0].Date != "2026-10-12" {
 		t.Fatalf("the row should be dated 2026-10-12: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func readMinimalStatementPDF(t *testing.T, server *Server, grantCredits bool, before func(models.Account)) (*httptest.ResponseRecorder, statementReadResponse) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	if err := writeMinimalPDF(t, path); err != nil {
+		t.Skipf("could not build a test PDF: %v", err)
+	}
+	pdf, _ := os.ReadFile(path)
+	ctx, response, card := newStatementReadContextFor(t, grantCredits, func(writer *multipart.Writer) {
+		part, _ := writer.CreateFormFile("file", "statement.pdf")
+		_, _ = part.Write(pdf)
+	})
+	if before != nil {
+		before(card)
+	}
+	server.readCardStatement(ctx)
+	var read statementReadResponse
+	_ = json.Unmarshal(response.Body.Bytes(), &read)
+	return response, read
+}
+
+// The model answered, but nothing it said survived the printed-amount check.
+// The local rows still answer the request; the read that added nothing to
+// them is not charged.
+func TestReadStatementPDFUnusableAIReadIsFree(t *testing.T) {
+	server := &Server{
+		cfg:    &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{"total_due":99999},"lines":[{"date":"2026-07-10","description":"MADE UP","amount":12345,"type":"expense"}]}`)},
+	}
+
+	response, read := readMinimalStatementPDF(t, server, true, nil)
+
+	if response.Code != 200 || len(read.Lines) != 1 || read.Lines[0].Amount != rupees(480) || read.CreditsCharged != nil {
+		t.Fatalf("the local row should come back free: %d %s", response.Code, response.Body.String())
+	}
+	var event models.AIUsageEvent
+	if err := database.DB.Order("id DESC").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.FinalCredits != 0 || event.Status != "failed_after_provider" {
+		t.Fatalf("the unusable read must be recorded and not charged: %+v", event)
+	}
+}
+
+// A PDF read was free and local before it was an AI read. Someone out of
+// credits still gets the rows the parser can read, and is not charged.
+func TestReadStatementPDFWithoutCreditsFallsBackToLocalRows(t *testing.T) {
+	server := &Server{
+		cfg:    &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{"total_due":480}}`)},
+	}
+
+	response, read := readMinimalStatementPDF(t, server, false, nil)
+
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "SWIGGY") || read.CreditsCharged != nil {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if read.Summary.TotalDue != nil {
+		t.Fatalf("no AI read ran, so nothing should prefill: %+v", read.Summary)
+	}
+}
+
+func TestReadStatementPDFBlockedFromAIFallsBackToLocalRows(t *testing.T) {
+	server := &Server{
+		cfg:    &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{"total_due":480}}`)},
+	}
+
+	var userID uint
+	response, read := readMinimalStatementPDF(t, server, true, func(card models.Account) {
+		userID = card.UserID
+		block := models.AIAbuseBlock{UserID: &card.UserID, Scope: "ai_parse", ReasonCode: "test", Active: true}
+		if err := database.DB.Create(&block).Error; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "SWIGGY") || read.CreditsCharged != nil {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var events int64
+	database.DB.Model(&models.AIUsageEvent{}).Where("user_id = ?", userID).Count(&events)
+	if events != 0 {
+		t.Fatalf("a blocked user's PDF read must not reach the model, got %d usage events", events)
 	}
 }
