@@ -319,6 +319,21 @@ func TestEventSummaryNetsOutWhatFriendsOwe(t *testing.T) {
 	if summary.BudgetLeft == nil || *summary.BudgetLeft != models.Money(1000000)-(wantPaid-wantOwed) {
 		t.Fatalf("budget left = %v", summary.BudgetLeft)
 	}
+
+	// The events list shows the same cost as the event page.
+	createTestEvent(t, router, token, map[string]any{"name": "Empty"})
+	list := performJSONRequest[[]EventListItem](t, router, http.MethodGet, "/v1/events", token, nil, http.StatusOK)
+	byName := map[string]EventListItem{}
+	for _, item := range list {
+		byName[item.Name] = item
+	}
+	party := byName["Party"]
+	if party.EntryCount != 5 || party.TotalPaid != wantPaid || party.OwedBack != wantOwed || party.NetCost != wantPaid-wantOwed {
+		t.Fatalf("list item = %+v, want count 5, paid %v, owed %v", party, wantPaid, wantOwed)
+	}
+	if empty := byName["Empty"]; empty.EntryCount != 0 || empty.NetCost != 0 {
+		t.Fatalf("empty event = %+v", empty)
+	}
 }
 
 func TestEntryFiltersReportAndExportFollowTheEvent(t *testing.T) {

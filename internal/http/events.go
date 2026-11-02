@@ -44,11 +44,14 @@ type eventEntriesInput struct {
 }
 
 // EventListItem is one event on the events list, with enough of its totals to
-// draw a card without opening it.
+// draw a card without opening it. NetCost and OwedBack mean what they do on
+// EventSummary, so a card and its event page show the same cost.
 type EventListItem struct {
 	models.Event
 	EntryCount int64        `json:"entry_count"`
 	TotalPaid  models.Money `json:"total_paid"`
+	OwedBack   models.Money `json:"owed_back"`
+	NetCost    models.Money `json:"net_cost"`
 }
 
 // EventSummary is what an occasion cost.
@@ -178,32 +181,50 @@ func (s *Server) listEvents(c *gin.Context) {
 		return
 	}
 
-	var totals []struct {
-		EventID    uint
-		EntryCount int64
-		TotalPaid  models.Money
-	}
-	if err := database.DB.Model(&models.Entry{}).
-		Select("event_id, COUNT(*) AS entry_count, COALESCE(SUM(amount), 0) AS total_paid").
+	var entries []models.Entry
+	if err := database.DB.Select("id", "amount", "event_id").
 		Where("user_id = ? AND event_id IS NOT NULL", userID).
-		Group("event_id").
-		Scan(&totals).Error; err != nil {
+		Find(&entries).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_events"})
 		return
 	}
-	byEvent := make(map[uint]int, len(totals))
-	for index, row := range totals {
-		byEvent[row.EventID] = index
+	var bills []models.SplitBill
+	if len(entries) > 0 {
+		eventEntryIDs := database.DB.Model(&models.Entry{}).Select("id").
+			Where("user_id = ? AND event_id IS NOT NULL", userID)
+		if err := database.DB.Preload("Participants").
+			Where("user_id = ? AND entry_id IN (?)", userID, eventEntryIDs).
+			Find(&bills).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_events"})
+			return
+		}
 	}
 
-	items := make([]EventListItem, 0, len(events))
-	for _, event := range events {
-		item := EventListItem{Event: event}
-		if index, ok := byEvent[event.ID]; ok {
-			item.EntryCount = totals[index].EntryCount
-			item.TotalPaid = totals[index].TotalPaid
+	items := make([]EventListItem, len(events))
+	totals := make(map[uint]*EventListItem, len(events))
+	for index, event := range events {
+		items[index] = EventListItem{Event: event}
+		totals[event.ID] = &items[index]
+	}
+	amountByEntry := make(map[uint]models.Money, len(entries))
+	eventOfEntry := make(map[uint]uint, len(entries))
+	for _, entry := range entries {
+		item, ok := totals[*entry.EventID]
+		if !ok {
+			continue
 		}
-		items = append(items, item)
+		amountByEntry[entry.ID] = entry.Amount
+		eventOfEntry[entry.ID] = *entry.EventID
+		item.EntryCount++
+		item.TotalPaid += entry.Amount
+	}
+	for entryID, owed := range owedBackByEntry(bills, amountByEntry) {
+		if item, ok := totals[eventOfEntry[entryID]]; ok {
+			item.OwedBack += owed
+		}
+	}
+	for index := range items {
+		items[index].NetCost = items[index].TotalPaid - items[index].OwedBack
 	}
 	c.JSON(http.StatusOK, items)
 }
@@ -482,20 +503,8 @@ func summarizeEvent(db *gorm.DB, userID uint, event models.Event) (EventSummary,
 		Find(&bills).Error; err != nil {
 		return summary, err
 	}
-	owedByEntry := map[uint]models.Money{}
-	for _, bill := range bills {
-		if bill.EntryID == nil {
-			continue
-		}
-		owedByEntry[*bill.EntryID] += splitBillOwedToAuthor(bill)
-	}
-	for entryID, owed := range owedByEntry {
-		if owed > amountByEntry[entryID] {
-			owed = amountByEntry[entryID]
-		}
-		if owed > 0 {
-			summary.OwedBack += owed
-		}
+	for _, owed := range owedBackByEntry(bills, amountByEntry) {
+		summary.OwedBack += owed
 		summary.SplitEntryCount++
 	}
 
@@ -505,6 +514,29 @@ func summarizeEvent(db *gorm.DB, userID uint, event models.Event) (EventSummary,
 		summary.BudgetLeft = &left
 	}
 	return summary, nil
+}
+
+// owedBackByEntry is what the bills assign to other people on each entry they
+// hang off, capped at the entry's amount and never below zero. Every entry
+// with a bill appears, even when nobody owes anything on it.
+func owedBackByEntry(bills []models.SplitBill, amountByEntry map[uint]models.Money) map[uint]models.Money {
+	owed := map[uint]models.Money{}
+	for _, bill := range bills {
+		if bill.EntryID == nil {
+			continue
+		}
+		owed[*bill.EntryID] += splitBillOwedToAuthor(bill)
+	}
+	for entryID, value := range owed {
+		if limit := amountByEntry[entryID]; value > limit {
+			value = limit
+		}
+		if value < 0 {
+			value = 0
+		}
+		owed[entryID] = value
+	}
+	return owed
 }
 
 // splitBillOwedToAuthor is what a bill assigns to people other than its
