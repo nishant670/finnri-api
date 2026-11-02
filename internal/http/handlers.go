@@ -147,6 +147,16 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	// name, inviter display name, member count and expiry.
 	r.GET("/v1/split/invites/:token/preview", jsonRequestLimits(cfg), rateLimit(cfg, "split-invite-preview"), s.previewSplitGroupInvite)
 
+	// Release notes for the update card and "What's new". Public: the app
+	// checks for updates before sign-in, and guests update too.
+	appPublic := r.Group("/v1/app")
+	appPublic.Use(jsonRequestLimits(cfg), rateLimit(cfg, "app-releases"))
+	{
+		appPublic.GET("/releases", s.listAppReleases)
+		appPublic.GET("/releases/:version_code", s.getAppRelease)
+		appPublic.GET("/release-media/:name", s.serveReleaseMedia)
+	}
+
 	admin := r.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
 	{
@@ -193,6 +203,21 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/admin-users", requireAdminRole(models.AdminRoleOwner), s.listAdminIdentities)
 		admin.POST("/admin-users", requireAdminRole(models.AdminRoleOwner), s.createAdminIdentity)
 		admin.PATCH("/admin-users/:id", requireAdminRole(models.AdminRoleOwner), s.updateAdminIdentity)
+		admin.GET("/releases", s.listAdminAppReleases)
+		admin.GET("/releases/:id", s.getAdminAppRelease)
+		admin.POST("/releases", requireAdminRole(models.AdminRoleSupport), s.createAdminAppRelease)
+		admin.PUT("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminAppRelease)
+		admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), s.publishAdminAppRelease)
+		admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), s.unpublishAdminAppRelease)
+		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
+	}
+
+	// Screenshots are bigger than the admin group's JSON limit allows, so the
+	// one admin upload gets its own group with the upload limit instead.
+	adminUploads := r.Group("/v1/admin")
+	adminUploads.Use(uploadRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
+	{
+		adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), s.uploadAdminReleaseMedia)
 	}
 
 	// Protected Routes (User Token)
@@ -449,6 +474,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/reports") ||
 		strings.HasPrefix(path, "/v1/monthly-review") ||
 		strings.HasPrefix(path, "/v1/split") ||
+		// Release notes. Public, and the app holds no static bearer to send.
+		strings.HasPrefix(path, "/v1/app/") ||
 		strings.HasPrefix(path, "/v1/tools") ||
 		strings.HasPrefix(path, "/v1/billing") ||
 		strings.HasPrefix(path, "/v1/ai") ||

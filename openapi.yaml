@@ -40,6 +40,89 @@ paths:
       responses:
         "200": {description: Minimal public invite details}
         "404": {description: Invite is invalid, expired, or no longer active}
+  /v1/app/releases:
+    get:
+      summary: Published release notes newer than a build, for the update card and What's new
+      description: >-
+        Public. Returns published releases with version_code above `since`, newest
+        first, plus latest_version_code and min_supported_version_code (0 when no
+        release forces an update). Builds below min_supported_version_code must update.
+      parameters:
+        - {in: query, name: platform, required: true, schema: {type: string, enum: [android, ios]}}
+        - {in: query, name: since, schema: {type: integer, minimum: 0}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 20}}
+      responses:
+        "200": {description: Releases with items and image URLs}
+        "400": {description: Invalid platform, since or limit}
+  /v1/app/releases/{version_code}:
+    get:
+      summary: One published release, read by a freshly updated build
+      parameters:
+        - {in: path, name: version_code, required: true, schema: {type: integer}}
+        - {in: query, name: platform, required: true, schema: {type: string, enum: [android, ios]}}
+      responses:
+        "200": {description: Release with items and image URLs}
+        "404": {description: No published release for that build}
+  /v1/app/release-media/{name}:
+    get:
+      summary: A release screenshot; public and cached for a year
+      parameters:
+        - {in: path, name: name, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Image bytes}
+        "404": {description: Unknown media name}
+  /v1/admin/releases:
+    get:
+      summary: List release notes, drafts included
+      responses:
+        "200": {description: Releases}
+    post:
+      summary: Create a draft release with its cards (support role; owner to set min_supported)
+      responses:
+        "201": {description: Draft release}
+        "409": {description: That build already has release notes}
+        "422": {description: Invalid release}
+  /v1/admin/releases/{id}:
+    get:
+      summary: One release, drafts included
+      responses:
+        "200": {description: Release}
+    put:
+      summary: Replace a release and all of its cards (support role; owner to turn on min_supported)
+      responses:
+        "200": {description: Release}
+        "409": {description: That build already has release notes}
+        "422": {description: Invalid release}
+    delete:
+      summary: Delete a draft release
+      responses:
+        "204": {description: Deleted}
+        "409": {description: Published releases must be unpublished first}
+  /v1/admin/releases/{id}/publish:
+    post:
+      summary: Publish a release to the app
+      responses:
+        "200": {description: Published release}
+        "422": {description: A release needs at least one card}
+  /v1/admin/releases/{id}/unpublish:
+    post:
+      summary: Take a release back to draft
+      responses:
+        "200": {description: Draft release}
+  /v1/admin/release-media:
+    post:
+      summary: Upload a release screenshot (PNG, JPEG, WebP or GIF, at most 3 MB)
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: {type: string, format: binary}
+      responses:
+        "201": {description: Media name and URL}
+        "413": {description: File too large}
+        "415": {description: Unsupported file type}
   /v1/admin/me:
     get:
       summary: Return the current admin identity and role
