@@ -26,21 +26,101 @@ type adminRevenueSnapshot struct {
 	RenewalsDue7Days     int64           `json:"renewals_due_7_days"`
 	RenewalsDue30Days    int64           `json:"renewals_due_30_days"`
 	CancelAtPeriodEnd    int64           `json:"cancel_at_period_end"`
+	GiftedActive         int64           `json:"gifted_active"`
 	ByPlan               map[string]any  `json:"by_plan"`
 	Trend                []adminMRRPoint `json:"trend"`
+	// Cash is what Razorpay actually took, as opposed to everything above,
+	// which is modelled from plan list prices.
+	Cash adminCashSnapshot `json:"cash"`
 }
 
 type adminMRRPoint struct {
 	Date              string `json:"date"`
 	MRRMinor          int64  `json:"modelled_mrr_minor"`
 	ActiveSubscribers int    `json:"active_subscribers"`
+	CashNetMinor      int64  `json:"cash_net_minor"`
+}
+
+// adminCashSnapshot counts captured payments by the day they were captured,
+// less whatever has since been refunded on them. Pinning refunds to the
+// payment rather than the refund date keeps a window's figures from changing
+// sign, and a partial refund has no date of its own on the payment row anyway.
+type adminCashSnapshot struct {
+	Basis                  string                        `json:"basis"`
+	Currency               string                        `json:"currency"`
+	CollectedMinor         int64                         `json:"collected_minor"`
+	RefundedMinor          int64                         `json:"refunded_minor"`
+	NetMinor               int64                         `json:"net_minor"`
+	Payments               int64                         `json:"payments"`
+	PayingUsers            int64                         `json:"paying_users"`
+	DiscountMinor          int64                         `json:"discount_minor"`
+	LifetimeCollectedMinor int64                         `json:"lifetime_collected_minor"`
+	LifetimeRefundedMinor  int64                         `json:"lifetime_refunded_minor"`
+	LifetimeNetMinor       int64                         `json:"lifetime_net_minor"`
+	ByPlan                 map[string]adminCashPlanTotal `json:"by_plan"`
+}
+
+type adminCashPlanTotal struct {
+	Payments int64 `json:"payments"`
+	NetMinor int64 `json:"net_minor"`
+}
+
+// cashCollectedStatuses are the payments that took money. A refunded payment
+// was captured first, so it counts, with its refund taken off.
+var cashCollectedStatuses = []string{models.PaymentStatusCaptured, models.PaymentStatusRefunded}
+
+func buildCashSnapshot(start, end time.Time) (adminCashSnapshot, []models.Payment) {
+	cash := adminCashSnapshot{Basis: "captured_payments_less_refunds", Currency: "INR", ByPlan: map[string]adminCashPlanTotal{}}
+	var lifetime struct {
+		Collected int64
+		Refunded  int64
+	}
+	_ = database.DB.Model(&models.Payment{}).
+		Where("status IN ?", cashCollectedStatuses).
+		Select("COALESCE(SUM(amount_minor), 0) AS collected, COALESCE(SUM(amount_refunded_minor), 0) AS refunded").
+		Scan(&lifetime).Error
+	cash.LifetimeCollectedMinor = lifetime.Collected
+	cash.LifetimeRefundedMinor = lifetime.Refunded
+	cash.LifetimeNetMinor = lifetime.Collected - lifetime.Refunded
+
+	var payments []models.Payment
+	_ = database.DB.Preload("Plan").
+		Where("status IN ? AND captured_at >= ? AND captured_at < ?", cashCollectedStatuses, start, end).
+		Find(&payments).Error
+	// Counted in SQL rather than from the rows: a deleted account's payments
+	// keep no user, and those shouldn't count as a payer.
+	_ = database.DB.Model(&models.Payment{}).
+		Where("status IN ? AND captured_at >= ? AND captured_at < ? AND user_id IS NOT NULL", cashCollectedStatuses, start, end).
+		Select("COUNT(DISTINCT user_id)").
+		Scan(&cash.PayingUsers).Error
+	for _, payment := range payments {
+		net := payment.AmountMinor - payment.AmountRefundedMinor
+		cash.CollectedMinor += payment.AmountMinor
+		cash.RefundedMinor += payment.AmountRefundedMinor
+		cash.Payments++
+		if payment.OriginalAmountMinor > payment.AmountMinor {
+			cash.DiscountMinor += payment.OriginalAmountMinor - payment.AmountMinor
+		}
+		code := "unknown"
+		if payment.Plan != nil {
+			code = payment.Plan.Code
+		}
+		total := cash.ByPlan[code]
+		total.Payments++
+		total.NetMinor += net
+		cash.ByPlan[code] = total
+	}
+	cash.NetMinor = cash.CollectedMinor - cash.RefundedMinor
+	return cash, payments
 }
 
 func buildRevenueSnapshot(start, end time.Time) adminRevenueSnapshot {
 	now := time.Now().UTC()
 	result := adminRevenueSnapshot{Basis: "modelled_from_plan_prices", Currency: "INR", ByPlan: map[string]any{}}
 	var subs []models.UserSubscription
-	_ = database.DB.Preload("Plan").Where("status = ? AND current_period_end > ?", "active", now).Find(&subs).Error
+	// Gifted passes bring in nothing, so every figure below leaves them out
+	// and they are counted on their own instead.
+	_ = database.DB.Preload("Plan").Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ?", "active", now).Find(&subs).Error
 	for _, sub := range subs {
 		factor := monthlyFactor(sub.Plan.BillingInterval)
 		if sub.Plan.BillingInterval == "lifetime_quote" {
@@ -63,19 +143,27 @@ func buildRevenueSnapshot(start, end time.Time) adminRevenueSnapshot {
 	}
 	_, registered, _ := userCounts()
 	result.PaidConversion = ratio(float64(result.ActiveSubscribers), float64(registered))
-	_ = database.DB.Model(&models.UserSubscription{}).Where("created_at >= ? AND created_at < ?", start, end).Count(&result.NewInWindow).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("current_period_end >= ? AND current_period_end < ? AND status <> ?", start, end, "active").Count(&result.ChurnedInWindow).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(7*24*time.Hour)).Count(&result.RenewalsDue7Days).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(30*24*time.Hour)).Count(&result.RenewalsDue30Days).Error
-	_ = database.DB.Model(&models.UserSubscription{}).Where("status = ? AND cancel_at_period_end = ?", "active", true).Count(&result.CancelAtPeriodEnd).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("created_at >= ? AND created_at < ?", start, end).Count(&result.NewInWindow).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("current_period_end >= ? AND current_period_end < ? AND status <> ?", start, end, "active").Count(&result.ChurnedInWindow).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(7*24*time.Hour)).Count(&result.RenewalsDue7Days).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(30*24*time.Hour)).Count(&result.RenewalsDue30Days).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND cancel_at_period_end = ?", "active", true).Count(&result.CancelAtPeriodEnd).Error
+	_ = database.DB.Model(&models.UserSubscription{}).Where("provider = ? AND status = ? AND current_period_start <= ? AND current_period_end > ?", giftPassProvider, "active", now, now).Count(&result.GiftedActive).Error
 	var historical []models.UserSubscription
-	_ = database.DB.Preload("Plan").Find(&historical).Error
+	_ = database.DB.Preload("Plan").Where("provider <> ?", giftPassProvider).Find(&historical).Error
 	trendStart := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 	if end.Sub(trendStart) > 366*24*time.Hour {
 		trendStart = end.Add(-366 * 24 * time.Hour)
 	}
+	var trendPayments []models.Payment
+	result.Cash, trendPayments = buildCashSnapshot(start, end)
+	cashByDay := map[string]int64{}
+	for _, payment := range trendPayments {
+		cashByDay[payment.CapturedAt.UTC().Format("2006-01-02")] += payment.AmountMinor - payment.AmountRefundedMinor
+	}
 	for day := trendStart; day.Before(end); day = day.AddDate(0, 0, 1) {
 		point := adminMRRPoint{Date: day.Format("2006-01-02")}
+		point.CashNetMinor = cashByDay[point.Date]
 		at := day.AddDate(0, 0, 1)
 		for _, sub := range historical {
 			if sub.Status == "active" && !sub.CreatedAt.After(at) && !sub.CurrentPeriodStart.After(at) && sub.CurrentPeriodEnd.After(day) && sub.Plan.BillingInterval != "lifetime_quote" {

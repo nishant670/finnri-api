@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"finnri/internal/billing"
 	"finnri/internal/database"
@@ -221,6 +222,25 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 		return models.WebhookStatusRejected, fmt.Sprintf("amount mismatch: paid %d, expected %d", entity.AmountMinor, payment.AmountMinor), nil
 	}
 
+	// The person deleted their account after opening this order. The money
+	// is taken, so the capture is still recorded, but there is no one to grant
+	// a period to; the log is what lets support refund it.
+	if payment.UserID == nil {
+		now := time.Now().UTC()
+		if err := database.DB.Model(&models.Payment{}).Where("id = ?", payment.ID).Updates(map[string]any{
+			"status":              models.PaymentStatusCaptured,
+			"provider_payment_id": entity.ID,
+			"method":              entity.Method,
+			"captured_at":         now,
+			"updated_at":          now,
+		}).Error; err != nil {
+			return "", "", err
+		}
+		log.Printf("[WARN] payment captured for a deleted account order=%s payment=%s, refund it", entity.OrderID, entity.ID)
+		return models.WebhookStatusIgnored, "captured for a deleted account", nil
+	}
+	userID := *payment.UserID
+
 	var plan models.Plan
 	if err := database.DB.First(&plan, payment.PlanID).Error; err != nil {
 		return "", "", err
@@ -231,11 +251,11 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 	// The money is taken by then, so the period is granted; the log is what
 	// lets support refund the difference.
 	if payment.PromotionCode == launchOfferCode {
-		if used, err := userHasUsedLaunchOffer(payment.UserID); err != nil {
+		if used, err := userHasUsedLaunchOffer(userID); err != nil {
 			return "", "", err
 		} else if used || isSupersededLaunchOrder(payment) {
 			log.Printf("[WARN] launch offer paid a second time order=%s user=%d superseded=%t",
-				entity.OrderID, payment.UserID, isSupersededLaunchOrder(payment))
+				entity.OrderID, userID, isSupersededLaunchOrder(payment))
 		}
 	}
 
@@ -271,7 +291,7 @@ func (s *Server) applyPaymentCaptured(entity payments.WebhookPayment) (string, s
 	}
 
 	log.Printf("[INFO] payment captured order=%s user=%d plan=%s subscription=%d period=%s..%s",
-		entity.OrderID, payment.UserID, plan.Code, subscription.ID,
+		entity.OrderID, userID, plan.Code, subscription.ID,
 		subscription.CurrentPeriodStart.Format(time.RFC3339), subscription.CurrentPeriodEnd.Format(time.RFC3339))
 
 	return models.WebhookStatusProcessed, "activated subscription " + fmt.Sprint(subscription.ID), nil
@@ -311,13 +331,13 @@ func applyPaymentFailed(entity payments.WebhookPayment) (string, string, error) 
 	return models.WebhookStatusProcessed, "marked payment failed: " + reason, nil
 }
 
-// applyRefund records money going back out and ends the subscription the
-// refunded payment bought.
+// applyRefund records money going back out, ends the subscription the
+// refunded payment bought, and takes back the pass's unspent credits.
 //
 // Credits already spent are not clawed back. They were consumed against real
 // provider cost, the ledger is append-only by design, and driving a balance
-// negative would break every allowance check that reads it. Ending the period
-// stops further entitlement, which is the part that matters.
+// negative would break every allowance check that reads it. The unspent rest
+// does go: left in place, it kept a refunded pass spendable.
 func applyRefund(entity payments.WebhookRefund) (string, string, error) {
 	if entity.PaymentID == "" {
 		return models.WebhookStatusIgnored, "refund event carried no payment id", nil
@@ -333,44 +353,91 @@ func applyRefund(entity payments.WebhookRefund) (string, string, error) {
 		return "", "", err
 	}
 
-	refunded := payment.AmountRefundedMinor + entity.AmountMinor
-	if refunded > payment.AmountMinor {
-		refunded = payment.AmountMinor
+	if entity.ID == "" {
+		// Without its id a refund cannot be told apart from its own second
+		// announcement, and counting it twice is the failure this guards.
+		return models.WebhookStatusIgnored, "refund event carried no refund id", nil
 	}
-	fullyRefunded := refunded >= payment.AmountMinor
-	now := time.Now().UTC()
 
+	now := time.Now().UTC()
+	alreadyCounted := false
+	fullyRefunded := false
+	refunded := payment.AmountRefundedMinor
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		updates := map[string]any{
-			"amount_refunded_minor": refunded,
-			"updated_at":            now,
+		refund := models.PaymentRefund{
+			PaymentID:        payment.ID,
+			Provider:         payments.ProviderRazorpay,
+			ProviderRefundID: entity.ID,
+			AmountMinor:      entity.AmountMinor,
+			Status:           entity.Status,
 		}
-		if fullyRefunded {
-			updates["status"] = models.PaymentStatusRefunded
-			updates["refunded_at"] = now
+		inserted := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&refund)
+		if inserted.Error != nil {
+			return inserted.Error
 		}
-		if err := tx.Model(&models.Payment{}).Where("id = ?", payment.ID).Updates(updates).Error; err != nil {
+		if inserted.RowsAffected == 0 {
+			// refund.created then refund.processed: the same refund, seen
+			// again. Only its status moves on; the amount is already counted.
+			alreadyCounted = true
+			return tx.Model(&models.PaymentRefund{}).
+				Where("provider = ? AND provider_refund_id = ?", payments.ProviderRazorpay, entity.ID).
+				Updates(map[string]any{"status": entity.Status, "updated_at": now}).Error
+		}
+		// Added in the database, not from the row read above, so two different
+		// refunds landing together both count. Capped at what was paid.
+		if err := tx.Model(&models.Payment{}).Where("id = ?", payment.ID).
+			Updates(map[string]any{
+				"amount_refunded_minor": gorm.Expr(
+					"CASE WHEN amount_refunded_minor + ? > amount_minor THEN amount_minor ELSE amount_refunded_minor + ? END",
+					entity.AmountMinor, entity.AmountMinor),
+				"updated_at": now,
+			}).Error; err != nil {
 			return err
 		}
+		var current models.Payment
+		if err := tx.Select("amount_refunded_minor", "amount_minor", "status").
+			Where("id = ?", payment.ID).First(&current).Error; err != nil {
+			return err
+		}
+		refunded = current.AmountRefundedMinor
 		// A partial refund leaves the subscription running: the person still
 		// paid for some of it, and deciding how much of a period a partial
 		// refund buys is a support judgement, not an automatic one.
-		if !fullyRefunded || payment.SubscriptionID == nil {
+		if refunded < current.AmountMinor || current.Status == models.PaymentStatusRefunded {
 			return nil
 		}
-		return tx.Model(&models.UserSubscription{}).
+		fullyRefunded = true
+		if err := tx.Model(&models.Payment{}).Where("id = ?", payment.ID).
+			Updates(map[string]any{
+				"status":      models.PaymentStatusRefunded,
+				"refunded_at": now,
+				"updated_at":  now,
+			}).Error; err != nil {
+			return err
+		}
+		if payment.SubscriptionID == nil {
+			return nil
+		}
+		if err := tx.Model(&models.UserSubscription{}).
 			Where("id = ? AND status = ?", *payment.SubscriptionID, "active").
 			Updates(map[string]any{
 				"status":               "cancelled",
 				"current_period_end":   now,
 				"cancel_at_period_end": true,
 				"updated_at":           now,
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+		_, err := billing.RevokeSubscriptionCreditsTx(tx, *payment.SubscriptionID)
+		return err
 	})
 	if err != nil {
 		return "", "", err
 	}
 
+	if alreadyCounted {
+		return models.WebhookStatusProcessed, "refund " + entity.ID + " already counted", nil
+	}
 	if fullyRefunded {
 		return models.WebhookStatusProcessed, "refunded in full, subscription ended", nil
 	}

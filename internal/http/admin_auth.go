@@ -234,6 +234,10 @@ func (s *Server) getAdminMe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": safeAdminIdentity(admin.User), "role": admin.Role})
 }
 
+// adminAuditDetailKey is where a handler leaves what it did, beyond the route,
+// for the audit row — the plan and note on a gifted pass, say.
+const adminAuditDetailKey = "admin_audit_detail"
+
 func (s *Server) adminAuditMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
@@ -241,7 +245,11 @@ func (s *Server) adminAuditMiddleware() gin.HandlerFunc {
 			return
 		}
 		adminUserID, actor := auditActor(c)
-		payload, _ := json.Marshal(gin.H{"method": c.Request.Method, "path": c.FullPath()})
+		fields := gin.H{"method": c.Request.Method, "path": c.FullPath()}
+		if detail, ok := c.Get(adminAuditDetailKey); ok {
+			fields["detail"] = detail
+		}
+		payload, _ := json.Marshal(fields)
 		entry := models.AdminAuditLog{
 			AdminUserID: adminUserID,
 			Actor:       actor,
@@ -270,9 +278,16 @@ func auditActor(c *gin.Context) (*uint, string) {
 }
 
 func auditAction(c *gin.Context) string {
-	route := strings.TrimPrefix(c.FullPath(), "/v1/admin/")
-	route = strings.NewReplacer("/:id", "", "/:code", "", "/", "_").Replace(route)
-	return strings.ToLower(c.Request.Method) + "_" + route
+	// Path parameters drop out, so "/users/:id/passes/:pass_id/revoke" is
+	// recorded as "post_users_passes_revoke".
+	segments := strings.Split(strings.TrimPrefix(c.FullPath(), "/v1/admin/"), "/")
+	kept := segments[:0]
+	for _, segment := range segments {
+		if !strings.HasPrefix(segment, ":") {
+			kept = append(kept, segment)
+		}
+	}
+	return strings.ToLower(c.Request.Method) + "_" + strings.Join(kept, "_")
 }
 
 func (s *Server) hashAdminIP(ip string) string {

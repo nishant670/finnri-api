@@ -118,9 +118,9 @@ func TestLaunchOfferEndsAtFiveHundredBuyers(t *testing.T) {
 		t.Fatal(err)
 	}
 	payments := make([]models.Payment, 0, len(buyers))
-	for index, buyer := range buyers {
+	for index := range buyers {
 		payments = append(payments, models.Payment{
-			UserID: buyer.ID, PlanID: plan.ID, Provider: "razorpay",
+			UserID: &buyers[index].ID, PlanID: plan.ID, Provider: "razorpay",
 			ProviderOrderID: fmt.Sprintf("order_launch_%d", index), Status: models.PaymentStatusCaptured,
 			AmountMinor: 3700, Currency: "INR", PromotionCode: launchOfferCode, OriginalAmountMinor: 14900,
 		})
@@ -231,9 +231,9 @@ func TestLaunchOfferCapCountsOpenOrders(t *testing.T) {
 		t.Fatal(err)
 	}
 	payments := make([]models.Payment, 0, len(buyers))
-	for index, buyer := range buyers {
+	for index := range buyers {
 		payments = append(payments, models.Payment{
-			UserID: buyer.ID, PlanID: plan.ID, Provider: "razorpay",
+			UserID: &buyers[index].ID, PlanID: plan.ID, Provider: "razorpay",
 			ProviderOrderID: fmt.Sprintf("order_cap_%d", index), Status: models.PaymentStatusCaptured,
 			AmountMinor: 3700, Currency: "INR", PromotionCode: launchOfferCode, OriginalAmountMinor: 14900,
 		})

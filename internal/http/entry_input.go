@@ -33,6 +33,7 @@ type entryInput struct {
 	RefundReminderAt *time.Time         `json:"refund_reminder_at"`
 	RefundStatus     *string            `json:"refund_status"`
 	AccountID        *uint              `json:"account_id"`
+	EventID          *uint              `json:"event_id"`
 	Split            *entrySplitInput   `json:"split"`
 }
 
@@ -73,6 +74,7 @@ type updateEntryInput struct {
 	RefundReminderAt *time.Time          `json:"refund_reminder_at"`
 	RefundStatus     *string             `json:"refund_status"`
 	AccountID        optionalAccountID   `json:"account_id"`
+	EventID          optionalAccountID   `json:"event_id"` // same nullable-id shape
 	Split            optionalEntrySplit  `json:"split"`
 }
 
@@ -307,6 +309,6 @@ func (input entryInput) toModel(userID uint) models.Entry {
 		Time: input.Time, SourceText: input.SourceText, Attachment: input.Attachment,
 		RefundableAmount: input.RefundableAmount, RefundExpectedOn: input.RefundExpectedOn,
 		RefundReminderAt: input.RefundReminderAt, RefundStatus: refundStatus,
-		AccountID: input.AccountID, UserID: userID,
+		AccountID: input.AccountID, EventID: input.EventID, UserID: userID,
 	}
 }

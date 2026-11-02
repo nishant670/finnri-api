@@ -109,6 +109,20 @@ func TestBillingStatusOmitsLastPassForSomeoneWhoNeverBought(t *testing.T) {
 	}
 }
 
+// The app checks a capture's price against these before it opens the camera or
+// the microphone, so they must be the prices the server charges.
+func TestBillingStatusPricesEachCapturePath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, token := createBillingTestUserSession(t)
+
+	status := performJSONRequest[billingStatusResponse](t, router, http.MethodGet, "/v1/billing/status", token, nil, http.StatusOK)
+	if got, want := status.Credits.CaptureCredits, (captureCreditsResponse{Text: 5, Voice: 12, VoiceMax: 18, Receipt: 25, StatementPDF: 50, StatementScreenshots: 100}); got != want {
+		t.Fatalf("capture credits = %#v, want %#v", got, want)
+	}
+}
+
 func TestBillingStatusSaysARefundEndedThePass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	useSmokeDatabase(t)
@@ -155,7 +169,7 @@ func TestPurchaseHistoryListsPaymentsNewestFirst(t *testing.T) {
 
 	// An order someone opened and walked away from.
 	if err := database.DB.Create(&models.Payment{
-		UserID: user.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
+		UserID: &user.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
 		ProviderOrderID: "order_abandoned", Status: models.PaymentStatusCreated,
 		AmountMinor: 7900, Currency: "INR", CreatedAt: time.Now().Add(2 * time.Minute),
 	}).Error; err != nil {
@@ -165,7 +179,7 @@ func TestPurchaseHistoryListsPaymentsNewestFirst(t *testing.T) {
 	// Someone else's purchase.
 	other, _ := createBillingTestUserSession(t)
 	if err := database.DB.Create(&models.Payment{
-		UserID: other.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
+		UserID: &other.ID, PlanID: weekly.ID, Provider: payments.ProviderRazorpay,
 		ProviderOrderID: "order_other", ProviderPaymentID: "pay_other", Status: models.PaymentStatusCaptured,
 		AmountMinor: 7900, Currency: "INR",
 	}).Error; err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"finnri/internal/ai"
 	"finnri/internal/billing"
 	"finnri/internal/database"
 	"finnri/internal/models"
@@ -46,6 +47,38 @@ type creditSummaryResponse struct {
 	ResetAt               time.Time             `json:"reset_at"`
 	TrialExpiresAt        *time.Time            `json:"trial_expires_at,omitempty"`
 	Grants                []creditGrantResponse `json:"grants,omitempty"`
+	// CaptureCredits is what each way of adding an expense costs, so the app
+	// can turn a capture away before the photo or recording exists rather
+	// than after the server refuses it.
+	CaptureCredits captureCreditsResponse `json:"capture_credits"`
+}
+
+// captureCreditsResponse prices every AI read the app can start, for its
+// gates and for the price list in Profile. Voice is the shortest clip's price
+// and VoiceMax the longest live tier's; the server still decides.
+type captureCreditsResponse struct {
+	Text                 int `json:"text"`
+	Voice                int `json:"voice"`
+	VoiceMax             int `json:"voice_max"`
+	Receipt              int `json:"receipt"`
+	StatementPDF         int `json:"statement_pdf"`
+	StatementScreenshots int `json:"statement_screenshots"`
+}
+
+func captureCredits() captureCreditsResponse {
+	registry := ai.DefaultActionRegistry()
+	cost := func(code ai.ActionCode) int {
+		action, _ := registry.Lookup(code)
+		return action.DefaultCredits
+	}
+	return captureCreditsResponse{
+		Text:                 cost(ai.ActionTransactionParseText),
+		Voice:                cost(ai.ActionTransactionParseVoiceShort),
+		VoiceMax:             cost(ai.ActionTransactionParseVoiceMedium),
+		Receipt:              cost(ai.ActionTransactionParseReceipt),
+		StatementPDF:         cost(ai.ActionStatementPDFRead),
+		StatementScreenshots: cost(ai.ActionFutureAIStatementImport),
+	}
 }
 
 type creditGrantResponse struct {
@@ -531,6 +564,7 @@ func buildCreditSummary(subject billing.CreditSubject, includeGrants bool) (cred
 		DailyCreditsRemaining: dailyRemaining,
 		ResetAt:               nextCreditResetAt(now),
 		TrialExpiresAt:        trialExpiresAt,
+		CaptureCredits:        captureCredits(),
 	}
 	if includeGrants {
 		var grants []models.CreditGrant
@@ -575,7 +609,7 @@ func paidMonthsCompleted(userID uint) (int, error) {
 	now := time.Now().UTC()
 	var subscriptions []models.UserSubscription
 	if err := database.DB.Preload("Plan").
-		Where("user_id = ? AND status IN ?", userID, []string{"active", "cancelled", "expired"}).
+		Where("user_id = ? AND status IN ? AND provider <> ?", userID, []string{"active", "cancelled", "expired"}, giftPassProvider).
 		Find(&subscriptions).Error; err != nil {
 		return 0, err
 	}
