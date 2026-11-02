@@ -388,3 +388,31 @@ func TestUploadStatementPDFUsesTheAIRead(t *testing.T) {
 		t.Fatalf("charged %v, want 50", diff.CreditsCharged)
 	}
 }
+
+// A row the model dated in the wrong year is moved next to the statement date
+// before it reaches the check, where a wrong year would make it "missing".
+func TestReadStatementPDFCorrectsWrongYears(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	content := "BT /F1 10 Tf 72 720 Td (12 Oct) Tj 0 -14 Td (AMAZON PAY INDIA) Tj 0 -14 Td (1,250.00) Tj ET"
+	if err := writeTextPDF(t, path, content); err != nil {
+		t.Skipf("could not build a test PDF: %v", err)
+	}
+	pdf, _ := os.ReadFile(path)
+	server := &Server{
+		cfg: &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: fixtureStatementReader{summary: []byte(`{"summary":{"statement_date":"2026-10-25"},
+			"lines":[{"date":"2023-10-12","description":"AMAZON PAY INDIA","amount":1250,"type":"expense"}]}`)},
+	}
+	ctx, response, _ := newStatementReadContext(t, func(writer *multipart.Writer) {
+		part, _ := writer.CreateFormFile("file", "statement.pdf")
+		_, _ = part.Write(pdf)
+	})
+
+	server.readCardStatement(ctx)
+
+	var read statementReadResponse
+	_ = json.Unmarshal(response.Body.Bytes(), &read)
+	if response.Code != 200 || len(read.Lines) != 1 || read.Lines[0].Date != "2026-10-12" {
+		t.Fatalf("the row should be dated 2026-10-12: %d %s", response.Code, response.Body.String())
+	}
+}

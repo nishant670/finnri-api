@@ -164,7 +164,7 @@ func (s *Server) readStatementPDF(c *gin.Context) (statementReadResponse, bool) 
 		return statementReadResponse{}, false
 	}
 
-	result, ok := s.readStatementPDFText(c, text, s.statementToday().Year())
+	result, ok := s.readStatementPDFText(c, text, s.statementToday())
 	if !ok {
 		return statementReadResponse{}, false
 	}
@@ -194,14 +194,24 @@ type pdfStatementText struct {
 	credits map[string]any
 }
 
+// statementAnchor is the date a statement's rows are dated against: its own
+// statement date when the read found one, otherwise `fallback`.
+func statementAnchor(summary statementSummary, fallback time.Time) time.Time {
+	if date, err := parseStrictAPIDate(summary.StatementDate); err == nil {
+		return date
+	}
+	return fallback
+}
+
 // readStatementPDFText is the paid read shared by both PDF routes — the Add
 // statement sheet and the check of a saved bill. It writes its own error
 // response and returns false when there is nothing to show.
 //
-// `fallbackYear` dates the local parser's rows; the model is told today's date
-// and resolves its own.
-func (s *Server) readStatementPDFText(c *gin.Context, text string, fallbackYear int) (pdfStatementText, bool) {
-	localLines := parseStatementText(text, fallbackYear)
+// `anchor` is the statement date when the bill already exists, else today:
+// the local parser takes its year, and the model's rows are corrected
+// against it when the read finds no statement date of its own.
+func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.Time) (pdfStatementText, bool) {
+	localLines := parseStatementText(text, anchor.Year())
 	local := func() (pdfStatementText, bool) {
 		if len(localLines) == 0 {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
@@ -255,6 +265,7 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, fallbackYear 
 	responseBytes := len(raw)
 	summary, _ := decodeStatementSummary(raw, text)
 	aiLines := printedStatementLines(raw, text)
+	anchorLineYears(aiLines, statementAnchor(summary, anchor))
 	lines := aiLines
 	if len(localLines) >= len(aiLines) {
 		lines = localLines
@@ -370,6 +381,7 @@ func (s *Server) readStatementScreenshots(c *gin.Context) (statementReadResponse
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})
 		return statementReadResponse{}, false
 	}
+	anchorLineYears(lines, statementAnchor(summary, s.statementToday()))
 	// Overlapping screenshots repeat rows; the statement does not exist yet,
 	// so dedupe on the same key with no statement id.
 	lines = dedupeStatementLines(0, lines)
