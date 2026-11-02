@@ -82,6 +82,18 @@ func (s *Server) providerCircuitOpen() bool {
 	return !allowed
 }
 
+// aiReadBlocked reports, without writing a response, whether an abuse block
+// or the failed-read cooldown would refuse this subject an AI read — for a
+// read that can carry on without one. A failed lookup reports false, so the
+// writing checks that follow still answer it.
+func (s *Server) aiReadBlocked(subject billing.CreditSubject) bool {
+	if _, found, err := activeAIAbuseBlock(subject); err == nil && found {
+		return true
+	}
+	active, _, _, err := activeAIFailureCooldown(subject, s.cfg)
+	return err == nil && active
+}
+
 func (s *Server) rejectIfProviderCircuitOpen(c *gin.Context) bool {
 	if s.cfg.AIProviderFailureThreshold <= 0 || s.cfg.AIProviderCircuitBreakerSeconds <= 0 {
 		return false

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -208,8 +209,14 @@ func statementAnchor(summary statementSummary, fallback time.Time) time.Time {
 // response and returns false when there is nothing to show.
 //
 // `anchor` is the statement date when the bill already exists, else today:
-// the local parser takes its year, and the model's rows are corrected
-// against it when the read finds no statement date of its own.
+// the model's rows are corrected against it when the read finds no
+// statement date of its own. The local parser reads only dates that print
+// their year, so its rows need no correcting.
+//
+// The local parser is free and runs first. Whenever the AI read cannot run or
+// gives nothing usable, its rows are the answer and nothing is charged — as
+// every PDF read was before the AI one. Only with no local rows either does a
+// refusal or failure reach the user.
 func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.Time) (pdfStatementText, bool) {
 	localLines := parseStatementText(text, anchor.Year())
 	local := func() (pdfStatementText, bool) {
@@ -233,12 +240,19 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.T
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
 		return pdfStatementText{}, false
 	}
+	if len(localLines) > 0 && s.aiReadBlocked(subject) {
+		return local()
+	}
 	if s.rejectIfAIAbuseBlocked(c, subject) || s.rejectIfAIFailureCooldown(c, subject) {
 		return pdfStatementText{}, false
 	}
 	creditService := billing.NewCreditService(database.DB)
 	usageEvent, allowance, reserveErr := creditService.ReserveCredits(subject, action.Code, parseIdempotencyHeader(c))
 	if reserveErr != nil {
+		// Out of credits is no reason to refuse rows the parser already has.
+		if errors.Is(reserveErr, billing.ErrAllowanceDenied) && len(localLines) > 0 {
+			return local()
+		}
 		writeCreditReservationError(c, allowance, reserveErr)
 		return pdfStatementText{}, false
 	}
@@ -266,16 +280,17 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.T
 	summary, _ := decodeStatementSummary(raw, text)
 	aiLines := printedStatementLines(raw, text)
 	anchorLineYears(aiLines, statementAnchor(summary, anchor))
-	lines := aiLines
-	if len(localLines) >= len(aiLines) {
-		lines = localLines
-	}
-	if len(lines) == 0 && summary.isEmpty() {
+	if len(aiLines) == 0 && summary.isEmpty() {
+		// Nothing the model returned survived, so the read is not charged,
+		// even when the local rows still answer the request.
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, withStatementTokens(billing.ProviderUsage{
 			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "invalid_statement_pdf_response", FinalCredits: statementReadNoCharge(), ResponseBytes: &responseBytes,
 		}, usage, s.cfg.OpenAILlmModel))
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
-		return pdfStatementText{}, false
+		return local()
+	}
+	lines := aiLines
+	if len(localLines) >= len(aiLines) {
+		lines = localLines
 	}
 	credits, err := s.finalizeParseSuccess(creditService, usageEvent.ID, subject, action.Code, len(text), responseBytes, 0, usage)
 	if err != nil {
