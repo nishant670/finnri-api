@@ -115,6 +115,22 @@ func TestEntrySourceCheckAllowsEverySourceTheServerWrites(t *testing.T) {
 	}
 }
 
+// The handler tests run on SQLite, which applies none of these checks, so the
+// lists the handlers accept are pinned here against what Postgres enforces.
+func TestAppReleaseChecksAllowEveryValueTheEditorSends(t *testing.T) {
+	joined := strings.Join(runtimeSchemaStatements(), "\n")
+	for _, want := range []string{
+		"CHECK (platform IN ('android', 'ios'))",
+		"CHECK (status IN ('draft', 'published'))",
+		"CHECK (kind IN ('new', 'ui', 'fix', 'improved'))",
+		"REFERENCES app_releases(id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("runtime schema must contain %q", want)
+		}
+	}
+}
+
 // AutoMigrate creates payments with GORM's NO ACTION foreign keys, which made
 // deleting anyone who had ever paid fail. The runtime statements must replace
 // them so the payment is kept and only loses the link to the deleted user.
