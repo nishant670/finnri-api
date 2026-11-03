@@ -3686,7 +3686,7 @@ components:
           description: Canonical income category names, in picker order.
           items:
             type: string
-          example: ["Salary", "Freelance", "Interest", "Refund", "Other"]
+          example: ["Salary", "Freelance", "Interest", "Dividend", "Refund", "Other"]
         income_default:
           type: string
           description: The confirm-first fallback for an unknown income source.
