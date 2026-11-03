@@ -108,6 +108,7 @@ func loadBlockedPrincipal(userID uint, cardIDs []uint) (map[uint]models.Money, e
 }
 
 // emiPlanProgress is what a plan has left to run, for the app to render.
+// InstallmentsPaid counts billed instalments too; see summariseEMIPlan.
 type emiPlanProgress struct {
 	InstallmentsTotal  int          `json:"installments_total"`
 	InstallmentsPaid   int          `json:"installments_paid"`
@@ -122,20 +123,24 @@ type emiPlanProgress struct {
 }
 
 // summariseEMIPlan derives a plan's progress from its instalments.
+//
+// An instalment counts as done for the plan once it is on a bill: from then
+// on it is owed on the card's statement, which the card screen tracks, not on
+// the plan. The Recurring tab counts the same way (loadRecurringCardEMIs), and
+// the two once disagreed: a plan with two instalments billed but the bills not
+// marked paid read "2 of 6 paid · Next 9 Nov" there and "0 of 6 · Next 9 Sept"
+// on its own screen, a date already past.
 func summariseEMIPlan(installments []models.CardEMIInstallment) emiPlanProgress {
 	progress := emiPlanProgress{InstallmentsTotal: len(installments)}
 
 	for _, installment := range installments {
-		switch installment.Status {
-		case emiInstallmentPaid:
+		if installment.Status != emiInstallmentScheduled {
 			progress.InstallmentsPaid++
 			progress.PrincipalRepaid += installment.PrincipalPart
 			continue
-		case emiInstallmentScheduled:
-			progress.BlockedPrincipal += installment.PrincipalPart
 		}
 
-		// Scheduled and billed alike are still owed.
+		progress.BlockedPrincipal += installment.PrincipalPart
 		progress.PrincipalRemaining += installment.PrincipalPart
 		progress.AmountRemaining += installment.Amount
 
