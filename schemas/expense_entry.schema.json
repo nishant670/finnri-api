@@ -59,6 +59,10 @@
         "date": { "type": ["string", "null"], "format": "date" }
       }
     },
+    "balance_after": {
+      "type": ["number", "null"],
+      "description": "The account or wallet balance the document prints after this transaction, e.g. a wallet top-up's \"current balance\". Receipt reads only."
+    },
     "emi_tenure_months": {
       "type": ["integer", "null"],
       "minimum": 1,

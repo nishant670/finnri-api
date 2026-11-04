@@ -1,6 +1,7 @@
 package http
 
 import (
+	"math"
 	"time"
 
 	"finnri/internal/database"
@@ -211,8 +212,9 @@ func summariseAccount(account models.Account, totals accountLedgerTotals, statem
 
 	// Without an opening balance a running balance would just be net flow
 	// dressed up as a bank balance, which is the class of lie this task exists
-	// to remove. Spent-this-month carries the row instead.
-	if opening != 0 {
+	// to remove. Spent-this-month carries the row instead. BalanceTracked
+	// covers an opening that is genuinely ₹0.
+	if opening != 0 || account.BalanceTracked {
 		running := opening + totals.LifetimeReceived - totals.LifetimeSpent
 		summary.RunningBalance = &running
 	}
@@ -245,4 +247,25 @@ func creditCardIDs(accounts []models.Account) []uint {
 		}
 	}
 	return ids
+}
+
+// openingForCurrentBalance works back from what an account holds today to the
+// opening balance the running balance is built on: current, less everything
+// received, plus everything spent. People know today's balance — a wallet's
+// top-up message prints it — and not what the account held before the first
+// entry they ever logged, which is what the opening balance field used to ask.
+func openingForCurrentBalance(userID, accountID uint, current models.Money) (models.Money, error) {
+	var totals struct {
+		Spent    float64
+		Received float64
+	}
+	if err := database.DB.Model(&models.Entry{}).
+		Select(`COALESCE(SUM(CASE WHEN LOWER(type) = 'expense' THEN amount ELSE 0 END), 0) AS spent,
+			COALESCE(SUM(CASE WHEN LOWER(type) <> 'expense' THEN amount ELSE 0 END), 0) AS received`).
+		Where("user_id = ? AND account_id = ?", userID, accountID).
+		Scan(&totals).Error; err != nil {
+		return 0, err
+	}
+	net := models.Money(math.Round((totals.Received - totals.Spent) * 100))
+	return current - net, nil
 }

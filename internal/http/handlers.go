@@ -275,6 +275,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/account-providers", listAccountProviders)
 		authorized.PUT("/accounts/:id", s.updateAccount)
 		authorized.POST("/accounts/:id/paid-off", s.markCardPaidOff)
+		authorized.POST("/accounts/:id/balance", s.setAccountBalance)
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Credit card statements
@@ -2122,6 +2123,11 @@ func (s *Server) saveAccount(c *gin.Context) {
 	}
 	account := models.Account{UserID: userID}
 	input.apply(&account)
+	if input.CurrentBalance != nil {
+		// A new account has no entries, so today's balance is its opening.
+		account.Balance = *input.CurrentBalance
+		account.BalanceTracked = true
+	}
 	var accountCount int64
 	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
 		c.JSON(500, gin.H{"error": "failed_count_accounts"})
@@ -2212,6 +2218,15 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	input.apply(&account)
+	if input.CurrentBalance != nil {
+		opening, err := openingForCurrentBalance(userID, account.ID, *input.CurrentBalance)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed_load_account_activity"})
+			return
+		}
+		account.Balance = opening
+		account.BalanceTracked = true
+	}
 	// Reaching the edit handler means the user intentionally reviewed the
 	// account, even when they kept some optional fields empty.
 	account.AutoCreated = false

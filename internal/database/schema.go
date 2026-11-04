@@ -431,6 +431,16 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_kind_check
 			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill'))`,
+		// See migrations/0066_add_wallet_balance_and_pay_later.sql.
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS balance_tracked BOOLEAN NOT NULL DEFAULT FALSE,
+			ADD COLUMN IF NOT EXISTS credit_kind VARCHAR(16) NOT NULL DEFAULT ''`,
+		// Every balance entered before the flag existed was a real one.
+		`UPDATE accounts SET balance_tracked = TRUE
+			WHERE balance_tracked = FALSE AND balance <> 0 AND type <> 'credit_card'`,
+		`ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_credit_kind_check`,
+		`ALTER TABLE accounts ADD CONSTRAINT accounts_credit_kind_check
+			CHECK (credit_kind IN ('', 'pay_later') AND (credit_kind = '' OR type = 'credit_card'))`,
 		// See migrations/0052_add_card_annual_fee.sql.
 		`ALTER TABLE accounts
 			ADD COLUMN IF NOT EXISTS annual_fee NUMERIC(19,2) NOT NULL DEFAULT 0,
