@@ -8,10 +8,12 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"finnri/internal/database"
 	"finnri/internal/identity"
@@ -44,6 +46,11 @@ type splitParticipantInput struct {
 type splitGroupInput struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
+	// KindLabel and KindIcon are an "other" group's own name and icon. Like the
+	// photo they are nil when the client is not touching them, so an app build
+	// that predates them cannot wipe a label set from a newer one.
+	KindLabel *string `json:"kind_label"`
+	KindIcon  *string `json:"kind_icon"`
 	// PhotoURL is a URL this server issued from POST /v1/upload. It is nil when
 	// the client is not touching the photo, so an app build that does not know
 	// about group photos cannot clear one by omission — an empty string is the
@@ -987,6 +994,7 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 			Name:   strings.TrimSpace(input.Name),
 			Kind:   normalizedSplitGroupKind(input.Kind),
 		}
+		input.applyKindLabel(&group)
 		if input.PhotoURL != nil {
 			group.PhotoURL, _ = splitGroupPhotoURL(*input.PhotoURL)
 		}
@@ -1128,6 +1136,7 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		}
 		group.Name = strings.TrimSpace(input.Name)
 		group.Kind = normalizedSplitGroupKind(input.Kind)
+		input.applyKindLabel(&group)
 		// Absent means "leave it alone", empty string means "remove it". An
 		// older app build sends neither the field nor a photo, and must not
 		// wipe one set from a newer build on another device.
@@ -2355,6 +2364,39 @@ func normalizedSplitGroupKind(kind string) string {
 	return normalized
 }
 
+const (
+	splitGroupKindLabelMaxRunes = 32
+	splitGroupKindIconMaxLength = 48
+)
+
+// splitGroupKindIconPattern is the shape of an icon name in the app's icon
+// set. The server does not keep the set itself — the app falls back to its
+// own icon for a name it does not know — it only refuses anything that could
+// not be one.
+var splitGroupKindIconPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// applyKindLabel stores an "other" group's own label and icon, and clears
+// them whenever the group is one of the built-in kinds, so a group moved from
+// Other to Trip does not keep calling itself "Office".
+func (input splitGroupInput) applyKindLabel(group *models.SplitGroup) {
+	if group.Kind != "other" {
+		group.KindLabel = ""
+		group.KindIcon = ""
+		return
+	}
+	if input.KindLabel != nil {
+		group.KindLabel = strings.Join(strings.Fields(*input.KindLabel), " ")
+	}
+	if input.KindIcon != nil {
+		group.KindIcon = strings.TrimSpace(*input.KindIcon)
+	}
+	// An icon with no label would read as an unnamed custom kind; the label is
+	// what the user typed, the icon only decorates it.
+	if group.KindLabel == "" {
+		group.KindIcon = ""
+	}
+}
+
 // splitGroupPhotoURL keeps a group photo pointing at our own upload origin.
 //
 // The value is rendered by every member's app, so accepting an arbitrary URL
@@ -2396,6 +2438,16 @@ func (input splitGroupInput) validate() map[string]string {
 			fields[fmt.Sprintf("friend_ids[%d]", index)] = "duplicate friend"
 		}
 		seen[friendID] = true
+	}
+	if input.KindLabel != nil &&
+		utf8.RuneCountInString(strings.Join(strings.Fields(*input.KindLabel), " ")) > splitGroupKindLabelMaxRunes {
+		fields["kind_label"] = fmt.Sprintf("must not exceed %d characters", splitGroupKindLabelMaxRunes)
+	}
+	if input.KindIcon != nil {
+		icon := strings.TrimSpace(*input.KindIcon)
+		if icon != "" && (len(icon) > splitGroupKindIconMaxLength || !splitGroupKindIconPattern.MatchString(icon)) {
+			fields["kind_icon"] = "must be an icon name"
+		}
 	}
 	if input.PhotoURL != nil {
 		if _, ok := splitGroupPhotoURL(*input.PhotoURL); !ok {

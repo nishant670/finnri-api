@@ -3,6 +3,7 @@ package http
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -604,6 +605,66 @@ func TestEntryUpdateAndDeleteManageLinkedSplitAtomically(t *testing.T) {
 	)
 	if len(bills) != 0 {
 		t.Fatalf("expected deleting entry to remove linked split bill, got %#v", bills)
+	}
+}
+
+func TestSplitGroupOtherKindCarriesItsOwnLabelAndIcon(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+
+	router := smokeRouter(t)
+	_, ownerToken := createPaidBillingTestUserSession(t)
+
+	group := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{
+			"name": "Dyninno Diwali lunch", "kind": "other",
+			"kind_label": "  Office   team ", "kind_icon": "briefcase-outline",
+			"friend_ids": []uint{},
+		},
+		http.StatusCreated,
+	)
+	if group.KindLabel != "Office team" || group.KindIcon != "briefcase-outline" {
+		t.Fatalf("expected the label and icon to be stored tidied, got %q / %q", group.KindLabel, group.KindIcon)
+	}
+
+	// A build that knows nothing of labels leaves them alone on an edit.
+	renamed := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d", group.ID), ownerToken,
+		map[string]any{"name": "Diwali lunch", "kind": "other", "friend_ids": []uint{}},
+		http.StatusOK,
+	)
+	if renamed.KindLabel != "Office team" || renamed.KindIcon != "briefcase-outline" {
+		t.Fatalf("expected an edit without the fields to keep them, got %q / %q", renamed.KindLabel, renamed.KindIcon)
+	}
+
+	// Moving to a built-in kind drops the custom pair.
+	trip := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPut, fmt.Sprintf("/v1/split/groups/%d", group.ID), ownerToken,
+		map[string]any{"name": "Diwali lunch", "kind": "trip", "friend_ids": []uint{}},
+		http.StatusOK,
+	)
+	if trip.KindLabel != "" || trip.KindIcon != "" {
+		t.Fatalf("expected a trip to carry no custom label, got %q / %q", trip.KindLabel, trip.KindIcon)
+	}
+
+	// An icon without a label is dropped with it.
+	bare := performJSONRequest[models.SplitGroup](
+		t, router, http.MethodPost, "/v1/split/groups", ownerToken,
+		map[string]any{"name": "Misc", "kind": "other", "kind_label": " ", "kind_icon": "star", "friend_ids": []uint{}},
+		http.StatusCreated,
+	)
+	if bare.KindLabel != "" || bare.KindIcon != "" {
+		t.Fatalf("expected an unlabelled group to carry no icon, got %q / %q", bare.KindLabel, bare.KindIcon)
+	}
+
+	for _, body := range []map[string]any{
+		{"name": "Long", "kind": "other", "kind_label": strings.Repeat("a", 33), "friend_ids": []uint{}},
+		{"name": "Bad icon", "kind": "other", "kind_label": "Office", "kind_icon": "https://x.test/a.png", "friend_ids": []uint{}},
+	} {
+		performJSONRequest[map[string]any](
+			t, router, http.MethodPost, "/v1/split/groups", ownerToken, body, http.StatusUnprocessableEntity,
+		)
 	}
 }
 

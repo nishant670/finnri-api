@@ -4730,6 +4730,20 @@ components:
           description: >-
             What the group is for. Only a trip offers trip dates on the group
             screen. Shared with every member.
+        kind_label:
+          type: string
+          maxLength: 32
+          description: >-
+            The group's own name for its kind, only on kind "other" ("Office",
+            "Diwali"). Omit to leave it unchanged; empty clears it. Cleared
+            whenever kind is one of the built-in four.
+        kind_icon:
+          type: string
+          maxLength: 48
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          description: >-
+            An icon name from the app's icon set shown beside kind_label. Omit
+            to leave it unchanged; dropped when there is no label.
         friend_ids:
           type: array
           minItems: 1
@@ -4842,6 +4856,12 @@ components:
         kind:
           type: string
           enum: [trip, home, couple, other]
+        kind_label:
+          type: string
+          description: The group's own name for kind "other"; empty otherwise.
+        kind_icon:
+          type: string
+          description: The icon shown beside kind_label; empty otherwise.
         photo_url:
           type: string
           description: >-

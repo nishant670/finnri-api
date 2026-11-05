@@ -99,6 +99,12 @@ type SplitGroup struct {
 	// group screen (only a trip has dates), so it belongs to the group rather
 	// than to whoever happens to be looking at it.
 	Kind string `gorm:"type:varchar(16);not null;default:other" json:"kind"`
+	// KindLabel and KindIcon name an "other" group in the creator's own words —
+	// "Office", "Diwali" — with the icon the app shows beside it. They describe
+	// the group, so every member sees the same pair. Both are empty for the
+	// four built-in kinds, which carry their own name and icon.
+	KindLabel string `gorm:"type:varchar(32);not null;default:''" json:"kind_label"`
+	KindIcon  string `gorm:"type:varchar(48);not null;default:''" json:"kind_icon"`
 	// PhotoURL is the group's picture, hosted on our own upload origin. It is a
 	// property of the group rather than of whoever is looking at it: a photo
 	// kept on the device that picked it would be invisible to every other
