@@ -3,8 +3,6 @@ package ai
 import (
 	"context"
 	"fmt"
-	"log"
-	"strings"
 )
 
 // ReceiptImageParser reads one photographed bill or receipt into a capture
@@ -68,22 +66,11 @@ Rules:
 Today is %s.`
 
 // ParseReceiptImage asks the vision model for a single draft built from one
-// receipt image. If the configured vision model is not available to this key,
-// it retries once on the text model, so a rollout to a key without access
-// degrades to the old reader instead of failing every scan.
+// receipt image.
 func (c *OpenAIClient) ParseReceiptImage(ctx context.Context, image StatementImage, today string) ([]byte, Usage, error) {
 	if len(image.Data) == 0 {
 		return nil, Usage{}, fmt.Errorf("no receipt image")
 	}
 	prompt := fmt.Sprintf(receiptImagePrompt, today)
-	model := strings.TrimSpace(c.cfg.OpenAIVisionModel)
-	if model == "" {
-		model = c.cfg.OpenAILlmModel
-	}
-	raw, usage, err := c.completeWithImagesUsing(ctx, "receipt", model, c.cfg.OpenAIVisionReasoningEffort, prompt, []StatementImage{image}, receiptMaxTokens)
-	if err != nil && model != c.cfg.OpenAILlmModel && modelUnavailable(err) {
-		log.Printf("receipt vision model %s unavailable, retrying on %s: %v", model, c.cfg.OpenAILlmModel, err)
-		return c.completeWithImagesUsing(ctx, "receipt", c.cfg.OpenAILlmModel, "", prompt, []StatementImage{image}, receiptMaxTokens)
-	}
-	return raw, usage, err
+	return c.completeWithVisionModel(ctx, "receipt", prompt, []StatementImage{image}, receiptMaxTokens)
 }

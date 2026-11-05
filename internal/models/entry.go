@@ -59,6 +59,10 @@ type Entry struct {
 	IdempotencyKey   *string    `gorm:"type:varchar(128);uniqueIndex:idx_entries_user_idempotency" json:"-"`
 	AccountID        *uint      `gorm:"index" json:"account_id"`
 	Account          *Account   `json:"account,omitempty" gorm:"foreignKey:AccountID"`
+	// The occasion this expense was for, if any. No GORM relation on purpose:
+	// the events table and this foreign key come from runtime SQL, which runs
+	// after AutoMigrate. See migrations/0064_create_events.sql.
+	EventID *uint `gorm:"index" json:"event_id"`
 
 	UserID uint `gorm:"uniqueIndex:idx_entries_user_idempotency" json:"user_id"`
 	User   User `json:"-" gorm:"foreignKey:UserID"`

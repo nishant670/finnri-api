@@ -366,23 +366,29 @@ func (s *Server) uploadCardStatementPDF(c *gin.Context) {
 		return
 	}
 
-	cycleEnd, dateErr := parseAPIDate(statement.CycleEnd)
-	fallbackYear := 0
-	if dateErr == nil {
-		fallbackYear = cycleEnd.Year()
+	anchor, dateErr := parseAPIDate(statement.StatementDate)
+	if dateErr != nil {
+		anchor = s.statementToday()
 	}
 
-	lines := parseStatementText(text, fallbackYear)
-	if len(lines) == 0 {
+	// The same paid read as the Add statement sheet. A bill saved with a
+	// summary but no rows sends people here with the same file, and a
+	// parser-only read would fail on it the same way twice.
+	read, ok := s.readStatementPDFText(c, text, anchor)
+	if !ok {
+		return
+	}
+	if len(read.lines) == 0 {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
 		return
 	}
 
-	diff, err := buildStatementDiff(statement, lines)
+	diff, err := buildStatementDiff(statement, read.lines)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_cycle_entries"})
 		return
 	}
 	diff.Source = "pdf"
+	setStatementDiffCredits(&diff, read.credits)
 	c.JSON(http.StatusOK, diff)
 }

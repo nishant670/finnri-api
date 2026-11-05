@@ -105,6 +105,7 @@ type AIUsageEvent struct {
 	InputChars             *int       `json:"input_chars,omitempty"`
 	ResponseBytes          *int       `json:"response_bytes,omitempty"`
 	ErrorCode              string     `gorm:"type:varchar(80);index;not null;default:''" json:"error_code,omitempty"`
+	Intent                 string     `gorm:"type:varchar(16);not null;default:''" json:"intent,omitempty"`
 	StartedAt              time.Time  `gorm:"index;not null" json:"started_at"`
 	ProviderStartedAt      *time.Time `json:"provider_started_at,omitempty"`
 	FinishedAt             *time.Time `gorm:"index" json:"finished_at,omitempty"`

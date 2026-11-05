@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"finnri/internal/ai"
+	"finnri/internal/billing"
 	"finnri/internal/config"
 	"finnri/internal/database"
 	"finnri/internal/models"
@@ -292,6 +294,56 @@ func TestQuestionAnswersSpendTotalFromTheLedger(t *testing.T) {
 	// happened before anyone knew which direction this was.
 	if envelope.CreditsCharged <= 0 {
 		t.Fatalf("credits_charged = %d, want the parse charge", envelope.CreditsCharged)
+	}
+}
+
+// AI usage listed every Ask Finnri answer as "Text capture", because the
+// reservation is made under transaction_parse_text before the provider says
+// it is a question. The answer is now recorded with intent "question" — under
+// the same action code, for the same credits a typed capture costs — and the
+// usage list carries that intent to the app.
+func TestAnsweredQuestionIsRecordedAsAQuestionAtTheSamePrice(t *testing.T) {
+	user := newQuestionUser(t)
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Swiggy", Type: "expense", Amount: questionMoney(t, "450.00"), Category: "Food & Drinks", Merchant: "Swiggy", Date: thisMonthDate(t, 2)})
+
+	envelope, response := askQuestion(t, user,
+		`{"metric":"spend_total","type":"expense","category":"Food & Drinks","merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month"},"group_by":null,"unsupported_reason":null}`,
+		"how much did I spend on food this month")
+	if response.Code != 200 || envelope.Stage != "answer" {
+		t.Fatalf("status = %d, stage = %q, body = %s", response.Code, envelope.Stage, response.Body.String())
+	}
+
+	textAction, err := ai.DefaultActionRegistry().Require(ai.ActionTransactionParseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event models.AIUsageEvent
+	if err := database.DB.Where("user_id = ?", user.ID).First(&event).Error; err != nil {
+		t.Fatalf("load usage event: %v", err)
+	}
+	if event.Intent != billing.UsageIntentQuestion {
+		t.Fatalf("intent = %q, want %q", event.Intent, billing.UsageIntentQuestion)
+	}
+	if event.ActionCode != string(ai.ActionTransactionParseText) || event.Status != billing.UsageStatusSucceeded {
+		t.Fatalf("action/status = %q/%q, want the text parse it was reserved as, succeeded", event.ActionCode, event.Status)
+	}
+	if event.FinalCredits != textAction.DefaultCredits || envelope.CreditsCharged != textAction.DefaultCredits {
+		t.Fatalf("final_credits = %d, credits_charged = %d, want %d — a question costs what a capture costs",
+			event.FinalCredits, envelope.CreditsCharged, textAction.DefaultCredits)
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest("GET", "/v1/ai/usage?page=1&page_size=10", nil)
+	context.Set("user", &user)
+	context.Set("userID", user.ID)
+	questionServer(nil).listAIUsage(context)
+	var usage aiUsageListResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &usage); err != nil {
+		t.Fatalf("decode usage: %v (body = %s)", err, recorder.Body.String())
+	}
+	if len(usage.Events) != 1 || usage.Events[0].Intent != billing.UsageIntentQuestion {
+		t.Fatalf("usage events = %+v, want one with intent %q", usage.Events, billing.UsageIntentQuestion)
 	}
 }
 

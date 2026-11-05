@@ -53,12 +53,16 @@ type creditSummaryResponse struct {
 	CaptureCredits captureCreditsResponse `json:"capture_credits"`
 }
 
-// captureCreditsResponse prices the three capture paths. Voice is the
-// shortest clip's price: a longer one costs more, and the server still decides.
+// captureCreditsResponse prices every AI read the app can start, for its
+// gates and for the price list in Profile. Voice is the shortest clip's price
+// and VoiceMax the longest live tier's; the server still decides.
 type captureCreditsResponse struct {
-	Text    int `json:"text"`
-	Voice   int `json:"voice"`
-	Receipt int `json:"receipt"`
+	Text                 int `json:"text"`
+	Voice                int `json:"voice"`
+	VoiceMax             int `json:"voice_max"`
+	Receipt              int `json:"receipt"`
+	StatementPDF         int `json:"statement_pdf"`
+	StatementScreenshots int `json:"statement_screenshots"`
 }
 
 func captureCredits() captureCreditsResponse {
@@ -68,9 +72,12 @@ func captureCredits() captureCreditsResponse {
 		return action.DefaultCredits
 	}
 	return captureCreditsResponse{
-		Text:    cost(ai.ActionTransactionParseText),
-		Voice:   cost(ai.ActionTransactionParseVoiceShort),
-		Receipt: cost(ai.ActionTransactionParseReceipt),
+		Text:                 cost(ai.ActionTransactionParseText),
+		Voice:                cost(ai.ActionTransactionParseVoiceShort),
+		VoiceMax:             cost(ai.ActionTransactionParseVoiceMedium),
+		Receipt:              cost(ai.ActionTransactionParseReceipt),
+		StatementPDF:         cost(ai.ActionStatementPDFRead),
+		StatementScreenshots: cost(ai.ActionFutureAIStatementImport),
 	}
 }
 
@@ -123,6 +130,7 @@ type aiUsageEventResponse struct {
 	InputChars       *int       `json:"input_chars,omitempty"`
 	ResponseBytes    *int       `json:"response_bytes,omitempty"`
 	ErrorCode        string     `json:"error_code,omitempty"`
+	Intent           string     `json:"intent,omitempty"`
 	StartedAt        time.Time  `json:"started_at"`
 	FinishedAt       *time.Time `json:"finished_at,omitempty"`
 }
@@ -304,6 +312,7 @@ func (s *Server) listAIUsage(c *gin.Context) {
 			InputChars:       event.InputChars,
 			ResponseBytes:    event.ResponseBytes,
 			ErrorCode:        event.ErrorCode,
+			Intent:           event.Intent,
 			StartedAt:        event.StartedAt,
 			FinishedAt:       event.FinishedAt,
 		})

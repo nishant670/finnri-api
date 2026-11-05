@@ -43,6 +43,7 @@ func TestRuntimeSchemaIncludesDataIntegrityConstraints(t *testing.T) {
 		"idx_credit_ledger_grant_idempotency",
 		"idx_daily_credit_usage_user_date",
 		"ai_usage_events_status_check",
+		"ai_usage_events_intent_check",
 		"lifetime_quote_requests_status_check",
 		"ai_usage_limit_events_reason_check",
 		"ai_model_pricings_operation_check",
@@ -112,6 +113,22 @@ func TestEntrySourceCheckAllowsEverySourceTheServerWrites(t *testing.T) {
 	want := "CHECK (source IN ('manual', 'text', 'voice', 'receipt', 'recurring', 'statement'))"
 	if !strings.Contains(joined, want) {
 		t.Fatalf("entries_source_check must read %q", want)
+	}
+}
+
+// The handler tests run on SQLite, which applies none of these checks, so the
+// lists the handlers accept are pinned here against what Postgres enforces.
+func TestAppReleaseChecksAllowEveryValueTheEditorSends(t *testing.T) {
+	joined := strings.Join(runtimeSchemaStatements(), "\n")
+	for _, want := range []string{
+		"CHECK (platform IN ('android', 'ios'))",
+		"CHECK (status IN ('draft', 'published'))",
+		"CHECK (kind IN ('new', 'ui', 'fix', 'improved'))",
+		"REFERENCES app_releases(id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("runtime schema must contain %q", want)
+		}
 	}
 }
 

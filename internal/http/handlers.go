@@ -147,6 +147,19 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	// name, inviter display name, member count and expiry.
 	r.GET("/v1/split/invites/:token/preview", jsonRequestLimits(cfg), rateLimit(cfg, "split-invite-preview"), s.previewSplitGroupInvite)
 
+	// Release notes for the update card and "What's new". Public: the app
+	// checks for updates before sign-in, and guests update too.
+	appPublic := r.Group("/v1/app")
+	appPublic.Use(jsonRequestLimits(cfg))
+	{
+		releasesLimit := rateLimit(cfg, "app-releases")
+		appPublic.GET("/releases", releasesLimit, s.listAppReleases)
+		appPublic.GET("/releases/:version_code", releasesLimit, s.getAppRelease)
+		appPublic.GET("/release-media/:name",
+			rateLimitAt(releaseMediaRateLimitRPS, releaseMediaRateLimitBurst, "app-release-media"),
+			s.serveReleaseMedia)
+	}
+
 	admin := r.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
 	{
@@ -193,6 +206,21 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/admin-users", requireAdminRole(models.AdminRoleOwner), s.listAdminIdentities)
 		admin.POST("/admin-users", requireAdminRole(models.AdminRoleOwner), s.createAdminIdentity)
 		admin.PATCH("/admin-users/:id", requireAdminRole(models.AdminRoleOwner), s.updateAdminIdentity)
+		admin.GET("/releases", s.listAdminAppReleases)
+		admin.GET("/releases/:id", s.getAdminAppRelease)
+		admin.POST("/releases", requireAdminRole(models.AdminRoleSupport), s.createAdminAppRelease)
+		admin.PUT("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminAppRelease)
+		admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), s.publishAdminAppRelease)
+		admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), s.unpublishAdminAppRelease)
+		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
+	}
+
+	// Screenshots are bigger than the admin group's JSON limit allows, so the
+	// one admin upload gets its own group with the upload limit instead.
+	adminUploads := r.Group("/v1/admin")
+	adminUploads.Use(uploadRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
+	{
+		adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), s.uploadAdminReleaseMedia)
 	}
 
 	// Protected Routes (User Token)
@@ -209,6 +237,13 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/categories/custom", s.listCustomCategories)
 		authorized.POST("/categories/custom", s.addCustomCategory)
 		authorized.DELETE("/categories/custom", s.removeCustomCategory)
+		authorized.GET("/events", s.listEvents)
+		authorized.POST("/events", s.createEvent)
+		authorized.GET("/events/:id", s.getEvent)
+		authorized.PUT("/events/:id", s.updateEvent)
+		authorized.DELETE("/events/:id", s.deleteEvent)
+		authorized.POST("/events/:id/entries", s.addEventEntries)
+		authorized.DELETE("/events/:id/entries", s.removeEventEntries)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
@@ -408,6 +443,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/categories") ||
+		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/account-providers") ||
 		// Statements nested under a card are covered by the line above, but
@@ -441,6 +477,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/reports") ||
 		strings.HasPrefix(path, "/v1/monthly-review") ||
 		strings.HasPrefix(path, "/v1/split") ||
+		// Release notes. Public, and the app holds no static bearer to send.
+		strings.HasPrefix(path, "/v1/app/") ||
 		strings.HasPrefix(path, "/v1/tools") ||
 		strings.HasPrefix(path, "/v1/billing") ||
 		strings.HasPrefix(path, "/v1/ai") ||
@@ -856,9 +894,27 @@ func (s *Server) finalizeParseSuccess(
 	audioSize int64,
 	reported ai.Usage,
 ) (map[string]any, error) {
+	return s.finalizeParseSuccessAs("", creditService, usageEventID, subject, actionCode, inputChars, responseBytes, audioSize, reported)
+}
+
+// finalizeParseSuccessAs is finalizeParseSuccess for a call whose intent is
+// known only after the provider answered — a typed question. The intent is
+// recorded on the usage event; the credits are exactly what was reserved.
+func (s *Server) finalizeParseSuccessAs(
+	intent string,
+	creditService *billing.CreditService,
+	usageEventID uint,
+	subject billing.CreditSubject,
+	actionCode ai.ActionCode,
+	inputChars int,
+	responseBytes int,
+	audioSize int64,
+	reported ai.Usage,
+) (map[string]any, error) {
 	prompt, completion, total := tokenPointers(reported)
 	providerUsage := billing.ProviderUsage{
 		Status:           billing.UsageStatusSucceeded,
+		Intent:           intent,
 		Provider:         "openai",
 		Model:            s.cfg.OpenAILlmModel,
 		InputChars:       &inputChars,
@@ -1035,6 +1091,15 @@ func (s *Server) saveEntry(c *gin.Context) {
 	} else if len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
+	}
+	if input.EventID != nil {
+		if message, err := entryEventProblem(userID, *input.EventID, input.Type, input.PurposeType); err != nil {
+			c.JSON(500, gin.H{"error": "event_lookup_failed"})
+			return
+		} else if message != "" {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"event_id": message}})
+			return
+		}
 	}
 
 	idempotencyKey, idempotencyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
@@ -1344,6 +1409,28 @@ func (s *Server) updateEntry(c *gin.Context) {
 			return
 		}
 	}
+	purposeType := entry.PurposeType
+	if input.PurposeType != nil {
+		purposeType = *input.PurposeType
+	}
+	eventID := entry.EventID
+	if input.EventID.Set {
+		eventID = input.EventID.Value
+		if eventID != nil {
+			if message, err := entryEventProblem(userID, *eventID, entryType, purposeType); err != nil {
+				c.JSON(500, gin.H{"error": "event_lookup_failed"})
+				return
+			} else if message != "" {
+				c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"event_id": message}})
+				return
+			}
+		}
+	} else if eventID != nil && !entryFitsEvent(entryType, purposeType) {
+		// An expense edited into income leaves its event: events hold
+		// expenses only, and nobody would think to unlink it first.
+		eventID = nil
+	}
+	entry.EventID = eventID
 	if input.Title != nil {
 		entry.Title = *input.Title
 	}
@@ -1853,6 +1940,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
 			{&models.Entry{}, "entries"},
+			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
 			{&models.AuthSession{}, "auth sessions"},
 		}

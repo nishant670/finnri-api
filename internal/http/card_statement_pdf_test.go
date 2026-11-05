@@ -56,7 +56,12 @@ func TestExtractStatementTextDecryptsAProtectedPDF(t *testing.T) {
 // writeMinimalPDF emits a tiny single-page PDF with one text run.
 func writeMinimalPDF(t *testing.T, path string) error {
 	t.Helper()
-	content := "BT /F1 12 Tf 72 720 Td (10/07/2026 SWIGGY BANGALORE 480.00) Tj ET"
+	return writeTextPDF(t, path, "BT /F1 12 Tf 72 720 Td (10/07/2026 SWIGGY BANGALORE 480.00) Tj ET")
+}
+
+// writeTextPDF writes a one-page PDF whose page content stream is `content`.
+func writeTextPDF(t *testing.T, path, content string) error {
+	t.Helper()
 	var buf bytes.Buffer
 	buf.WriteString("%PDF-1.4\n")
 
