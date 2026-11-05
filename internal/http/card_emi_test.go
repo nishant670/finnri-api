@@ -387,21 +387,24 @@ func TestSummariseEMIPlanProgress(t *testing.T) {
 	}
 	progress := summariseEMIPlan(installments)
 
-	if progress.InstallmentsPaid != 1 || progress.InstallmentsTotal != 3 {
-		t.Fatalf("paid %d of %d, want 1 of 3", progress.InstallmentsPaid, progress.InstallmentsTotal)
+	// A billed instalment is done as far as the plan goes: it is owed on the
+	// card's bill now. The Recurring tab counts it the same way.
+	if progress.InstallmentsPaid != 2 || progress.InstallmentsTotal != 3 {
+		t.Fatalf("paid %d of %d, want 2 of 3", progress.InstallmentsPaid, progress.InstallmentsTotal)
 	}
-	if progress.PrincipalRepaid != rupees(5000) {
-		t.Errorf("repaid = %s, want %s", progress.PrincipalRepaid, rupees(5000))
+	if progress.PrincipalRepaid != rupees(10000) {
+		t.Errorf("repaid = %s, want %s", progress.PrincipalRepaid, rupees(10000))
 	}
-	if progress.PrincipalRemaining != rupees(10000) {
-		t.Errorf("remaining = %s, want %s", progress.PrincipalRemaining, rupees(10000))
+	if progress.PrincipalRemaining != rupees(5000) || progress.AmountRemaining != rupees(5000) {
+		t.Errorf("remaining = %s (amount %s), want %s", progress.PrincipalRemaining, progress.AmountRemaining, rupees(5000))
 	}
 	// Only the scheduled one blocks; the billed one is inside a statement.
 	if progress.BlockedPrincipal != rupees(5000) {
 		t.Errorf("blocked = %s, want %s", progress.BlockedPrincipal, rupees(5000))
 	}
-	if progress.NextDueDate != "2026-09-10" {
-		t.Errorf("next due %s, want 2026-09-10", progress.NextDueDate)
+	// Next is the first one not yet on a bill, never one already billed.
+	if progress.NextDueDate != "2026-10-10" {
+		t.Errorf("next due %s, want 2026-10-10", progress.NextDueDate)
 	}
 }
 
