@@ -389,6 +389,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.SplitGroupInvite{},
 		&models.SplitGroupDirectInvite{},
 		&models.SplitGroupUserMember{},
+		&models.SplitGroupBalanceAlert{},
 		&models.SplitGroupMemberLink{},
 		&models.SplitBill{},
 		&models.SplitParticipant{},
