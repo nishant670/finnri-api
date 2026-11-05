@@ -1128,6 +1128,33 @@ paths:
           description: Account is used by transactions or is the user's only account
         "404":
           description: Account not found
+  /v1/accounts/{id}/balance:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: integer
+    post:
+      summary: Set what a bank account or wallet holds today
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_balance]
+              properties:
+                current_balance:
+                  type: number
+                  multipleOf: 0.01
+      responses:
+        "200":
+          description: The account with its fresh summary, running_balance equal to current_balance.
+        "422":
+          description: Missing balance, or the account is a credit card.
+        "404":
+          description: Account not found
   /v1/accounts/{id}/paid-off:
     parameters:
       - in: path
@@ -3769,6 +3796,18 @@ components:
         balance:
           type: number
           multipleOf: 0.01
+        current_balance:
+          type: number
+          multipleOf: 0.01
+          description: >-
+            What the account holds today. The server works back to the opening
+            balance and marks the balance tracked. Not for credit cards.
+        balance_tracked:
+          type: boolean
+        credit_kind:
+          type: string
+          enum: ["", card, pay_later]
+          description: Credit cards only. pay_later for a pay-later line such as CRED flash.
         is_default:
           type: boolean
         auto_created:
@@ -3831,6 +3870,13 @@ components:
           description: >-
             Opening balance — what the account held, or on a card owed, before the
             first logged transaction. Never a current figure on its own.
+        balance_tracked:
+          type: boolean
+          description: The user gave a balance, so running_balance is shown even when the opening is 0.
+        credit_kind:
+          type: string
+          enum: ["", pay_later]
+          description: Credit cards only. pay_later names the card as a pay-later line.
         is_default:
           type: boolean
         auto_created:

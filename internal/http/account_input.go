@@ -39,8 +39,16 @@ type accountInput struct {
 	AnnualFee      *models.Money `json:"annual_fee"`
 	FeeWaiverSpend *models.Money `json:"fee_waiver_spend"`
 	Balance        models.Money  `json:"balance"`
-	IsDefault      bool          `json:"is_default"`
-	AutoCreated    bool          `json:"auto_created"`
+	// CurrentBalance is what the account holds today, which is what people
+	// know. The handler turns it into the opening balance the ledger
+	// arithmetic runs on (see openingForCurrentBalance). Not for cards.
+	CurrentBalance *models.Money `json:"current_balance"`
+	BalanceTracked *bool         `json:"balance_tracked"`
+	// "pay_later" or "card"/"" — credit_card accounts only. A pointer so an
+	// older client's edit cannot turn a pay-later line back into a card.
+	CreditKind  *string `json:"credit_kind"`
+	IsDefault   bool    `json:"is_default"`
+	AutoCreated bool    `json:"auto_created"`
 
 	// Card statement settings are pointers so that omitting them means "leave
 	// as is" rather than "reset to zero". The app sends the whole account back
@@ -114,7 +122,30 @@ func (input accountInput) validate() map[string]string {
 	if input.ReminderDaysBefore != nil && (*input.ReminderDaysBefore < 0 || *input.ReminderDaysBefore > 30) {
 		fields["reminder_days_before"] = "must be between 0 and 30"
 	}
+	if input.CurrentBalance != nil && accountType == "credit_card" {
+		fields["current_balance"] = "is not for cards; a card's statement says what is owed"
+	}
+	if input.CreditKind != nil {
+		kind, ok := normalizeCreditKind(*input.CreditKind)
+		if !ok {
+			fields["credit_kind"] = "must be card or pay_later"
+		} else if kind != "" && accountType != "credit_card" {
+			fields["credit_kind"] = "is only valid for credit card accounts"
+		}
+	}
 	return fields
+}
+
+// normalizeCreditKind maps "card" and "" to a plain card and keeps
+// "pay_later". Anything else is not a kind.
+func normalizeCreditKind(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "card":
+		return "", true
+	case "pay_later", "paylater", "pay later":
+		return "pay_later", true
+	}
+	return "", false
 }
 
 func (input accountInput) apply(account *models.Account) {
@@ -178,6 +209,24 @@ func (input accountInput) apply(account *models.Account) {
 	account.DueDay = input.DueDay
 	account.FeeMonth = strings.TrimSpace(input.FeeMonth)
 	account.Balance = input.Balance
+	if input.BalanceTracked != nil {
+		account.BalanceTracked = *input.BalanceTracked
+	}
+	if input.CreditKind != nil {
+		account.CreditKind, _ = normalizeCreditKind(*input.CreditKind)
+	} else if provider, ok := accountProviderByID(account.ProviderID); ok && account.CreditKind == "" {
+		// Picking CRED flash makes a pay-later line even from a client that
+		// does not know the field.
+		account.CreditKind = provider.CreditKind
+	}
+	if account.Type != "credit_card" {
+		account.CreditKind = ""
+		if account.Balance != 0 {
+			account.BalanceTracked = true
+		}
+	} else {
+		account.BalanceTracked = false
+	}
 	account.IsDefault = input.IsDefault
 	account.AutoCreated = input.AutoCreated
 
