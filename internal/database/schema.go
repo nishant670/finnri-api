@@ -1509,6 +1509,11 @@ func runtimeSchemaStatements() []string {
 		// deletes rows, and this function runs on every start.
 		`ALTER TABLE split_groups
 			ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT ''`,
+		// An "other" group's own name and icon (migration 0067).
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS kind_label VARCHAR(32) NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS kind_icon VARCHAR(48) NOT NULL DEFAULT ''`,
 		`ALTER TABLE split_settlements
 			ADD COLUMN IF NOT EXISTS group_id BIGINT REFERENCES split_groups(id) ON DELETE CASCADE`,
 		`CREATE INDEX IF NOT EXISTS idx_split_settlements_group
