@@ -126,6 +126,7 @@
         "Salary",
         "Freelance",
         "Interest",
+        "Dividend",
         "Refund",
         "Other",
         null

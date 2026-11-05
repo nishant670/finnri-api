@@ -45,7 +45,7 @@ Step 2, return ONE transaction for the main document, never one per line item:
  "total_label": string|null, "total_as_printed": string|null,
  "type": "expense|income", "title": string|null, "amount": number|null, "currency": "INR, or the ISO code of the currency printed on the bill",
  "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null", "card_network": "Visa|Mastercard|Amex|Rupay|null",
- "account_hint": string|null, "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Refund|Other|null",
+ "account_hint": string|null, "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Dividend|Refund|Other|null",
  "merchant": string|null, "tags": [string], "note": string|null, "date": "YYYY-MM-DD"|null, "time": "HH:MM"|null,
  "confidence": {"amount": 0..1, "merchant": 0..1, "date": 0..1, "category": 0..1, "mode": 0..1, "type": 0..1},
  "missing_fields": [string], "clarifications": [string]}
