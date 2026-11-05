@@ -285,6 +285,8 @@ func (s *Server) decideSplitSettlement(c *gin.Context, confirmed bool) {
 	if err := database.DB.First(&responder, userID).Error; err == nil {
 		notifySettlementDecision(database.DB, settlement, responder, confirmed)
 	}
+	// A denial puts the balance back where it was, which can be over the limit.
+	checkSplitGroupBalanceAlerts(database.DB, derefUint(settlement.GroupID))
 
 	decorated := []models.SplitSettlement{settlement}
 	decorateSettlementsForCounterparty(database.DB, decorated)

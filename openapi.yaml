@@ -4744,6 +4744,14 @@ components:
           description: >-
             An icon name from the app's icon set shown beside kind_label. Omit
             to leave it unchanged; dropped when there is no label.
+        balance_alert_amount:
+          type: string
+          example: "5000.00"
+          description: >-
+            The group's balance limit; 0 turns it off. When any one person's
+            balance with a member in this group reaches it, either way round,
+            that member gets a split.balance_alert notification and a push,
+            once, until the balance drops back under. Omit to leave unchanged.
         friend_ids:
           type: array
           minItems: 1
@@ -4862,6 +4870,9 @@ components:
         kind_icon:
           type: string
           description: The icon shown beside kind_label; empty otherwise.
+        balance_alert_amount:
+          type: number
+          description: The group's balance limit; 0 when the alert is off.
         photo_url:
           type: string
           description: >-

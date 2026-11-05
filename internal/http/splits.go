@@ -51,6 +51,9 @@ type splitGroupInput struct {
 	// that predates them cannot wipe a label set from a newer one.
 	KindLabel *string `json:"kind_label"`
 	KindIcon  *string `json:"kind_icon"`
+	// BalanceAlertAmount is the group's balance limit; 0 turns the alert off.
+	// Nil leaves it alone, for the same reason as the label.
+	BalanceAlertAmount *models.Money `json:"balance_alert_amount"`
 	// PhotoURL is a URL this server issued from POST /v1/upload. It is nil when
 	// the client is not touching the photo, so an app build that does not know
 	// about group photos cannot clear one by omission — an empty string is the
@@ -995,6 +998,9 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 			Kind:   normalizedSplitGroupKind(input.Kind),
 		}
 		input.applyKindLabel(&group)
+		if input.BalanceAlertAmount != nil {
+			group.BalanceAlertAmount = *input.BalanceAlertAmount
+		}
 		if input.PhotoURL != nil {
 			group.PhotoURL, _ = splitGroupPhotoURL(*input.PhotoURL)
 		}
@@ -1137,6 +1143,9 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		group.Name = strings.TrimSpace(input.Name)
 		group.Kind = normalizedSplitGroupKind(input.Kind)
 		input.applyKindLabel(&group)
+		if input.BalanceAlertAmount != nil {
+			group.BalanceAlertAmount = *input.BalanceAlertAmount
+		}
 		// Absent means "leave it alone", empty string means "remove it". An
 		// older app build sends neither the field nor a photo, and must not
 		// wipe one set from a newer build on another device.
@@ -1180,6 +1189,8 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group"})
 		return
 	}
+	// A new or lowered limit can already be passed.
+	checkSplitGroupBalanceAlerts(database.DB, group.ID)
 	memberInvites := inviteSplitGroupMembersForOwner(userID, group, addedFriendIDs)
 	_ = database.DB.Preload("Members.Friend").First(&group, group.ID).Error
 	applySplitGroupViewerPermissions(&group, userID)
@@ -1592,6 +1603,7 @@ func (s *Server) createSplitBill(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_split_bill"})
 		return
 	}
+	checkSplitGroupBalanceAlerts(database.DB, derefUint(bill.GroupID))
 
 	applySplitBillViewerPermissions(&bill, userID)
 	decorateSplitBillForViewer(database.DB, &bill, userID)
@@ -1703,10 +1715,12 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 	}
 
 	var bill models.SplitBill
+	var previousGroupID uint
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("user_id = ? AND id = ?", userID, id).First(&bill).Error; err != nil {
 			return err
 		}
+		previousGroupID = derefUint(bill.GroupID)
 		// Omission from an older split client must not detach its transaction.
 		if input.EntryID != nil {
 			bill.EntryID = input.EntryID
@@ -1777,6 +1791,8 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_bill"})
 		return
 	}
+	// Both sides of a bill moved between groups.
+	checkSplitGroupBalanceAlerts(database.DB, previousGroupID, derefUint(bill.GroupID))
 
 	applySplitBillViewerPermissions(&bill, userID)
 	decorateSplitBillForViewer(database.DB, &bill, userID)
@@ -1790,7 +1806,16 @@ func (s *Server) deleteSplitBill(c *gin.Context) {
 		return
 	}
 
+	var deletedGroupID uint
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var groupIDs []*uint
+		if err := tx.Model(&models.SplitBill{}).Where("user_id = ? AND id = ?", userID, id).
+			Pluck("group_id", &groupIDs).Error; err != nil {
+			return err
+		}
+		if len(groupIDs) > 0 {
+			deletedGroupID = derefUint(groupIDs[0])
+		}
 		if err := tx.Where("user_id = ? AND bill_id = ?", userID, id).Delete(&models.SplitParticipant{}).Error; err != nil {
 			return err
 		}
@@ -1810,6 +1835,7 @@ func (s *Server) deleteSplitBill(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_split_bill"})
 		return
 	}
+	checkSplitGroupBalanceAlerts(database.DB, deletedGroupID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "split bill deleted"})
 }
@@ -1909,6 +1935,7 @@ func (s *Server) createSplitSettlement(c *gin.Context) {
 			notifySettlementRecorded(database.DB, settlement, recorder)
 		}
 	}
+	checkSplitGroupBalanceAlerts(database.DB, derefUint(settlement.GroupID))
 	c.JSON(http.StatusCreated, settlement)
 }
 
@@ -2442,6 +2469,10 @@ func (input splitGroupInput) validate() map[string]string {
 	if input.KindLabel != nil &&
 		utf8.RuneCountInString(strings.Join(strings.Fields(*input.KindLabel), " ")) > splitGroupKindLabelMaxRunes {
 		fields["kind_label"] = fmt.Sprintf("must not exceed %d characters", splitGroupKindLabelMaxRunes)
+	}
+	if input.BalanceAlertAmount != nil &&
+		(*input.BalanceAlertAmount < 0 || *input.BalanceAlertAmount > maxSplitGroupBalanceAlert) {
+		fields["balance_alert_amount"] = "must be between 0 and 1,00,00,000"
 	}
 	if input.KindIcon != nil {
 		icon := strings.TrimSpace(*input.KindIcon)
