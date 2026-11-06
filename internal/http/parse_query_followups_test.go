@@ -47,3 +47,10 @@ func TestFollowUpContextReachesOnlyTheModel(t *testing.T) {
 		t.Fatalf("context = %q", got)
 	}
 }
+
+func TestFollowUpAfterAPastMonthAsksForTheOneBefore(t *testing.T) {
+	got := followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "last_month"})
+	if got[len(got)-1] != "And the month before?" {
+		t.Fatalf("follow-ups = %v", got)
+	}
+}

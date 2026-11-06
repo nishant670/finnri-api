@@ -134,6 +134,9 @@ func loadAnswerComparison(userID uint, question ledgerQuestion, current float64)
 func followUpQuestions(question ledgerQuestion) []string {
 	previous := "And last month?"
 	switch question.PeriodKind {
+	case "last_month", "month_of":
+		// Already about a past month: "last month" again would repeat it.
+		previous = "And the month before?"
 	case "this_week", "last_week":
 		previous = "And the week before?"
 	case "today", "yesterday":
