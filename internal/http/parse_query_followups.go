@@ -139,7 +139,7 @@ func followUpQuestions(question ledgerQuestion) []string {
 		previous = "And the month before?"
 	case "this_week", "last_week":
 		previous = "And the week before?"
-	case "today", "yesterday":
+	case "today", "yesterday", "day":
 		previous = "And the day before?"
 	case "this_year", "last_year":
 		previous = "And the year before?"

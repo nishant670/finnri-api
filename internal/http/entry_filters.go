@@ -165,7 +165,19 @@ func buildFilteredEntriesQuery(
 	if search := strings.TrimSpace(get("q")); search != "" {
 		if len(search) > 200 {
 			fields["q"] = "must not exceed 200 characters"
-		} else {
+		} else if terms := searchAlternatives(search); len(terms) > 1 {
+			// "fuel|petrol|diesel" — the form an Ask Finnri answer hands the
+			// list — matches a row mentioning any one of them.
+			clauses := make([]string, 0, len(terms))
+			args := make([]any, 0, len(terms)*3)
+			for _, term := range terms {
+				pattern := "%" + strings.ToLower(term) + "%"
+				clauses = append(clauses, "LOWER(entries.title) LIKE ? OR LOWER(entries.merchant) LIKE ? OR LOWER(entries.notes) LIKE ?")
+				args = append(args, pattern, pattern, pattern)
+			}
+			query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
+		} else if len(terms) == 1 {
+			search = terms[0]
 			pattern := "%" + strings.ToLower(search) + "%"
 			if amount, ok := searchedAmount(search); ok {
 				// A search that reads as a figure — "20938", "20,938", "₹20,938.00" —

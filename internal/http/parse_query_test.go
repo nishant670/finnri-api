@@ -515,17 +515,18 @@ func TestUnsupportedQuestionAnswersWithoutANumber(t *testing.T) {
 }
 
 // A category the ledger has never heard of is not filed under Misc the way a
-// capture would be — that would answer about the wrong rows.
-func TestUnknownCategoryQuestionIsUnsupportedRatherThanMisc(t *testing.T) {
+// capture would be — that would answer about the wrong rows. It is searched
+// for as a word instead, and with nothing matching, says so without a number.
+func TestUnknownCategoryQuestionIsSearchedNotFiledUnderMisc(t *testing.T) {
 	envelope, _ := askQuestion(t, newQuestionUser(t),
 		`{"metric":"spend_total","category":"Crypto","period":{"kind":"this_month"}}`,
 		"how much did I spend on crypto this month")
 
-	if envelope.Answer.Status != answerStatusUnsupported {
-		t.Fatalf("status = %q, want unsupported", envelope.Answer.Status)
+	if envelope.Answer.Status != answerStatusNoData {
+		t.Fatalf("status = %q, want no_data", envelope.Answer.Status)
 	}
-	if envelope.Answer.Amount != nil {
-		t.Fatalf("amount = %v, want none", *envelope.Answer.Amount)
+	if envelope.Answer.Filters["category"] != "" || envelope.Answer.Filters["q"] != "crypto" {
+		t.Fatalf("filters = %v, want a search for crypto and no category", envelope.Answer.Filters)
 	}
 }
 
