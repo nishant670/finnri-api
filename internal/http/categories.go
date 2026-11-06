@@ -39,6 +39,7 @@ var canonicalIncomeCategories = []string{
 	"Salary",
 	"Freelance",
 	"Interest",
+	"Dividend",
 	"Refund",
 	"Other",
 }
@@ -164,6 +165,8 @@ var incomeCategoryAliases = map[string]string{
 	"side hustle":       "Freelance",
 	"interest income":   "Interest",
 	"bank interest":     "Interest",
+	"dividends":         "Dividend",
+	"dividend income":   "Dividend",
 	"cashback":          "Refund",
 	"reimbursement":     "Refund",
 	"returned purchase": "Refund",

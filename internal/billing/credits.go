@@ -22,7 +22,7 @@ const (
 	LoggedInFreeTrialCredits = 1000
 	GuestTrialCredits        = 300
 	LoggedInFreeDailyLimit   = 50
-	GuestDailyLimit          = 15
+	GuestDailyLimit          = 50
 	TrialDuration            = 30 * 24 * time.Hour
 	AnonymousGuestRetention  = 90 * 24 * time.Hour
 )
@@ -38,6 +38,7 @@ const (
 	ReasonGuestTrial              = "guest_trial_grant"
 	ReasonSubscriptionPeriod      = "subscription_period_grant"
 	ReasonGrantExpiry             = "credit_grant_expiry"
+	ReasonSubscriptionRefunded    = "subscription_refund_revoked"
 	ReasonReservationDebit        = "ai_credit_reservation"
 	ReasonReservationRefund       = "ai_credit_refund"
 	ReasonManualAdjustment        = "manual_credit_adjustment"
@@ -52,6 +53,11 @@ const (
 	UsageStatusFailedAfterProvider  = "failed_after_provider"
 	UsageStatusCancelled            = "cancelled"
 )
+
+// UsageIntentQuestion marks a parse that resolved to a ledger question (an
+// Ask Finnri answer) rather than a draft. The action code, and so the price,
+// stays whatever was reserved.
+const UsageIntentQuestion = "question"
 
 const (
 	AllowanceAllowed             = "allowed"
@@ -138,6 +144,7 @@ type ProviderUsage struct {
 	InputChars             *int
 	ResponseBytes          *int
 	ErrorCode              string
+	Intent                 string
 	ProviderStartedAt      *time.Time
 	FinishedAt             *time.Time
 }
@@ -719,6 +726,41 @@ func (s *CreditService) GrantSubscriptionPeriod(subscription models.UserSubscrip
 	return grant, created, nil
 }
 
+// RevokeSubscriptionCreditsTx takes back what is left of a refunded pass.
+//
+// Ending the subscription alone was not enough: the period's grant has its own
+// expiry, so its unspent credits stayed spendable after the money went back.
+// The pass read "No active plan" with 3,525 credits still on it, while the
+// daily cap had already fallen back to the free tier's 50 — "No AI credits
+// left today · 3525 total credits left". Only the unspent remainder goes; what
+// was used stays used (see applyRefund). A queued renewal on the same
+// subscription is revoked with it. Safe to call twice.
+func RevokeSubscriptionCreditsTx(tx *gorm.DB, subscriptionID uint) (int, error) {
+	var grants []models.CreditGrant
+	if err := tx.Where("subscription_id = ? AND source = ? AND credits_remaining > 0", subscriptionID, GrantSourceSubscriptionPeriod).
+		Find(&grants).Error; err != nil {
+		return 0, err
+	}
+	revoked := 0
+	for _, grant := range grants {
+		remaining := grant.CreditsRemaining
+		result := tx.Model(&models.CreditGrant{}).Where("id = ? AND credits_remaining = ?", grant.ID, remaining).
+			Update("credits_remaining", 0)
+		if result.Error != nil {
+			return revoked, result.Error
+		}
+		if result.RowsAffected == 0 {
+			continue
+		}
+		grant.CreditsRemaining = 0
+		if err := createGrantLedger(tx, grant, LedgerDirectionExpiry, remaining, ReasonSubscriptionRefunded, fmt.Sprintf("refund:grant:%d", grant.ID)); err != nil {
+			return revoked, err
+		}
+		revoked += remaining
+	}
+	return revoked, nil
+}
+
 func (s *CreditService) ExpireCredits() (int, error) {
 	now := s.now()
 	expiredCount := 0
@@ -1187,6 +1229,7 @@ func copyUsageUpdates(updates map[string]any, usage ProviderUsage) {
 		"secondary_provider": usage.SecondaryProvider,
 		"secondary_model":    usage.SecondaryModel,
 		"error_code":         usage.ErrorCode,
+		"intent":             usage.Intent,
 	}
 	for key, value := range stringUpdates {
 		if strings.TrimSpace(value) != "" {
@@ -1407,6 +1450,7 @@ func logAIUsageEvent(event models.AIUsageEvent) {
 		"input_chars":               event.InputChars,
 		"response_bytes":            event.ResponseBytes,
 		"error_code":                event.ErrorCode,
+		"intent":                    event.Intent,
 		"started_at":                event.StartedAt,
 		"finished_at":               event.FinishedAt,
 	})

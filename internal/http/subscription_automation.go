@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -24,8 +25,11 @@ const (
 	subscriptionOccurrencePending   = "pending"
 	subscriptionOccurrenceConfirmed = "confirmed"
 	subscriptionOccurrenceReverted  = "reverted"
-	expoPushURL                     = "https://exp.host/--/api/v2/push/send"
 )
+
+// expoPushURL is Expo's push service. A variable so tests can point it at a
+// local server.
+var expoPushURL = "https://exp.host/--/api/v2/push/send"
 
 func StartSubscriptionAutomation(_ *config.Config) {
 	go func() {
@@ -432,18 +436,48 @@ func sendOccurrencePush(occurrence models.SubscriptionOccurrence) {
 	})
 }
 
+// expoPushTickets is Expo's answer to a send: one ticket per message, in the
+// order sent, or request-level errors when the whole send was refused.
+type expoPushTickets struct {
+	Data []struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Details struct {
+			Error string `json:"error"`
+		} `json:"details"`
+	} `json:"data"`
+	Errors []struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+// sendUserPush sends one push to each of the user's registered phones.
+//
+// It used to fail without a trace: no device, a refused send and a rejected
+// token all looked the same as success, which is how Android pushes went
+// missing unnoticed. Each of those now leaves a log line, and a token Expo
+// says is no longer registered (the app was uninstalled, say) is switched
+// off so it isn't tried again.
 func sendUserPush(db *gorm.DB, userID uint, title, body string, data map[string]any) {
 	if db == nil {
 		return
 	}
 	var devices []models.PushDevice
-	if err := db.Where("user_id = ? AND active = ?", userID, true).Find(&devices).Error; err != nil || len(devices) == 0 {
+	if err := db.Where("user_id = ? AND active = ?", userID, true).Find(&devices).Error; err != nil {
+		log.Printf("[WARN] push skipped user=%d: loading devices failed: %v", userID, err)
+		return
+	}
+	if len(devices) == 0 {
+		log.Printf("[INFO] push skipped user=%d: no registered device", userID)
 		return
 	}
 	messages := make([]map[string]any, 0, len(devices))
 	for _, device := range devices {
 		messages = append(messages, map[string]any{
 			"to": device.Token, "sound": "default", "title": title, "body": body, "data": data,
+			// Shown at once rather than batched by Android's power saving.
+			"priority": "high",
 		})
 	}
 	payload, _ := json.Marshal(messages)
@@ -453,7 +487,28 @@ func sendUserPush(db *gorm.DB, userID uint, title, body string, data map[string]
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 10 * time.Second}
-	if response, err := client.Do(req); err == nil {
-		_ = response.Body.Close()
+	response, err := client.Do(req)
+	if err != nil {
+		log.Printf("[WARN] push send failed user=%d: %v", userID, err)
+		return
+	}
+	defer response.Body.Close()
+
+	var tickets expoPushTickets
+	_ = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&tickets)
+	if response.StatusCode >= http.StatusMultipleChoices || len(tickets.Errors) > 0 {
+		log.Printf("[WARN] push refused user=%d status=%d errors=%v", userID, response.StatusCode, tickets.Errors)
+		return
+	}
+	for index, ticket := range tickets.Data {
+		if ticket.Status == "ok" || index >= len(devices) {
+			continue
+		}
+		device := devices[index]
+		log.Printf("[WARN] push rejected user=%d device=%d platform=%s: %s %s",
+			userID, device.ID, device.Platform, ticket.Details.Error, ticket.Message)
+		if ticket.Details.Error == "DeviceNotRegistered" {
+			_ = db.Model(&models.PushDevice{}).Where("id = ?", device.ID).Update("active", false).Error
+		}
 	}
 }

@@ -36,12 +36,13 @@ func TestCustomCategoriesComeFromTheUsersOwnEntries(t *testing.T) {
 	user, token := createBillingTestUserSession(t)
 	other, _ := createBillingTestUserSession(t)
 
-	seedCategoryEntry(t, user.ID, "income", "Dividend")
-	seedCategoryEntry(t, user.ID, "income", "dividend") // same category, other spelling
+	seedCategoryEntry(t, user.ID, "income", "Rental income")
+	seedCategoryEntry(t, user.ID, "income", "rental INCOME") // same category, other spelling
 	seedCategoryEntry(t, user.ID, "Expense", "Pet Care")
 	seedCategoryEntry(t, user.ID, "expense", "Food & Drinks") // built in
 	seedCategoryEntry(t, user.ID, "expense", "Food")          // legacy spelling of a built-in
 	seedCategoryEntry(t, user.ID, "income", "Salary")         // built in
+	seedCategoryEntry(t, user.ID, "income", "Dividend")       // custom before it was built in
 	seedCategoryEntry(t, user.ID, "income", "Income")         // placeholder from older builds
 	seedCategoryEntry(t, other.ID, "expense", "Their Own")
 
@@ -50,8 +51,8 @@ func TestCustomCategoriesComeFromTheUsersOwnEntries(t *testing.T) {
 	if strings.Join(got.Expense, "|") != "Pet Care" {
 		t.Fatalf("expense categories = %v, want only Pet Care", got.Expense)
 	}
-	if len(got.Income) != 1 || !strings.EqualFold(got.Income[0], "Dividend") {
-		t.Fatalf("income categories = %v, want one Dividend", got.Income)
+	if len(got.Income) != 1 || !strings.EqualFold(got.Income[0], "Rental income") {
+		t.Fatalf("income categories = %v, want one Rental income", got.Income)
 	}
 }
 
@@ -132,19 +133,19 @@ func TestCustomCategoryInputIsChecked(t *testing.T) {
 	_, token := createBillingTestUserSession(t)
 
 	for _, body := range []map[string]any{
-		{"name": "Dividend", "type": "transfer"},
+		{"name": "Rental income", "type": "transfer"},
 		{"name": "   ", "type": "income"},
 		{"name": strings.Repeat("x", maxCustomCategoryLength+1), "type": "income"},
 	} {
 		performJSONRequest[map[string]any](t, router, http.MethodPost, "/v1/categories/custom", token, body, http.StatusUnprocessableEntity)
 	}
-	performJSONRequest[map[string]any](t, router, http.MethodDelete, removeCategoryPath("", "Dividend"), token, nil, http.StatusUnprocessableEntity)
+	performJSONRequest[map[string]any](t, router, http.MethodDelete, removeCategoryPath("", "Rental income"), token, nil, http.StatusUnprocessableEntity)
 }
 
 func TestDeleteUserDataRemovesUserCategories(t *testing.T) {
 	useSmokeDatabase(t)
 	user, _ := createBillingTestUserSession(t)
-	if err := saveUserCategory(database.DB, user.ID, "income", "Dividend", false); err != nil {
+	if err := saveUserCategory(database.DB, user.ID, "income", "Rental income", false); err != nil {
 		t.Fatal(err)
 	}
 

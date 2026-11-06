@@ -46,7 +46,16 @@ type Account struct {
 	AnnualFee      Money `gorm:"type:numeric(19,2);not null;default:0" json:"annual_fee"`
 	FeeWaiverSpend Money `gorm:"type:numeric(19,2);not null;default:0" json:"fee_waiver_spend"`
 	Balance        Money `gorm:"type:numeric(19,2);not null;default:0" json:"balance"`
-	IsDefault      bool  `json:"is_default"`
+	// BalanceTracked says the user gave this account a balance, so its running
+	// balance is shown even when the opening worked out to exactly ₹0 — a meal
+	// wallet logged from its first load does. Before it, a zero opening read
+	// as "never entered". See migrations/0066_add_wallet_balance_and_pay_later.sql.
+	BalanceTracked bool `gorm:"not null;default:false" json:"balance_tracked"`
+	// CreditKind tells a pay-later line (CRED flash, LazyPay, Simpl) from a
+	// card. Both are credit_card accounts and share the limit, statement and
+	// due-date machinery; only the wording differs. Empty is a card.
+	CreditKind string `gorm:"type:varchar(16);not null;default:''" json:"credit_kind,omitempty"`
+	IsDefault  bool   `json:"is_default"`
 	// AutoCreated distinguishes a capture shortcut from an intentionally sparse
 	// account. The first explicit account edit clears it.
 	AutoCreated bool      `gorm:"not null;default:false" json:"auto_created"`
@@ -60,4 +69,7 @@ type AccountProviderDetails struct {
 	TypeSupport []string `json:"type_support"`
 	AssetKey    string   `json:"asset_key"`
 	Aliases     []string `json:"aliases,omitempty"`
+	// CreditKind is "pay_later" for a pay-later lender, so picking one makes
+	// the new credit_card account a pay-later line without another question.
+	CreditKind string `json:"credit_kind,omitempty"`
 }

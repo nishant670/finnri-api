@@ -167,6 +167,14 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	billingPublic.GET("/checkout/:order_id", server.getBillingCheckoutOrder)
 	billingPublic.POST("/webhook", server.handleBillingWebhook)
 	router.GET("/v1/split/invites/:token/preview", server.previewSplitGroupInvite)
+	appPublic := router.Group("/v1/app")
+	appPublic.Use(jsonRequestLimits(cfg))
+	appPublic.GET("/releases", server.listAppReleases)
+	appPublic.GET("/releases/:version_code", server.getAppRelease)
+	appPublic.GET("/release-media/:name", server.serveReleaseMedia)
+	adminUploads := router.Group("/v1/admin")
+	adminUploads.Use(uploadRequestLimits(cfg), server.requireAdminSession(), server.adminAuditMiddleware())
+	adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), server.uploadAdminReleaseMedia)
 
 	admin := router.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminSession(), server.adminAuditMiddleware())
@@ -178,6 +186,8 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.GET("/users/:id/credits", server.getAdminUserCredits)
 	admin.GET("/users/:id/activity", server.getAdminUserActivity)
 	admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), server.createUserCreditAdjustment)
+	admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), server.createAdminGiftPass)
+	admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), server.revokeAdminGiftPass)
 	admin.GET("/ai/metrics", server.getAIMetrics)
 	admin.GET("/ai/metrics/timeseries", server.getAIMetricsTimeseries)
 	admin.GET("/ai/usage", server.listAdminAIUsage)
@@ -196,6 +206,13 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.GET("/ai/abuse-blocks", server.listAIAbuseBlocks)
 	admin.POST("/ai/abuse-blocks", requireAdminRole(models.AdminRoleSupport), server.createAIAbuseBlock)
 	admin.PATCH("/ai/abuse-blocks/:id", requireAdminRole(models.AdminRoleSupport), server.updateAIAbuseBlock)
+	admin.GET("/releases", server.listAdminAppReleases)
+	admin.GET("/releases/:id", server.getAdminAppRelease)
+	admin.POST("/releases", requireAdminRole(models.AdminRoleSupport), server.createAdminAppRelease)
+	admin.PUT("/releases/:id", requireAdminRole(models.AdminRoleSupport), server.updateAdminAppRelease)
+	admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), server.publishAdminAppRelease)
+	admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), server.unpublishAdminAppRelease)
+	admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), server.deleteAdminAppRelease)
 	admin.GET("/feedback", server.listAdminFeedback)
 	admin.GET("/feedback/stats", server.getAdminFeedbackStats)
 	admin.GET("/feedback/:id/attachments/:index", server.getAdminFeedbackAttachment)
@@ -227,6 +244,9 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/ai/credits", server.getAICredits)
 	authorized.GET("/accounts", server.listAccounts)
 	authorized.POST("/accounts/:id/paid-off", server.markCardPaidOff)
+	authorized.POST("/accounts", server.saveAccount)
+	authorized.PUT("/accounts/:id", server.updateAccount)
+	authorized.POST("/accounts/:id/balance", server.setAccountBalance)
 	budgets := authorized.Group("/budgets", server.requireBudgetAllowance())
 	budgets.POST("", server.createBudget)
 	budgets.GET("", server.listBudgets)
@@ -251,6 +271,13 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/categories/custom", server.listCustomCategories)
 	authorized.POST("/categories/custom", server.addCustomCategory)
 	authorized.DELETE("/categories/custom", server.removeCustomCategory)
+	authorized.GET("/events", server.listEvents)
+	authorized.POST("/events", server.createEvent)
+	authorized.GET("/events/:id", server.getEvent)
+	authorized.PUT("/events/:id", server.updateEvent)
+	authorized.DELETE("/events/:id", server.deleteEvent)
+	authorized.POST("/events/:id/entries", server.addEventEntries)
+	authorized.DELETE("/events/:id/entries", server.removeEventEntries)
 	authorized.GET("/reports/transactions/summary", server.getTransactionSummaryReport)
 	authorized.GET("/entries/:id", server.getEntry)
 	authorized.PUT("/entries/:id", server.updateEntry)
@@ -352,6 +379,9 @@ func useSmokeDatabase(t *testing.T) {
 		&models.CardEMIInstallment{},
 		&models.RecurringCandidateDecision{},
 		&models.UserCategory{},
+		&models.Event{},
+		&models.AppRelease{},
+		&models.AppReleaseItem{},
 		&models.PushDevice{},
 		&models.SplitFriend{},
 		&models.SplitGroup{},
@@ -359,12 +389,14 @@ func useSmokeDatabase(t *testing.T) {
 		&models.SplitGroupInvite{},
 		&models.SplitGroupDirectInvite{},
 		&models.SplitGroupUserMember{},
+		&models.SplitGroupBalanceAlert{},
 		&models.SplitGroupMemberLink{},
 		&models.SplitBill{},
 		&models.SplitParticipant{},
 		&models.SplitSettlement{},
 		&models.SplitFriendMerge{},
 		&models.Payment{},
+		&models.PaymentRefund{},
 		&models.PaymentWebhookEvent{},
 	); err != nil {
 		t.Fatalf("failed to migrate smoke database: %v", err)

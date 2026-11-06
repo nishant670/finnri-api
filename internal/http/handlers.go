@@ -147,6 +147,19 @@ func NewServer(cfg *config.Config) *gin.Engine {
 	// name, inviter display name, member count and expiry.
 	r.GET("/v1/split/invites/:token/preview", jsonRequestLimits(cfg), rateLimit(cfg, "split-invite-preview"), s.previewSplitGroupInvite)
 
+	// Release notes for the update card and "What's new". Public: the app
+	// checks for updates before sign-in, and guests update too.
+	appPublic := r.Group("/v1/app")
+	appPublic.Use(jsonRequestLimits(cfg))
+	{
+		releasesLimit := rateLimit(cfg, "app-releases")
+		appPublic.GET("/releases", releasesLimit, s.listAppReleases)
+		appPublic.GET("/releases/:version_code", releasesLimit, s.getAppRelease)
+		appPublic.GET("/release-media/:name",
+			rateLimitAt(releaseMediaRateLimitRPS, releaseMediaRateLimitBurst, "app-release-media"),
+			s.serveReleaseMedia)
+	}
+
 	admin := r.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
 	{
@@ -158,6 +171,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/users/:id/credits", s.getAdminUserCredits)
 		admin.GET("/users/:id/activity", s.getAdminUserActivity)
 		admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), s.createUserCreditAdjustment)
+		admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), s.createAdminGiftPass)
+		admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), s.revokeAdminGiftPass)
 		admin.GET("/ai/metrics", s.getAIMetrics)
 		admin.GET("/ai/metrics/timeseries", s.getAIMetricsTimeseries)
 		admin.GET("/ai/usage", s.listAdminAIUsage)
@@ -191,6 +206,21 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/admin-users", requireAdminRole(models.AdminRoleOwner), s.listAdminIdentities)
 		admin.POST("/admin-users", requireAdminRole(models.AdminRoleOwner), s.createAdminIdentity)
 		admin.PATCH("/admin-users/:id", requireAdminRole(models.AdminRoleOwner), s.updateAdminIdentity)
+		admin.GET("/releases", s.listAdminAppReleases)
+		admin.GET("/releases/:id", s.getAdminAppRelease)
+		admin.POST("/releases", requireAdminRole(models.AdminRoleSupport), s.createAdminAppRelease)
+		admin.PUT("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminAppRelease)
+		admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), s.publishAdminAppRelease)
+		admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), s.unpublishAdminAppRelease)
+		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
+	}
+
+	// Screenshots are bigger than the admin group's JSON limit allows, so the
+	// one admin upload gets its own group with the upload limit instead.
+	adminUploads := r.Group("/v1/admin")
+	adminUploads.Use(uploadRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
+	{
+		adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), s.uploadAdminReleaseMedia)
 	}
 
 	// Protected Routes (User Token)
@@ -207,6 +237,13 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/categories/custom", s.listCustomCategories)
 		authorized.POST("/categories/custom", s.addCustomCategory)
 		authorized.DELETE("/categories/custom", s.removeCustomCategory)
+		authorized.GET("/events", s.listEvents)
+		authorized.POST("/events", s.createEvent)
+		authorized.GET("/events/:id", s.getEvent)
+		authorized.PUT("/events/:id", s.updateEvent)
+		authorized.DELETE("/events/:id", s.deleteEvent)
+		authorized.POST("/events/:id/entries", s.addEventEntries)
+		authorized.DELETE("/events/:id/entries", s.removeEventEntries)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
 		authorized.PUT("/entries/:id", s.updateEntry)
@@ -238,6 +275,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/account-providers", listAccountProviders)
 		authorized.PUT("/accounts/:id", s.updateAccount)
 		authorized.POST("/accounts/:id/paid-off", s.markCardPaidOff)
+		authorized.POST("/accounts/:id/balance", s.setAccountBalance)
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Credit card statements
@@ -406,6 +444,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
 		strings.HasPrefix(path, "/v1/categories") ||
+		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/account-providers") ||
 		// Statements nested under a card are covered by the line above, but
@@ -439,6 +478,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/reports") ||
 		strings.HasPrefix(path, "/v1/monthly-review") ||
 		strings.HasPrefix(path, "/v1/split") ||
+		// Release notes. Public, and the app holds no static bearer to send.
+		strings.HasPrefix(path, "/v1/app/") ||
 		strings.HasPrefix(path, "/v1/tools") ||
 		strings.HasPrefix(path, "/v1/billing") ||
 		strings.HasPrefix(path, "/v1/ai") ||
@@ -854,9 +895,27 @@ func (s *Server) finalizeParseSuccess(
 	audioSize int64,
 	reported ai.Usage,
 ) (map[string]any, error) {
+	return s.finalizeParseSuccessAs("", creditService, usageEventID, subject, actionCode, inputChars, responseBytes, audioSize, reported)
+}
+
+// finalizeParseSuccessAs is finalizeParseSuccess for a call whose intent is
+// known only after the provider answered — a typed question. The intent is
+// recorded on the usage event; the credits are exactly what was reserved.
+func (s *Server) finalizeParseSuccessAs(
+	intent string,
+	creditService *billing.CreditService,
+	usageEventID uint,
+	subject billing.CreditSubject,
+	actionCode ai.ActionCode,
+	inputChars int,
+	responseBytes int,
+	audioSize int64,
+	reported ai.Usage,
+) (map[string]any, error) {
 	prompt, completion, total := tokenPointers(reported)
 	providerUsage := billing.ProviderUsage{
 		Status:           billing.UsageStatusSucceeded,
+		Intent:           intent,
 		Provider:         "openai",
 		Model:            s.cfg.OpenAILlmModel,
 		InputChars:       &inputChars,
@@ -934,10 +993,11 @@ func writeCreditReservationError(c *gin.Context, allowance billing.AllowanceResu
 	switch allowance.Reason {
 	case billing.AllowanceDailyLimitReached:
 		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":       billing.AllowanceDailyLimitReached,
-			"daily_limit": allowance.DailyLimit,
-			"used_today":  allowance.UsedToday,
-			"reset_at":    nextCreditResetAt(time.Now().UTC()),
+			"error":            billing.AllowanceDailyLimitReached,
+			"daily_limit":      allowance.DailyLimit,
+			"used_today":       allowance.UsedToday,
+			"required_credits": allowance.RequiredCredits,
+			"reset_at":         nextCreditResetAt(time.Now().UTC()),
 		})
 	case billing.AllowanceInsufficientCredits, billing.AllowanceFeatureLocked, billing.AllowanceGuestNotAllowed:
 		c.JSON(http.StatusPaymentRequired, gin.H{
@@ -1032,6 +1092,15 @@ func (s *Server) saveEntry(c *gin.Context) {
 	} else if len(fields) > 0 {
 		c.JSON(422, gin.H{"error": "invalid_entry", "fields": fields})
 		return
+	}
+	if input.EventID != nil {
+		if message, err := entryEventProblem(userID, *input.EventID, input.Type, input.PurposeType); err != nil {
+			c.JSON(500, gin.H{"error": "event_lookup_failed"})
+			return
+		} else if message != "" {
+			c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"event_id": message}})
+			return
+		}
 	}
 
 	idempotencyKey, idempotencyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
@@ -1341,6 +1410,28 @@ func (s *Server) updateEntry(c *gin.Context) {
 			return
 		}
 	}
+	purposeType := entry.PurposeType
+	if input.PurposeType != nil {
+		purposeType = *input.PurposeType
+	}
+	eventID := entry.EventID
+	if input.EventID.Set {
+		eventID = input.EventID.Value
+		if eventID != nil {
+			if message, err := entryEventProblem(userID, *eventID, entryType, purposeType); err != nil {
+				c.JSON(500, gin.H{"error": "event_lookup_failed"})
+				return
+			} else if message != "" {
+				c.JSON(422, gin.H{"error": "invalid_entry", "fields": gin.H{"event_id": message}})
+				return
+			}
+		}
+	} else if eventID != nil && !entryFitsEvent(entryType, purposeType) {
+		// An expense edited into income leaves its event: events hold
+		// expenses only, and nobody would think to unlink it first.
+		eventID = nil
+	}
+	entry.EventID = eventID
 	if input.Title != nil {
 		entry.Title = *input.Title
 	}
@@ -1768,6 +1859,22 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 		}
 		attachments = append(attachments, splitAttachments...)
 
+		var feedbackAttachments []models.StringArray
+		if err := tx.Model(&models.Feedback{}).Where("user_id = ?", user.ID).Pluck("attachments", &feedbackAttachments).Error; err != nil {
+			return err
+		}
+		for _, files := range feedbackAttachments {
+			attachments = append(attachments, files...)
+		}
+
+		// Payments are kept as the financial record (GST, Razorpay
+		// reconciliation); only the link to the person goes. Clearing
+		// subscription_id too lets the user_subscriptions delete below run.
+		if err := tx.Model(&models.Payment{}).Where("user_id = ?", user.ID).
+			Updates(map[string]any{"user_id": nil, "subscription_id": nil}).Error; err != nil {
+			return fmt.Errorf("detach payments: %w", err)
+		}
+
 		guestDeviceHash := ""
 		if user.DeviceID != nil {
 			guestDeviceHash = billing.HashUsageKey(*user.DeviceID)
@@ -1818,6 +1925,13 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.SplitFriend{}, "split friends"},
 			{&models.BudgetAlert{}, "budget alerts"},
 			{&models.Budget{}, "budgets"},
+			{&models.CardStatementReminder{}, "card statement reminders"},
+			{&models.CardStatementPayment{}, "card statement payments"},
+			{&models.CardEMIInstallment{}, "card EMI installments"},
+			{&models.CardEMIPlan{}, "card EMI plans"},
+			{&models.CardStatement{}, "card statements"},
+			{&models.MonthlyReview{}, "monthly reviews"},
+			{&models.Feedback{}, "feedback"},
 			{&models.SubscriptionReminder{}, "subscription reminders"},
 			{&models.SubscriptionOccurrence{}, "subscription occurrences"},
 			{&models.Subscription{}, "subscriptions"},
@@ -1827,6 +1941,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
 			{&models.Entry{}, "entries"},
+			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
 			{&models.AuthSession{}, "auth sessions"},
 		}
@@ -2008,6 +2123,11 @@ func (s *Server) saveAccount(c *gin.Context) {
 	}
 	account := models.Account{UserID: userID}
 	input.apply(&account)
+	if input.CurrentBalance != nil {
+		// A new account has no entries, so today's balance is its opening.
+		account.Balance = *input.CurrentBalance
+		account.BalanceTracked = true
+	}
 	var accountCount int64
 	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
 		c.JSON(500, gin.H{"error": "failed_count_accounts"})
@@ -2098,6 +2218,15 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	input.apply(&account)
+	if input.CurrentBalance != nil {
+		opening, err := openingForCurrentBalance(userID, account.ID, *input.CurrentBalance)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed_load_account_activity"})
+			return
+		}
+		account.Balance = opening
+		account.BalanceTracked = true
+	}
 	// Reaching the edit handler means the user intentionally reviewed the
 	// account, even when they kept some optional fields empty.
 	account.AutoCreated = false

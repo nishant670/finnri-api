@@ -723,6 +723,7 @@ func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRe
 		_, _ = request.creditService.FinalizeUsage(request.usageEventID, billing.ProviderUsage{
 			Status:           billing.UsageStatusFailedAfterProvider,
 			ErrorCode:        "question_lookup_failed",
+			Intent:           billing.UsageIntentQuestion,
 			Provider:         "openai",
 			Model:            s.cfg.OpenAILlmModel,
 			InputChars:       &request.inputChars,
@@ -737,7 +738,10 @@ func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRe
 		return
 	}
 
-	credits, err := s.finalizeParseSuccess(
+	// Recorded as a question so AI usage can say "Ask Finnri" rather than the
+	// "Text capture" the reservation was made under. The price does not move.
+	credits, err := s.finalizeParseSuccessAs(
+		billing.UsageIntentQuestion,
 		request.creditService,
 		request.usageEventID,
 		request.subject,

@@ -10,9 +10,12 @@ import "time"
 // for, which is what makes a duplicate webhook harmless: the second delivery
 // finds the payment already captured and stops.
 type Payment struct {
-	ID     uint  `gorm:"primaryKey" json:"id"`
-	UserID uint  `gorm:"index;not null" json:"user_id"`
-	User   *User `json:"-" gorm:"foreignKey:UserID"`
+	ID uint `gorm:"primaryKey" json:"id"`
+	// UserID is nil once the person has deleted their account. The payment
+	// itself is kept as the financial record (GST, Razorpay reconciliation),
+	// so deleting the user sets this to NULL instead of deleting the row.
+	UserID *uint `gorm:"index" json:"user_id"`
+	User   *User `json:"-" gorm:"foreignKey:UserID;constraint:OnDelete:SET NULL"`
 	PlanID uint  `gorm:"index;not null" json:"plan_id"`
 	Plan   *Plan `json:"plan,omitempty" gorm:"foreignKey:PlanID"`
 
@@ -33,7 +36,7 @@ type Payment struct {
 	// SubscriptionID is set when the capture actually granted a period, which
 	// is what a refund needs in order to know what to take back.
 	SubscriptionID *uint             `gorm:"index" json:"subscription_id,omitempty"`
-	Subscription   *UserSubscription `json:"-" gorm:"foreignKey:SubscriptionID"`
+	Subscription   *UserSubscription `json:"-" gorm:"foreignKey:SubscriptionID;constraint:OnDelete:SET NULL"`
 
 	// PromotionCode names the offer this order was priced under ("" for full
 	// price), and OriginalAmountMinor is what it would have cost without it.
@@ -54,6 +57,29 @@ const (
 	PaymentStatusFailed   = "failed"
 	PaymentStatusRefunded = "refunded"
 )
+
+// PaymentRefund is one refund Razorpay made against a payment, keyed by its
+// refund id.
+//
+// Razorpay announces a refund twice — refund.created, then refund.processed —
+// under different event ids, so deduplicating events was not enough: each
+// added the amount again, and ₹50 back on a ₹100 pass was recorded as the
+// whole ₹100, which ends the pass. The refund id is the same in both, and this
+// row is what makes the second one a no-op.
+type PaymentRefund struct {
+	ID        uint `gorm:"primaryKey" json:"id"`
+	PaymentID uint `gorm:"index;not null" json:"payment_id"`
+	// Cascade, like payments to users: deleting an account deletes its
+	// payments, and a refund row must not stand in the way.
+	Payment          *Payment `json:"-" gorm:"foreignKey:PaymentID;constraint:OnDelete:CASCADE"`
+	Provider         string   `gorm:"type:varchar(40);not null;uniqueIndex:idx_payment_refunds_identity" json:"provider"`
+	ProviderRefundID string   `gorm:"type:varchar(120);not null;uniqueIndex:idx_payment_refunds_identity" json:"provider_refund_id"`
+	AmountMinor      int64    `gorm:"not null" json:"amount_minor"`
+	// Status is Razorpay's word as last seen: created, then processed.
+	Status    string    `gorm:"type:varchar(24);not null;default:''" json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 // PaymentWebhookEvent records every webhook the provider delivers, verified or
 // not. It is the idempotency ledger: the unique index on (provider, event_id)

@@ -47,7 +47,7 @@ CAPTURE SCHEMA (no other keys):
   "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null",
   "card_network": "Visa|Mastercard|Amex|Rupay|null",
   "account_hint": string|null,
-  "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Refund|Other|null",
+  "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Dividend|Refund|Other|null",
   "merchant": string|null,
   "tag": string|null,
   "purpose_type": "normal_spend|investment|lending|refund|reimbursable|donation|null",
@@ -140,7 +140,7 @@ UNSUPPORTED REASONS — use these rather than guessing at an answer:
 - budgets — budget limits, remaining budget, budget progress.
 - too_complex — a real ledger question the schema above cannot express (multiple unrelated conditions, "compare X to Y", "everything except Z").
 
-POLICY: Confirm-first. Expense categories are Food & Drinks, Transport, Travel, Shopping, Bills, Entertainment, Family/Gifts, and Misc. Income categories are Salary, Freelance, Interest, Refund, and Other; never use an expense category for income. When uncertain about any field, DO NOT guess. For an uncertain expense category use "Misc"; for uncertain income use "Other". Set needs_confirmation.category=true and add a concise question to clarifications[] instead of leaving category null. For other nullable fields, leave them null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
+POLICY: Confirm-first. Expense categories are Food & Drinks, Transport, Travel, Shopping, Bills, Entertainment, Family/Gifts, and Misc. Income categories are Salary, Freelance, Interest, Dividend, Refund, and Other (Dividend is a payout from shares or mutual funds; Interest is from a bank, FD or loan given); never use an expense category for income. When uncertain about any field, DO NOT guess. For an uncertain expense category use "Misc"; for uncertain income use "Other". Set needs_confirmation.category=true and add a concise question to clarifications[] instead of leaving category null. For other nullable fields, leave them null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
 
 GUARDRAILS:
 - Always include stage, every schema field, missing_fields, confidence, needs_confirmation, and clarifications.

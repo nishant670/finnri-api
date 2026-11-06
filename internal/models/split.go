@@ -99,6 +99,16 @@ type SplitGroup struct {
 	// group screen (only a trip has dates), so it belongs to the group rather
 	// than to whoever happens to be looking at it.
 	Kind string `gorm:"type:varchar(16);not null;default:other" json:"kind"`
+	// KindLabel and KindIcon name an "other" group in the creator's own words —
+	// "Office", "Diwali" — with the icon the app shows beside it. They describe
+	// the group, so every member sees the same pair. Both are empty for the
+	// four built-in kinds, which carry their own name and icon.
+	KindLabel string `gorm:"type:varchar(32);not null;default:''" json:"kind_label"`
+	KindIcon  string `gorm:"type:varchar(48);not null;default:''" json:"kind_icon"`
+	// BalanceAlertAmount is the group's balance limit; 0 means no alert. When
+	// any one person's balance with a member in this group reaches it — either
+	// way round — that member is told, once, until it drops back below.
+	BalanceAlertAmount Money `gorm:"type:numeric(19,2);not null;default:0" json:"balance_alert_amount"`
 	// PhotoURL is the group's picture, hosted on our own upload origin. It is a
 	// property of the group rather than of whoever is looking at it: a photo
 	// kept on the device that picked it would be invisible to every other
@@ -228,6 +238,18 @@ type SplitGroupUserMember struct {
 // This table is the missing half. For every non-owner member there is one row
 // per slot they are not, pointing at the row in their own friend list that
 // stands for that person. The owner has no rows here and needs none.
+// SplitGroupBalanceAlert records that a member was already told a balance in a
+// group reached the group's limit, so the next expense does not tell them
+// again. The row goes when the balance drops back under the limit, which
+// re-arms the alert. FriendID is in UserID's own namespace.
+type SplitGroupBalanceAlert struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	GroupID   uint      `gorm:"not null;uniqueIndex:idx_split_group_balance_alert_pair" json:"group_id"`
+	UserID    uint      `gorm:"not null;uniqueIndex:idx_split_group_balance_alert_pair" json:"user_id"`
+	FriendID  uint      `gorm:"not null;uniqueIndex:idx_split_group_balance_alert_pair" json:"friend_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type SplitGroupMemberLink struct {
 	ID      uint       `gorm:"primaryKey" json:"id"`
 	GroupID uint       `gorm:"index;not null" json:"group_id"`

@@ -3,8 +3,6 @@ package ai
 import (
 	"context"
 	"fmt"
-	"log"
-	"strings"
 )
 
 // ReceiptImageParser reads one photographed bill or receipt into a capture
@@ -47,8 +45,9 @@ Step 2, return ONE transaction for the main document, never one per line item:
  "total_label": string|null, "total_as_printed": string|null,
  "type": "expense|income", "title": string|null, "amount": number|null, "currency": "INR, or the ISO code of the currency printed on the bill",
  "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null", "card_network": "Visa|Mastercard|Amex|Rupay|null",
- "account_hint": string|null, "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Refund|Other|null",
+ "account_hint": string|null, "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Dividend|Refund|Other|null",
  "merchant": string|null, "tags": [string], "note": string|null, "date": "YYYY-MM-DD"|null, "time": "HH:MM"|null,
+ "balance_after": number|null,
  "confidence": {"amount": 0..1, "merchant": 0..1, "date": 0..1, "category": 0..1, "mode": 0..1, "type": 0..1},
  "missing_fields": [string], "clarifications": [string]}
 
@@ -61,6 +60,8 @@ Rules:
 - type is "expense" unless the document clearly shows money received (a refund credit, salary slip, money received screen).
 - title is 2-4 words a person would write, like "Dinner at Barbeque Nation" or "Petrol". merchant is the shop or brand name as printed, cleaned of legal suffixes.
 - mode only when the main document or its own payment slip says how it was paid (UPI ref, card ending, "CASH"); card_network only when printed there. account_hint is the bank or wallet that paid, only when the main document or its own payment slip shows it (e.g. "HDFC", "Paytm"), never a card number, never from an unrelated paper.
+- A wallet or prepaid card top-up notice ("Your Pluxee Card has been credited", "Meal Wallet loaded with Rs 2200") is income received INTO that wallet: type "income", mode "Wallets", account_hint the wallet's brand as printed (e.g. "Pluxee", "Zeta"). A meal, food or benefit wallet loaded by an employer (Pluxee, Sodexo, Zeta, meal card, meal allowance) is category "Salary": it is part of pay.
+- balance_after is the account or wallet balance the document prints after this transaction ("current balance", "available balance", "Avl Bal"), as a number. null when none is printed. Never the transaction amount, a credit limit or a reward-points figure.
 - note is a short plain-language line about what was bought, e.g. "2 pizzas, 1 drink". Never copy addresses, phone numbers, GSTINs, card numbers or names of people.
 - date is the transaction date printed on the main document. If the year is missing, use the most recent such date not after today. If no date is printed, null and list "date" in missing_fields.
 - summary is one short line describing what you read, e.g. "Domino's bill, Rs 548, 12 Sep". It is shown back to the user.
@@ -68,22 +69,11 @@ Rules:
 Today is %s.`
 
 // ParseReceiptImage asks the vision model for a single draft built from one
-// receipt image. If the configured vision model is not available to this key,
-// it retries once on the text model, so a rollout to a key without access
-// degrades to the old reader instead of failing every scan.
+// receipt image.
 func (c *OpenAIClient) ParseReceiptImage(ctx context.Context, image StatementImage, today string) ([]byte, Usage, error) {
 	if len(image.Data) == 0 {
 		return nil, Usage{}, fmt.Errorf("no receipt image")
 	}
 	prompt := fmt.Sprintf(receiptImagePrompt, today)
-	model := strings.TrimSpace(c.cfg.OpenAIVisionModel)
-	if model == "" {
-		model = c.cfg.OpenAILlmModel
-	}
-	raw, usage, err := c.completeWithImagesUsing(ctx, "receipt", model, c.cfg.OpenAIVisionReasoningEffort, prompt, []StatementImage{image}, receiptMaxTokens)
-	if err != nil && model != c.cfg.OpenAILlmModel && modelUnavailable(err) {
-		log.Printf("receipt vision model %s unavailable, retrying on %s: %v", model, c.cfg.OpenAILlmModel, err)
-		return c.completeWithImagesUsing(ctx, "receipt", c.cfg.OpenAILlmModel, "", prompt, []StatementImage{image}, receiptMaxTokens)
-	}
-	return raw, usage, err
+	return c.completeWithVisionModel(ctx, "receipt", prompt, []StatementImage{image}, receiptMaxTokens)
 }

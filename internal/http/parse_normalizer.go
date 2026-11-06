@@ -19,7 +19,7 @@ var allowedParseRootFields = map[string]bool{
 	"date": true, "time": true, "source_text": true, "recurring_candidate": true,
 	"subscription_candidate": true, "split_candidate": true, "split_candidate_details": true,
 	"refundable_amount": true, "refund_expected_on": true, "refund_received": true,
-	"emi_tenure_months": true, "emi_rate_pct": true,
+	"emi_tenure_months": true, "emi_rate_pct": true, "balance_after": true,
 	"confidence": true, "needs_confirmation": true, "missing_fields": true,
 	"clarifications": true,
 }

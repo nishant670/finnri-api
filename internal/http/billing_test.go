@@ -87,6 +87,10 @@ func TestGuestCreditAndUsageEndpoints(t *testing.T) {
 	if event.ActionCode != "transaction_parse_text" || event.Status != billing.UsageStatusSucceeded || event.FinalCredits != 5 {
 		t.Fatalf("unexpected usage event: %#v", event)
 	}
+	// A capture is not a question; only an answered question carries an intent.
+	if event.Intent != "" {
+		t.Fatalf("capture usage intent = %q, want empty", event.Intent)
+	}
 
 	var raw map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {

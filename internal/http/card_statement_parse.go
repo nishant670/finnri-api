@@ -141,3 +141,40 @@ func takeLeadingDate(row string, fallbackYear int) (string, string, bool) {
 func collapseSpaces(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
+
+// anchorLineYears corrects the year on rows a model dated wrongly.
+//
+// Statements often print "07 Oct" with no year, and the models fill one in
+// unreliably: in a side-by-side, gpt-4o-mini put every such row in 2023 on
+// every run, and gpt-4.1-mini once put them in 2025. A wrong year is worse than
+// a skipped row — the row matches nothing the user logged, so it is offered as
+// missing and imported years away from the bill.
+//
+// Every row on a statement sits within a cycle of the statement's own date, so
+// a row more than six months from `anchor` cannot be right as dated. It keeps
+// its month and day and takes the year that puts it on or just before the
+// anchor. Rows already near the anchor are left alone, so a printed year is
+// never second-guessed.
+func anchorLineYears(lines []statementLine, anchor time.Time) {
+	const maxDrift = 183 * 24 * time.Hour
+	const grace = 7 * 24 * time.Hour
+	anchor = time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.UTC)
+	for index := range lines {
+		date, err := time.Parse(apiDateLayout, lines[index].Date)
+		if err != nil {
+			continue
+		}
+		if drift := date.Sub(anchor); drift <= maxDrift && drift >= -maxDrift {
+			continue
+		}
+		moved := time.Date(anchor.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+		if moved.Day() != date.Day() {
+			// 29 February in a year without one: leave it as read.
+			continue
+		}
+		if moved.After(anchor.Add(grace)) {
+			moved = moved.AddDate(-1, 0, 0)
+		}
+		lines[index].Date = moved.Format(apiDateLayout)
+	}
+}

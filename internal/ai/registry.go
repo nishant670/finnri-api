@@ -17,6 +17,7 @@ const (
 	ActionFutureAIWeeklySummary       ActionCode = "future_ai_weekly_summary"
 	ActionFutureAIBulkCategorization  ActionCode = "future_ai_bulk_categorization"
 	ActionFutureAIStatementImport     ActionCode = "future_ai_statement_import"
+	ActionStatementPDFRead            ActionCode = "statement_pdf_read"
 )
 
 type InputKind string
@@ -168,6 +169,22 @@ func DefaultActionRegistry() ActionRegistry {
 			},
 			PaidPlanRequired: true,
 			Implemented:      false,
+		},
+		{
+			// A PDF's text is read, not its pixels, which costs a fraction of
+			// the screenshot read — so it is priced at half and open to every
+			// plan, as the free PDF read it replaces was.
+			Code:               ActionStatementPDFRead,
+			Label:              "Card statement PDF read",
+			InputKind:          InputKindFile,
+			GuestAllowed:       true,
+			DefaultCredits:     50,
+			MaxCredits:         150,
+			ProviderOperations: []ProviderOperation{ProviderOperationLLM},
+			InputLimits: ActionInputLimits{
+				MaxFileBytes: 12 * 1024 * 1024,
+			},
+			Implemented: true,
 		},
 		{
 			Code:               ActionFutureAIStatementImport,
