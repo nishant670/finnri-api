@@ -547,6 +547,20 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE user_categories
 			ADD CONSTRAINT user_categories_type_check
 			CHECK (type IN ('expense', 'income'))`,
+		// See migrations/0071_create_account_rules.sql.
+		`CREATE TABLE IF NOT EXISTS account_rules (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			phrase VARCHAR(40) NOT NULL,
+			phrase_key VARCHAR(40) NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_account_rules_user_phrase
+			ON account_rules (user_id, phrase_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_rules_account
+			ON account_rules (account_id)`,
 		// See migrations/0064_create_events.sql. AutoMigrate adds
 		// entries.event_id; the table and the foreign key are created here, and
 		// the key is replaced rather than trusted, because a GORM-made one would
