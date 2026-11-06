@@ -275,6 +275,12 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE feedback
 			ADD COLUMN IF NOT EXISTS admin_notes TEXT NOT NULL DEFAULT '',
 			ADD COLUMN IF NOT EXISTS resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL`,
+		// P59: the app and phone a report came from (migration 0069).
+		`ALTER TABLE feedback
+			ADD COLUMN IF NOT EXISTS app_version VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS device VARCHAR(120) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS os_version VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS screen VARCHAR(80) NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created
 			ON feedback (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created
@@ -887,6 +893,12 @@ func runtimeSchemaStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// P57: the entry an AI read made (migration 0069). No foreign key.
+		`ALTER TABLE ai_usage_events
+			ADD COLUMN IF NOT EXISTS entry_id BIGINT`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_entry
+			ON ai_usage_events (entry_id)
+			WHERE entry_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_user_started
 			ON ai_usage_events (user_id, started_at DESC)
 			WHERE user_id IS NOT NULL`,

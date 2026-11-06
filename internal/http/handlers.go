@@ -812,6 +812,8 @@ func (s *Server) handleParse(c *gin.Context) {
 	for key, value := range credits {
 		parsedObj[key] = value
 	}
+	// Sent back with the saved entry, so AI usage can open what this read made.
+	parsedObj["ai_request_id"] = usageEvent.RequestID
 	c.JSON(200, parsedObj)
 }
 
@@ -1146,6 +1148,7 @@ func (s *Server) saveEntry(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
+	linkAIUsageToEntry(c, input.AIRequestID, entry.ID)
 	// No notification here: the client already confirms its own save inline. Only
 	// events the user could not otherwise know about belong in the inbox.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
