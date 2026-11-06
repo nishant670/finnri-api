@@ -6,7 +6,8 @@
 -- by, or cascade into, the usage ledger. The app shows a row whose entry is
 -- gone as such.
 --
--- feedback.app_version / device / os_version / screen are filled in by the app
+-- feedbacks.app_version / device / os_version / screen (GORM's table, as in
+-- migration 0058; the older `feedback` table is unused) are filled in by the app
 -- when the person leaves "Include app and phone details" on. Empty otherwise.
 --
 -- internal/database/schema.go runs the same statements on every migrate.
@@ -16,7 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_entry
     ON ai_usage_events (entry_id)
     WHERE entry_id IS NOT NULL;
 
-ALTER TABLE feedback
+ALTER TABLE feedbacks
     ADD COLUMN IF NOT EXISTS app_version VARCHAR(40) NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS device VARCHAR(120) NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS os_version VARCHAR(40) NOT NULL DEFAULT '',

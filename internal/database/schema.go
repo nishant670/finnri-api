@@ -275,8 +275,9 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE feedback
 			ADD COLUMN IF NOT EXISTS admin_notes TEXT NOT NULL DEFAULT '',
 			ADD COLUMN IF NOT EXISTS resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL`,
-		// P59: the app and phone a report came from (migration 0069).
-		`ALTER TABLE feedback
+		// P59: the app and phone a report came from (migration 0069). The
+		// live table is GORM's `feedbacks`, as in migration 0058.
+		`ALTER TABLE feedbacks
 			ADD COLUMN IF NOT EXISTS app_version VARCHAR(40) NOT NULL DEFAULT '',
 			ADD COLUMN IF NOT EXISTS device VARCHAR(120) NOT NULL DEFAULT '',
 			ADD COLUMN IF NOT EXISTS os_version VARCHAR(40) NOT NULL DEFAULT '',
