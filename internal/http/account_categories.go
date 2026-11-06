@@ -42,7 +42,7 @@ type accountCategoryRow struct {
 // month" (P63): expenses paid from or charged to the account, by category, on
 // the same terms as the dashboard's "spent" — no card bill payments, no
 // investments — with the month before for comparison. `month` is YYYY-MM and
-// defaults to the current month.
+// defaults to the current month in `tz` (an IANA zone, defaulting as Ask does).
 func (s *Server) listAccountCategories(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	accountID, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -60,16 +60,19 @@ func (s *Server) listAccountCategories(c *gin.Context) {
 		return
 	}
 
-	month := time.Now().In(time.Local)
+	// The user's month, not the server's: at 2 am IST on the 1st it is
+	// already the new month for them while UTC is still on the old one.
+	location := s.questionLocation(c.Query("tz"))
+	month := time.Now().In(location)
 	if raw := c.Query("month"); raw != "" {
-		parsed, parseErr := time.ParseInLocation("2006-01", raw, time.Local)
+		parsed, parseErr := time.ParseInLocation("2006-01", raw, location)
 		if parseErr != nil {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_month", "fields": gin.H{"month": "must be YYYY-MM"}})
 			return
 		}
 		month = parsed
 	}
-	start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.Local)
+	start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, location)
 	previous := start.AddDate(0, -1, 0)
 
 	current, err := accountCategoryTotals(userID, account.ID, start)
