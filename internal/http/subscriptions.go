@@ -291,6 +291,13 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 	if loggedEntry != nil {
 		_ = maybeCreateBudgetAlertsForEntry(*loggedEntry)
 	}
+	// Paid: its due and overdue reminders are done (P49). A cancel-by
+	// reminder is about something else and stays.
+	resolveNotifications(database.DB.
+		Where("user_id = ? AND type IN ?", userID, []string{"subscription.due", "subscription.overdue"}).
+		Where("id IN (?)", database.DB.Model(&models.SubscriptionReminder{}).
+			Select("notification_id").
+			Where("user_id = ? AND subscription_id = ? AND notification_id IS NOT NULL", userID, subscription.ID)))
 	if finished {
 		notifyRecurringCompleted(subscription)
 	}
@@ -387,6 +394,7 @@ func createSubscriptionReminderIfNeeded(db *gorm.DB, subscription models.Subscri
 		notification := models.Notification{
 			UserID: subscription.UserID, Type: "subscription." + kind,
 			Title: title, Body: body, ActionURL: "/subscriptions",
+			Amount: moneyPointer(subscription.Amount), DueDate: datePointer(dueDate),
 		}
 		if err := tx.Create(&notification).Error; err != nil {
 			return err
