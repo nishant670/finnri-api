@@ -632,7 +632,9 @@ func (s *Server) handleParse(c *gin.Context) {
 		usageEvent = &event
 	}
 
-	parsed, parseUsage, err := s.parser.ParseText(ctx, withFollowUpContext(transcript, c.PostForm("context_question")), tz)
+	contextQuestion := c.PostForm("context_question")
+	previousQuestion, hasPreviousQuestion := decodeQuestionContext(contextQuestion)
+	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz)
 	// Every finalisation below this line follows a call the provider actually
 	// answered, so each one carries what that answer cost. The `could_not_parse`
 	// branch is the exception: the call itself failed and reported nothing.
@@ -678,8 +680,19 @@ func (s *Server) handleParse(c *gin.Context) {
 	// `parsedQuestionQuery` is the model's answer plus a deterministic backstop
 	// for the fragments it routes to capture — "today spend" and its kind. See
 	// parse_intent.go.
-	if rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript); isQuestion {
+	rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript)
+	// A follow-up Finnri offered is a question whatever the model made of
+	// it: "And the day before?" names no metric for the backstop to find.
+	if !isQuestion && hasPreviousQuestion && chipFollowUp(transcript) != "" {
+		rawQuery, isQuestion = nil, true
+	}
+	if isQuestion {
+		var previous *ledgerQuestion
+		if hasPreviousQuestion {
+			previous = &previousQuestion
+		}
 		s.answerParsedQuestion(c, answeredQuestionRequest{
+			previous:      previous,
 			userID:        c.MustGet("userID").(uint),
 			transcript:    transcript,
 			tz:            tz,
