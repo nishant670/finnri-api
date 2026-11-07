@@ -31,6 +31,8 @@ func TestANamedDayIsThatDayNotItsMonth(t *testing.T) {
 		{"2026-10-09 expenses", "2026-10-09"},
 		// No year, and the date is still to come this year: the last one.
 		{"25 December spends", "2025-12-25"},
+		// "to" introduces the payee here, not the end of a range.
+		{"how much did I pay to Swiggy on 9 October", "2026-10-09"},
 	} {
 		t.Run(testCase.transcript, func(t *testing.T) {
 			got := applySpokenDay(testCase.transcript, month, now)
@@ -52,6 +54,9 @@ func TestADayLeftAloneWhenItIsOneEndOfARange(t *testing.T) {
 		"spent in October",
 		"spent 500 on food",
 		"food in the week of 9 October",
+		"spent 1 to 9 October",
+		"spends from 9 oct onwards",
+		"9 Oct till today",
 	} {
 		if got := applySpokenDay(transcript, question, now); got.StartDate != question.StartDate || got.EndDate != question.EndDate {
 			t.Fatalf("%q moved the period to %s..%s", transcript, got.StartDate, got.EndDate)
@@ -270,6 +275,9 @@ func TestACategoryTheModelDroppedIsReadFromTheWords(t *testing.T) {
 		"salary received this year":    "Salary",
 	} {
 		question := ledgerQuestion{Metric: metricSpendTotal}
+		if want == "Salary" {
+			question.Metric = metricIncomeTotal
+		}
 		applyNamedCategory(transcript, &question)
 		if question.Category != want {
 			t.Fatalf("%q = %q, want %q", transcript, question.Category, want)
@@ -281,5 +289,85 @@ func TestACategoryTheModelDroppedIsReadFromTheWords(t *testing.T) {
 		if question.Category != "" {
 			t.Fatalf("%q read a category %q out of nothing", transcript, question.Category)
 		}
+	}
+}
+
+func TestShortKeywordsMatchWholeWordsOnly(t *testing.T) {
+	user := newQuestionUser(t)
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Ola ride", Type: "expense", Amount: questionMoney(t, "250.00"), Category: "Transport", Date: thisMonthDate(t, 1)})
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Coca cola", Type: "expense", Amount: questionMoney(t, "40.00"), Category: "Food & Drinks", Date: thisMonthDate(t, 1)})
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Cabbage", Type: "expense", Amount: questionMoney(t, "30.00"), Category: "Food & Drinks", Date: thisMonthDate(t, 1)})
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Taxi to airport", Type: "expense", Amount: questionMoney(t, "900.00"), Category: "Travel", Date: thisMonthDate(t, 1)})
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Premium plan", Type: "expense", Amount: questionMoney(t, "499.00"), Category: "Bills", Date: thisMonthDate(t, 1)})
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Car EMI", Type: "expense", Amount: questionMoney(t, "12000.00"), Category: "Bills", Date: thisMonthDate(t, 1)})
+
+	titles := func(search string) string {
+		t.Helper()
+		query, invalid := buildFilteredEntriesQuery(user.ID, url.Values{"q": {search}}, false)
+		if len(invalid) > 0 {
+			t.Fatalf("search %q rejected: %v", search, invalid)
+		}
+		var got []string
+		if err := query.Order("entries.amount desc").Pluck("entries.title", &got).Error; err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(got, ",")
+	}
+	if got := titles("cab|taxi|ola"); got != "Taxi to airport,Ola ride" {
+		t.Fatalf("cab search = %s, want the taxi and the Ola ride only", got)
+	}
+	if got := titles(keywordSearch([]string{"emi"})); got != "Car EMI" {
+		t.Fatalf("emi search = %s, want only the EMI", got)
+	}
+	// A plain search box query is untouched: substring, as always.
+	if got := titles("ola"); got != "Ola ride,Coca cola" {
+		t.Fatalf("plain search = %s", got)
+	}
+}
+
+func TestReviewGuards(t *testing.T) {
+	if got, ok := broadCategory("Family & Gifts"); !ok || got != "Family/Gifts" {
+		t.Fatalf("Family & Gifts = %q %v", got, ok)
+	}
+	if got, ok := broadCategory("food and drinks"); !ok || got != "Food & Drinks" {
+		t.Fatalf("food and drinks = %q %v", got, ok)
+	}
+
+	// Net over one category would be that category's total in disguise.
+	net := ledgerQuestion{Metric: metricNet}
+	applyNamedCategory("how much did I save after salary this month", &net)
+	if net.Category != "" {
+		t.Fatalf("net picked up category %q", net.Category)
+	}
+	// An income category on a spending question counts nothing.
+	spend := ledgerQuestion{Metric: metricSpendTotal}
+	applyNamedCategory("how much of my salary did I spend", &spend)
+	if spend.Category != "" {
+		t.Fatalf("spend picked up income category %q", spend.Category)
+	}
+
+	// Keywords with a category the user never said: the category goes.
+	both := ledgerQuestion{Metric: metricSpendTotal, Category: "Transport", Keywords: []string{"fuel", "petrol"}, SubjectLabel: "Fuel"}
+	applyNarrowSubject("fuel this month", &both)
+	if both.Category != "" || len(both.Keywords) != 2 {
+		t.Fatalf("question = %+v, want keywords only", both)
+	}
+	named := ledgerQuestion{Metric: metricSpendTotal, Category: "Transport", Keywords: []string{"fuel"}}
+	applyNarrowSubject("transport spends on fuel", &named)
+	if named.Category != "Transport" {
+		t.Fatalf("a category the user named was dropped: %+v", named)
+	}
+}
+
+func TestAnItemTheUserGaveItsOwnCategoryUsesIt(t *testing.T) {
+	user := newQuestionUser(t)
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Term fee", Type: "expense", Amount: questionMoney(t, "1800.00"), Category: "Kids school", Date: thisMonthDate(t, 1)})
+	seedQuestionEntry(t, user.ID, models.Entry{Title: "Uniform", Type: "expense", Amount: questionMoney(t, "1200.00"), Category: "Kids school", Date: thisMonthDate(t, 1)})
+
+	envelope, response := askQuestion(t, user,
+		`{"metric":"spend_total","type":"expense","keywords":["school","kids school"],"subject":"Kids school","period":{"kind":"this_month"}}`,
+		"kids school spends this month")
+	if envelope.Answer.Amount == nil || *envelope.Answer.Amount != 3000 || envelope.Answer.Filters["category"] != "Kids school" {
+		t.Fatalf("answer = %s, want the user's Fuel category", response.Body.String())
 	}
 }

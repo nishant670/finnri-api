@@ -165,19 +165,21 @@ func buildFilteredEntriesQuery(
 	if search := strings.TrimSpace(get("q")); search != "" {
 		if len(search) > 200 {
 			fields["q"] = "must not exceed 200 characters"
-		} else if terms := searchAlternatives(search); len(terms) > 1 {
+		} else if strings.Contains(search, searchAlternativeSeparator) {
 			// "fuel|petrol|diesel" — the form an Ask Finnri answer hands the
-			// list — matches a row mentioning any one of them.
-			clauses := make([]string, 0, len(terms))
-			args := make([]any, 0, len(terms)*3)
-			for _, term := range terms {
-				pattern := "%" + strings.ToLower(term) + "%"
-				clauses = append(clauses, "LOWER(entries.title) LIKE ? OR LOWER(entries.merchant) LIKE ? OR LOWER(entries.notes) LIKE ?")
-				args = append(args, pattern, pattern, pattern)
+			// list — matches a row mentioning any one of them. Short words
+			// match whole words only; see searchTermClause.
+			if terms := searchAlternatives(search); len(terms) > 0 {
+				clauses := make([]string, 0, len(terms))
+				args := make([]any, 0, len(terms)*12)
+				for _, term := range terms {
+					clause, termArgs := searchTermClause(term)
+					clauses = append(clauses, clause)
+					args = append(args, termArgs...)
+				}
+				query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
 			}
-			query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
-		} else if len(terms) == 1 {
-			search = terms[0]
+		} else {
 			pattern := "%" + strings.ToLower(search) + "%"
 			if amount, ok := searchedAmount(search); ok {
 				// A search that reads as a figure — "20938", "20,938", "₹20,938.00" —

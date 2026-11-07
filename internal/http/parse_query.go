@@ -446,7 +446,7 @@ func (q ledgerQuestion) questionFilterValues() url.Values {
 		// The same filter with alternatives: "fuel|petrol|diesel" matches a row
 		// mentioning any of them, in the list's search box as much as here.
 		// A named shop is narrower than any item word, so it wins above.
-		values.Set("q", strings.Join(q.Keywords, searchAlternativeSeparator))
+		values.Set("q", keywordSearch(q.Keywords))
 	}
 	// There is deliberately no tag filter. The API has one, but the app's
 	// filter sheet does not, so an answer scoped by tag could not hand the
@@ -783,6 +783,7 @@ func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRe
 	resolveUserQuestionCategory(request.userID, &question)
 	applyNarrowSubject(request.transcript, &question)
 	applyNamedCategory(request.transcript, &question)
+	preferUserCategory(request.userID, &question)
 
 	// The last check before the number is computed, and the only one with the
 	// user's own words to hand. A query that filters on nothing, for a question

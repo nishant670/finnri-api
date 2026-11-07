@@ -137,6 +137,44 @@ func questionSubjectLabel(raw any, keywords []string) string {
 	return string(runes)
 }
 
+// keywordSearch is the list search for a set of keywords. A lone short word
+// keeps a trailing separator so the list matches it as a whole word too:
+// "emi" must not count "premium".
+func keywordSearch(keywords []string) string {
+	search := strings.Join(keywords, searchAlternativeSeparator)
+	if len(keywords) == 1 && len([]rune(keywords[0])) <= maxWholeWordTermRunes {
+		search += searchAlternativeSeparator
+	}
+	return search
+}
+
+// maxWholeWordTermRunes is the length at or under which an alternative is
+// matched as a whole word. "ola" inside "coca cola", "cab" inside "cabbage"
+// and "cng" inside nothing useful are the reason; longer words are matched
+// anywhere, as the search box always has.
+const maxWholeWordTermRunes = 3
+
+// searchTermClause is the condition one alternative adds to a list search.
+func searchTermClause(term string) (string, []any) {
+	term = strings.ToLower(term)
+	columns := []string{"entries.title", "entries.merchant", "entries.notes"}
+	clauses := make([]string, 0, len(columns))
+	args := make([]any, 0, len(columns)*4)
+	if len([]rune(term)) <= maxWholeWordTermRunes {
+		for _, column := range columns {
+			clauses = append(clauses, "LOWER("+column+") = ? OR LOWER("+column+") LIKE ? OR LOWER("+column+") LIKE ? OR LOWER("+column+") LIKE ?")
+			args = append(args, term, term+" %", "% "+term, "% "+term+" %")
+		}
+	} else {
+		pattern := "%" + term + "%"
+		for _, column := range columns {
+			clauses = append(clauses, "LOWER("+column+") LIKE ?")
+			args = append(args, pattern)
+		}
+	}
+	return strings.Join(clauses, " OR "), args
+}
+
 // searchAlternatives splits a list search into the terms any one of which
 // makes a match. A search without the separator is one term, as it always was.
 func searchAlternatives(search string) []string {
@@ -182,8 +220,39 @@ func resolveUserQuestionCategory(userID uint, question *ledgerQuestion) {
 	}
 
 	if question.Merchant == "" && len(question.Keywords) == 0 {
-		question.Keywords = []string{unknown}
-		question.SubjectLabel = questionSubjectLabel(nil, question.Keywords)
+		keywords := keywordFamilies[unknown]
+		if keywords == nil {
+			keywords = []string{unknown}
+		}
+		question.Keywords = normalizeQuestionKeywords(keywords)
+		question.SubjectLabel = questionSubjectLabel(unknown, question.Keywords)
+	}
+}
+
+// preferUserCategory answers an item question from the user's own category
+// when they made one for it. Someone who files fuel under a "Fuel" category
+// has said which rows are fuel, more reliably than any title search can.
+func preferUserCategory(userID uint, question *ledgerQuestion) {
+	if question.Metric == metricUnsupported || question.Category != "" ||
+		question.Merchant != "" || len(question.Keywords) == 0 || database.DB == nil {
+		return
+	}
+	custom, err := customCategoriesFor(database.DB, userID)
+	if err != nil {
+		return
+	}
+	names := append([]string{question.SubjectLabel}, question.Keywords...)
+	for _, list := range [][]string{custom.Expense, custom.Income} {
+		for _, category := range list {
+			for _, name := range names {
+				if name != "" && strings.EqualFold(strings.TrimSpace(category), strings.TrimSpace(name)) {
+					question.Category = category
+					question.Keywords = nil
+					question.SubjectLabel = ""
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -206,11 +275,17 @@ var (
 	isoDay = regexp.MustCompile(`\b(\d{4})-(\d{2})-(\d{2})\b`)
 )
 
-// rangeWords mean the date is one end of a window, not the window itself.
-var rangeWords = []string{
-	" to ", " till ", " until ", " upto ", " up to ", " between ", " from ",
-	" since ", " after ", " before ", " through ", " - ", "–", " week",
+// rangeLeadIns, said right before a date, make it one end of a window rather
+// than the window: "1 to 9 October", "since 9 Oct", "week of 9 October".
+// They are only read next to the date — "paid to Swiggy on 9 October" is still
+// a question about that one day.
+var rangeLeadIns = []string{
+	"to", "till", "until", "upto", "up to", "from", "since", "after", "before",
+	"through", "and", "-", "–", "week of", "month of",
 }
+
+// rangeTails, said right after a date, do the same: "9 Oct onwards".
+var rangeTails = []string{"to ", "till ", "until ", "upto ", "up to ", "onwards", "onward", "-", "–", "and "}
 
 type spokenDayMatch struct {
 	date  timepkg.Time
@@ -278,17 +353,28 @@ func spokenDay(transcript string, now timepkg.Time) (spokenDayMatch, string, boo
 	if text == "" {
 		return spokenDayMatch{}, text, false
 	}
-	padded := " " + text + " "
-	for _, word := range rangeWords {
-		if strings.Contains(padded, word) {
-			return spokenDayMatch{}, text, false
-		}
+	if containsWord(text, "between") {
+		return spokenDayMatch{}, text, false
 	}
 	matches := findSpokenDays(text, now)
 	if len(matches) != 1 {
 		return spokenDayMatch{}, text, false
 	}
-	return matches[0], text, true
+	match := matches[0]
+	before := strings.TrimSpace(text[:match.start])
+	for _, leadIn := range rangeLeadIns {
+		if before == leadIn || strings.HasSuffix(before, " "+leadIn) ||
+			((leadIn == "-" || leadIn == "–") && strings.HasSuffix(before, leadIn)) {
+			return spokenDayMatch{}, text, false
+		}
+	}
+	after := strings.TrimSpace(text[match.end:])
+	for _, tail := range rangeTails {
+		if strings.HasPrefix(after+" ", tail) {
+			return spokenDayMatch{}, text, false
+		}
+	}
+	return match, text, true
 }
 
 // applySpokenDay holds the question to the day the user named. "09 October
@@ -328,22 +414,40 @@ var broadCategoryWords = map[string]bool{
 
 // broadCategory resolves a word to a category only when the word names the
 // whole category: a built-in name, or one of the broad synonyms above.
+//
+// Names are compared on their letters alone, so "Family & Gifts", "family
+// gifts" and "Food and Drinks" find Family/Gifts and Food & Drinks.
 func broadCategory(value string) (string, bool) {
 	normalized := strings.ToLower(strings.Join(strings.Fields(value), " "))
 	if normalized == "" {
 		return "", false
 	}
+	key := categoryLetters(normalized)
 	for _, list := range [][]string{canonicalCategories, canonicalIncomeCategories} {
 		for _, category := range list {
-			if strings.ToLower(category) == normalized {
+			if categoryLetters(category) == key {
 				return category, true
 			}
 		}
 	}
-	if broadCategoryWords[normalized] {
-		return canonicalCategory(normalized)
+	for word := range broadCategoryWords {
+		if categoryLetters(word) == key {
+			return canonicalCategory(word)
+		}
 	}
 	return "", false
+}
+
+// categoryLetters keeps the letters of a category name, dropping "and".
+func categoryLetters(value string) string {
+	words := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !unicode.IsLetter(r) })
+	kept := words[:0]
+	for _, word := range words {
+		if word != "and" {
+			kept = append(kept, word)
+		}
+	}
+	return strings.Join(kept, "")
 }
 
 // categoryNamedIn finds a whole category the user's words name, for a query
@@ -396,9 +500,22 @@ func applyNamedCategory(transcript string, question *ledgerQuestion) {
 		len(question.Keywords) > 0 || question.UnknownCategory != "" {
 		return
 	}
-	if category, ok := categoryNamedIn(transcript); ok {
-		question.Category = category
+	// Net is income against spending; one category would make it either.
+	if question.Metric == metricNet {
+		return
 	}
+	category, ok := categoryNamedIn(transcript)
+	if !ok {
+		return
+	}
+	// A category only answers a question pointed the same way: "salary" on a
+	// spending total would count nothing and look like an answer.
+	_, isIncome := canonicalCategoryForType(category, "income")
+	if questionType := question.questionFilterValues().Get("type"); questionType != "" &&
+		(questionType == "income") != isIncome {
+		return
+	}
+	question.Category = category
 }
 
 // keywordFamilies widen a narrow word to the spellings the same purchase is
@@ -407,8 +524,9 @@ var keywordFamilies = map[string][]string{
 	"fuel":      {"fuel", "petrol", "diesel", "cng"},
 	"petrol":    {"fuel", "petrol", "diesel", "cng"},
 	"diesel":    {"fuel", "petrol", "diesel", "cng"},
-	"cab":       {"cab", "taxi", "uber", "ola", "rapido"},
-	"taxi":      {"cab", "taxi", "uber", "ola", "rapido"},
+	"cab":       {"cab", "cabs", "taxi", "uber", "ola", "rapido"},
+	"cabs":      {"cab", "cabs", "taxi", "uber", "ola", "rapido"},
+	"taxi":      {"cab", "cabs", "taxi", "uber", "ola", "rapido"},
 	"auto":      {"auto", "rickshaw"},
 	"rickshaw":  {"auto", "rickshaw"},
 	"groceries": {"grocery", "groceries", "kirana", "vegetables"},
@@ -424,11 +542,18 @@ var keywordFamilies = map[string][]string{
 // metro recharge; when the user said "fuel" and never said "transport", the
 // question is about fuel, and fuel is what gets searched for.
 func applyNarrowSubject(transcript string, question *ledgerQuestion) {
-	if question.Metric == metricUnsupported || question.Category == "" ||
-		question.Merchant != "" || len(question.Keywords) > 0 {
+	if question.Metric == metricUnsupported || question.Category == "" || question.Merchant != "" {
 		return
 	}
 	if named, ok := categoryNamedIn(transcript); ok && named == question.Category {
+		return
+	}
+	// Keywords and a category the user never said: the category only hides
+	// the item's rows filed anywhere else — petrol logged under Misc.
+	if len(question.Keywords) > 0 {
+		if _, builtIn := broadCategory(question.Category); builtIn {
+			question.Category = ""
+		}
 		return
 	}
 	text := strings.ToLower(strings.Join(strings.Fields(transcript), " "))
