@@ -10,8 +10,8 @@ const (
 	AppReleaseStatusPublished = "published"
 
 	// The four kinds of card on the app's "What's new" screen.
-	AppReleaseItemNew      = "new"      // a feature: screenshot and a Try it link
-	AppReleaseItemUI       = "ui"       // a new look: before and after screenshots
+	AppReleaseItemNew      = "new"      // a feature: a live preview and a Try it link
+	AppReleaseItemUI       = "ui"       // a new look: a live preview of the new screen
 	AppReleaseItemFix      = "fix"      // a bug fix: what was happening, what we fixed
 	AppReleaseItemImproved = "improved" // a one-line improvement
 )
@@ -49,21 +49,18 @@ type AppRelease struct {
 	UpdatedAt    time.Time        `json:"updated_at"`
 }
 
-// AppReleaseItem is one card on the "What's new" screen. Which fields apply
-// depends on Kind: Problem and Fix belong to a fix, BeforeImage and AfterImage
-// to a new look, DeepLink to a feature. Images are names in the release-media
-// store, never URLs, so a release moves between environments by re-uploading.
+// AppReleaseItem is one card on the "What's new" screen, as text. Which fields
+// apply depends on Kind: Problem and Fix belong to a fix, DeepLink to a
+// feature. Pictures are not stored: the build that has a feature draws its own
+// live preview, and an older build shows the text.
 type AppReleaseItem struct {
-	ID          uint   `gorm:"primaryKey" json:"id"`
-	ReleaseID   uint   `gorm:"not null;index" json:"release_id"`
-	Position    int    `gorm:"not null;default:0" json:"position"`
-	Kind        string `gorm:"type:varchar(12);not null" json:"kind"`
-	Title       string `gorm:"type:varchar(80);not null" json:"title"`
-	Body        string `gorm:"type:varchar(400);not null;default:''" json:"body"`
-	Problem     string `gorm:"type:varchar(300);not null;default:''" json:"problem"`
-	Fix         string `gorm:"type:varchar(300);not null;default:''" json:"fix"`
-	Image       string `gorm:"type:varchar(64);not null;default:''" json:"image"`
-	BeforeImage string `gorm:"type:varchar(64);not null;default:''" json:"before_image"`
-	AfterImage  string `gorm:"type:varchar(64);not null;default:''" json:"after_image"`
-	DeepLink    string `gorm:"type:varchar(200);not null;default:''" json:"deep_link"`
+	ID        uint   `gorm:"primaryKey" json:"id"`
+	ReleaseID uint   `gorm:"not null;index" json:"release_id"`
+	Position  int    `gorm:"not null;default:0" json:"position"`
+	Kind      string `gorm:"type:varchar(12);not null" json:"kind"`
+	Title     string `gorm:"type:varchar(80);not null" json:"title"`
+	Body      string `gorm:"type:varchar(400);not null;default:''" json:"body"`
+	Problem   string `gorm:"type:varchar(300);not null;default:''" json:"problem"`
+	Fix       string `gorm:"type:varchar(300);not null;default:''" json:"fix"`
+	DeepLink  string `gorm:"type:varchar(200);not null;default:''" json:"deep_link"`
 }

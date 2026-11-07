@@ -631,11 +631,13 @@ func runtimeSchemaStatements() []string {
 			body VARCHAR(400) NOT NULL DEFAULT '',
 			problem VARCHAR(300) NOT NULL DEFAULT '',
 			fix VARCHAR(300) NOT NULL DEFAULT '',
-			image VARCHAR(64) NOT NULL DEFAULT '',
-			before_image VARCHAR(64) NOT NULL DEFAULT '',
-			after_image VARCHAR(64) NOT NULL DEFAULT '',
 			deep_link VARCHAR(200) NOT NULL DEFAULT ''
 		)`,
+		// See migrations/0072_drop_app_release_images.sql: notes are text, and
+		// each build draws its own previews.
+		`ALTER TABLE app_release_items DROP COLUMN IF EXISTS image`,
+		`ALTER TABLE app_release_items DROP COLUMN IF EXISTS before_image`,
+		`ALTER TABLE app_release_items DROP COLUMN IF EXISTS after_image`,
 		`CREATE INDEX IF NOT EXISTS idx_app_release_items_release_id
 			ON app_release_items (release_id, position)`,
 		`ALTER TABLE app_release_items DROP CONSTRAINT IF EXISTS app_release_items_kind_check`,
