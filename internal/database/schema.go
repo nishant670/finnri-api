@@ -275,6 +275,13 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE feedback
 			ADD COLUMN IF NOT EXISTS admin_notes TEXT NOT NULL DEFAULT '',
 			ADD COLUMN IF NOT EXISTS resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL`,
+		// P59: the app and phone a report came from (migration 0069). The
+		// live table is GORM's `feedbacks`, as in migration 0058.
+		`ALTER TABLE feedbacks
+			ADD COLUMN IF NOT EXISTS app_version VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS device VARCHAR(120) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS os_version VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS screen VARCHAR(80) NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created
 			ON feedback (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created
@@ -547,6 +554,20 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE user_categories
 			ADD CONSTRAINT user_categories_type_check
 			CHECK (type IN ('expense', 'income'))`,
+		// See migrations/0071_create_account_rules.sql.
+		`CREATE TABLE IF NOT EXISTS account_rules (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			phrase VARCHAR(40) NOT NULL,
+			phrase_key VARCHAR(40) NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_account_rules_user_phrase
+			ON account_rules (user_id, phrase_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_rules_account
+			ON account_rules (account_id)`,
 		// See migrations/0064_create_events.sql. AutoMigrate adds
 		// entries.event_id; the table and the foreign key are created here, and
 		// the key is replaced rather than trusted, because a GORM-made one would
@@ -887,6 +908,12 @@ func runtimeSchemaStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// P57: the entry an AI read made (migration 0069). No foreign key.
+		`ALTER TABLE ai_usage_events
+			ADD COLUMN IF NOT EXISTS entry_id BIGINT`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_entry
+			ON ai_usage_events (entry_id)
+			WHERE entry_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_user_started
 			ON ai_usage_events (user_id, started_at DESC)
 			WHERE user_id IS NOT NULL`,

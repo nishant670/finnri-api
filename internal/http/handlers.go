@@ -233,6 +233,10 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)
 		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
+		authorized.GET("/payment-suggestion", s.getPaymentSuggestion)
+		authorized.GET("/payment-rules", s.listPaymentRules)
+		authorized.POST("/payment-rules", s.savePaymentRule)
+		authorized.DELETE("/payment-rules/:id", s.deletePaymentRule)
 		authorized.GET("/categories", s.listCategories)
 		authorized.GET("/categories/custom", s.listCustomCategories)
 		authorized.POST("/categories/custom", s.addCustomCategory)
@@ -279,6 +283,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Credit card statements
+		authorized.GET("/accounts/:id/categories", s.listAccountCategories)
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
 		authorized.POST("/accounts/:id/statements/read", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.readCardStatement)
@@ -317,7 +322,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
 
 		// Budgets
-		budgets := authorized.Group("/budgets", s.requireEntitlement(billing.FeatureBudgets))
+		budgets := authorized.Group("/budgets", s.requireBudgetAllowance())
 		{
 			budgets.POST("", s.createBudget)
 			budgets.GET("", s.listBudgets)
@@ -443,6 +448,10 @@ func skipsStaticBearer(path string) bool {
 		// deployed environment.
 		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
+		// "/v1/payment-suggestion" and "/v1/payment-rules": which account pays
+		// for a new expense, asked by the app's add sheet.
+		strings.HasPrefix(path, "/v1/payment-suggestion") ||
+		strings.HasPrefix(path, "/v1/payment-rules") ||
 		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
@@ -631,7 +640,9 @@ func (s *Server) handleParse(c *gin.Context) {
 		usageEvent = &event
 	}
 
-	parsed, parseUsage, err := s.parser.ParseText(ctx, transcript, tz)
+	contextQuestion := c.PostForm("context_question")
+	previousQuestion, hasPreviousQuestion := decodeQuestionContext(contextQuestion)
+	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz)
 	// Every finalisation below this line follows a call the provider actually
 	// answered, so each one carries what that answer cost. The `could_not_parse`
 	// branch is the exception: the call itself failed and reported nothing.
@@ -677,8 +688,19 @@ func (s *Server) handleParse(c *gin.Context) {
 	// `parsedQuestionQuery` is the model's answer plus a deterministic backstop
 	// for the fragments it routes to capture — "today spend" and its kind. See
 	// parse_intent.go.
-	if rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript); isQuestion {
+	rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript)
+	// A follow-up Finnri offered is a question whatever the model made of
+	// it: "And the day before?" names no metric for the backstop to find.
+	if !isQuestion && hasPreviousQuestion && chipFollowUp(transcript) != "" {
+		rawQuery, isQuestion = nil, true
+	}
+	if isQuestion {
+		var previous *ledgerQuestion
+		if hasPreviousQuestion {
+			previous = &previousQuestion
+		}
 		s.answerParsedQuestion(c, answeredQuestionRequest{
+			previous:      previous,
 			userID:        c.MustGet("userID").(uint),
 			transcript:    transcript,
 			tz:            tz,
@@ -812,6 +834,8 @@ func (s *Server) handleParse(c *gin.Context) {
 	for key, value := range credits {
 		parsedObj[key] = value
 	}
+	// Sent back with the saved entry, so AI usage can open what this read made.
+	parsedObj["ai_request_id"] = usageEvent.RequestID
 	c.JSON(200, parsedObj)
 }
 
@@ -1146,6 +1170,7 @@ func (s *Server) saveEntry(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
+	linkAIUsageToEntry(c, input.AIRequestID, entry.ID)
 	// No notification here: the client already confirms its own save inline. Only
 	// events the user could not otherwise know about belong in the inbox.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
@@ -1940,6 +1965,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
+			{&models.AccountRule{}, "account rules"},
 			{&models.Entry{}, "entries"},
 			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
@@ -2247,6 +2273,12 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	hydrateAccountProvider(&account)
+	// The "finish setting up" prompt asked for the bank and how to tell the
+	// account apart; once both are there it is done (P49).
+	if strings.TrimSpace(account.Provider) != "" && accountHasIdentifier(account) {
+		resolveNotifications(database.DB.
+			Where("user_id = ? AND type = ? AND action_url = ?", userID, "account.needs_setup", fmt.Sprintf("/accounts/%d", account.ID)))
+	}
 	c.JSON(200, account)
 }
 
@@ -2374,6 +2406,11 @@ func (s *Server) deleteAccount(c *gin.Context) {
 		return
 	}
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// The foreign key cascades in Postgres; deleting here as well keeps a
+		// database without it from offering a rule for an account that is gone.
+		if err := tx.Where("account_id = ? AND user_id = ?", account.ID, userID).Delete(&models.AccountRule{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Delete(&account).Error; err != nil {
 			return err
 		}

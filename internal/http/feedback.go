@@ -32,6 +32,22 @@ type feedbackInput struct {
 	Impact  string `json:"impact"`
 	// Upload URLs from POST /v1/upload. Optional.
 	Attachments []string `json:"attachments"`
+	// Where the report came from, sent only when the person leaves "Include
+	// app and phone details" on (P59). Each is trimmed and cut to its column.
+	AppVersion string `json:"app_version"`
+	Device     string `json:"device"`
+	OSVersion  string `json:"os_version"`
+	Screen     string `json:"screen"`
+}
+
+// clip trims a free-text detail and cuts it to max runes; a device name that
+// runs long is still useful cut short, so it is shortened rather than refused.
+func clip(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if utf8.RuneCountInString(value) <= max {
+		return value
+	}
+	return string([]rune(value)[:max])
 }
 
 // maxFeedbackAttachments is enough to show a before and after and the screen
@@ -104,6 +120,10 @@ func (input feedbackInput) toModel(userID uint) (models.Feedback, gin.H) {
 		Impact:      impact,
 		Status:      "new",
 		Attachments: attachments,
+		AppVersion:  clip(input.AppVersion, 40),
+		Device:      clip(input.Device, 120),
+		OSVersion:   clip(input.OSVersion, 40),
+		Screen:      clip(input.Screen, 80),
 	}, fields
 }
 

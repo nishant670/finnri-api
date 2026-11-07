@@ -21,4 +21,9 @@ type Feedback struct {
 	// mean, as upload URLs from POST /v1/upload. At most three. They are read
 	// back only by admins, through GET /v1/admin/feedback/:id/attachments/:i.
 	Attachments StringArray `gorm:"type:jsonb;not null;default:'[]'" json:"attachments"`
+	// Where a report came from, when the person chose to include it (P59).
+	AppVersion string `gorm:"type:varchar(40);not null;default:''" json:"app_version"`
+	Device     string `gorm:"type:varchar(120);not null;default:''" json:"device"`
+	OSVersion  string `gorm:"type:varchar(40);not null;default:''" json:"os_version"`
+	Screen     string `gorm:"type:varchar(80);not null;default:''" json:"screen"`
 }

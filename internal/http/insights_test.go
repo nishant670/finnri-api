@@ -517,3 +517,73 @@ func dbDashboardEntry(
 		CreatedAt: parsedCreatedAt,
 	}
 }
+
+// P29: the Insights tab's "Biggest expense" comes from the dashboard, on the
+// same terms as "spent".
+func TestDashboardNamesTheLargestExpense(t *testing.T) {
+	useSmokeDatabase(t)
+
+	user := models.User{UUID: "largest-user", Username: "largest-user", IsGuest: true}
+	if err := database.DB.Create(&user).Error; err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	cash := models.Account{UserID: user.ID, Type: "cash", Name: "Cash", IsDefault: true}
+	if err := database.DB.Create(&cash).Error; err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+	entries := []models.Entry{
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-02", "expense", "450", "Food & Drinks", "Cafe", "Cash", "2026-07-02T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-05", "expense", "32550", "Rent", "Landlord", "Cash", "2026-07-05T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-06", "income", "90000", "Salary", "Work", "Cash", "2026-07-06T09:00:00Z"),
+	}
+	if err := database.DB.Create(&entries).Error; err != nil {
+		t.Fatalf("failed to create entries: %v", err)
+	}
+
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 10, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 21, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          10,
+	}
+	fromDB, err := buildDashboardFromDB(user.ID, dateRange)
+	if err != nil {
+		t.Fatalf("failed to build DB dashboard: %v", err)
+	}
+	for name, dashboard := range map[string]DashboardResponse{"db": fromDB, "memory": buildDashboard(entries, dateRange)} {
+		largest := dashboard.LargestExpense
+		if largest == nil || largest.Amount != 32550 || largest.Category != "Rent" || largest.Date != "2026-07-05" {
+			t.Fatalf("%s: largest expense = %#v", name, largest)
+		}
+	}
+}
+
+// Spending with no account is grouped as "Unassigned"; the most-used account
+// card names the top real account instead (found on the device, 7 Nov 2026).
+func TestMostUsedAccountSkipsUnassignedSpending(t *testing.T) {
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 3, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 28, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          3,
+	}
+	unassigned := dashboardEntry("2026-07-01", "expense", "900", "Food", "Cafe", 0, "")
+	unassigned.AccountID, unassigned.Account = nil, nil
+	entries := []models.Entry{
+		unassigned,
+		dashboardEntry("2026-07-02", "expense", "300", "Travel", "Metro", 2, "HDFC Card"),
+	}
+
+	dashboard := buildDashboard(entries, dateRange)
+	if len(dashboard.AccountSpending) == 0 || dashboard.AccountSpending[0].AccountID != nil {
+		t.Fatalf("expected unassigned spending to lead the list: %#v", dashboard.AccountSpending)
+	}
+	card := insightByKind(dashboard.Insights, "account_usage")
+	if card == nil || card.AccountName != "HDFC Card" || card.Percentage == nil || *card.Percentage != 25 {
+		t.Fatalf("expected the card to name HDFC Card at 25%%: %#v", card)
+	}
+}

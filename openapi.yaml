@@ -830,6 +830,113 @@ paths:
           description: Invalid query or limit
         "500":
           description: Suggestions failed
+  /v1/payment-suggestion:
+    get:
+      summary: Suggest the account that pays for a new expense
+      description: >-
+        Asked when a draft or a new form does not say how it was paid. The
+        user's own rules answer first (a phrase tied to an account, such as
+        "fuel"; a phrase that names a spend family covers the whole family).
+        Otherwise a habit: from 3 expenses of the same kind in the last 90 days,
+        an account that paid 70% or more of them. "The same kind" is the same
+        merchant, then spend family (fuel, groceries, food delivery, cab rides),
+        then tag, then title. Income never gets a suggestion.
+      parameters:
+        - in: query
+          name: type
+          schema:
+            type: string
+            default: expense
+        - in: query
+          name: title
+          schema:
+            type: string
+        - in: query
+          name: merchant
+          schema:
+            type: string
+        - in: query
+          name: tag
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The suggestion, if any, and what the expense was recognised as
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentSuggestionResponse"
+        "401":
+          description: Missing or invalid session
+        "500":
+          description: Suggestion failed
+  /v1/payment-rules:
+    get:
+      summary: List the user's "use this account for" rules
+      responses:
+        "200":
+          description: Every rule the user has, by phrase
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rules]
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PaymentRule"
+    post:
+      summary: Tie a phrase to an account
+      description: >-
+        One phrase picks one account per user, compared without case or extra
+        spacing; saving a phrase that is already tied to another account moves
+        it. Up to 200 rules.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id, phrase]
+              properties:
+                account_id:
+                  type: integer
+                  minimum: 1
+                phrase:
+                  type: string
+                  maxLength: 40
+      responses:
+        "200":
+          description: An existing rule, now on this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentRule"
+        "201":
+          description: A new rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentRule"
+        "404":
+          description: The account is not the user's
+        "422":
+          description: Blank or over-long phrase, missing account, or the rule limit reached
+  /v1/payment-rules/{id}:
+    delete:
+      summary: Remove a rule
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Removed
+        "404":
+          description: No such rule for this user
   /v1/categories:
     get:
       summary: List the canonical transaction categories
@@ -3739,6 +3846,63 @@ components:
         last_seen_date:
           type: string
           format: date
+    PaymentSuggestionResponse:
+      type: object
+      required: [suggestion, kind]
+      properties:
+        suggestion:
+          oneOf:
+            - $ref: "#/components/schemas/PaymentSuggestion"
+            - type: "null"
+        kind:
+          description: >-
+            The most specific way to recognise this expense again, with or
+            without a suggestion: what an "Always use … for X?" prompt names.
+          oneOf:
+            - type: object
+              required: [key, label]
+              properties:
+                key:
+                  type: string
+                label:
+                  type: string
+            - type: "null"
+    PaymentSuggestion:
+      type: object
+      required: [account_id, source, label, matched, total]
+      properties:
+        account_id:
+          type: integer
+        source:
+          type: string
+          enum: [rule, habit]
+        label:
+          type: string
+          description: The rule's phrase, or the merchant, family, tag or title the habit was found on.
+        rule_id:
+          type: integer
+        matched:
+          type: integer
+          description: Recent expenses of this kind paid from the account; 0 for a rule.
+        total:
+          type: integer
+          description: Recent expenses of this kind; 0 for a rule.
+    PaymentRule:
+      type: object
+      required: [id, account_id, phrase, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        account_id:
+          type: integer
+        phrase:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     AccountInput:
       type: object
       required: [name, type]
