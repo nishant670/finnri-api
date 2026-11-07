@@ -158,11 +158,23 @@ type DashboardResponse struct {
 	ReviewItems         []DashboardReviewItem         `json:"review_items"`
 	Insights            []InsightCard                 `json:"insights"`
 	RecurringCandidates []DashboardRecurringCandidate `json:"recurring_candidates"`
+	// LargestExpense is the window's single biggest expense, for the Insights
+	// tab's "Biggest expense" fact (P29). Absent when the window has none.
+	LargestExpense *DashboardLargestExpense `json:"largest_expense,omitempty"`
 	// Overview is deliberately not filtered by the selected period. See
 	// DashboardOverview: the tab used to go blank every month until the first
 	// transaction was captured, and a window with nothing in it is not the same
 	// thing as an account with nothing in it.
 	Overview DashboardOverview `json:"overview"`
+}
+
+type DashboardLargestExpense struct {
+	EntryID  uint    `json:"entry_id"`
+	Title    string  `json:"title"`
+	Category string  `json:"category"`
+	Merchant string  `json:"merchant"`
+	Amount   float64 `json:"amount"`
+	Date     string  `json:"date"`
 }
 
 type dashboardRange struct {
@@ -324,6 +336,10 @@ func buildDashboardFromDB(userID uint, dateRange dashboardRange) (DashboardRespo
 	if err != nil {
 		return DashboardResponse{}, err
 	}
+	response.LargestExpense, err = loadDashboardLargestExpense(userID, start, end)
+	if err != nil {
+		return DashboardResponse{}, err
+	}
 
 	recurringEntries, err := loadDashboardRecurringEntries(userID, previousStart, end)
 	if err != nil {
@@ -371,6 +387,35 @@ const investmentEntryCondition = "(COALESCE(purpose_type, '') = 'investment' OR 
 // "invested" and counted in "money out" — never dropped. Activity counts keep
 // them; only the money rollups set them aside.
 const spendingRollupClause = notCardPaymentClause + " AND NOT " + investmentEntryCondition
+
+// loadDashboardLargestExpense finds the window's biggest single expense, on
+// the same terms as "spent": no card payments, no investments. Ties go to the
+// later entry.
+func loadDashboardLargestExpense(userID uint, start, end string) (*DashboardLargestExpense, error) {
+	var entries []models.Entry
+	if err := database.DB.
+		Where("user_id = ? AND date >= ? AND date <= ? AND LOWER(type) = 'expense'"+spendingRollupClause, userID, start, end).
+		Order("amount DESC, date DESC, id DESC").
+		Limit(1).
+		Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	return largestExpenseFrom(entries[0]), nil
+}
+
+func largestExpenseFrom(entry models.Entry) *DashboardLargestExpense {
+	return &DashboardLargestExpense{
+		EntryID:  entry.ID,
+		Title:    entry.Title,
+		Category: normalizedLabel(entry.Category, "Uncategorized"),
+		Merchant: strings.TrimSpace(entry.Merchant),
+		Amount:   entry.Amount.Float64(),
+		Date:     entry.Date,
+	}
+}
 
 type dashboardSummaryRow struct {
 	TotalSpent       float64
@@ -731,6 +776,11 @@ func buildDashboard(entries []models.Entry, dateRange dashboardRange) DashboardR
 		response.Summary.TotalSpent += amount
 		response.Summary.ExpenseCount++
 		expenseAmounts = append(expenseAmounts, amount)
+		// Ties go to the later entry: it is the one more likely to be news.
+		if largest := response.LargestExpense; largest == nil || amount > largest.Amount ||
+			(amount == largest.Amount && entry.Date > largest.Date) {
+			response.LargestExpense = largestExpenseFrom(entry)
+		}
 		if dailyCurrent[entry.Date] == nil {
 			dailyCurrent[entry.Date] = &DashboardDailySpend{Date: entry.Date}
 		}

@@ -247,7 +247,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.POST("/accounts", server.saveAccount)
 	authorized.PUT("/accounts/:id", server.updateAccount)
 	authorized.POST("/accounts/:id/balance", server.setAccountBalance)
-	budgets := authorized.Group("/budgets", server.requireEntitlement(billing.FeatureBudgets))
+	budgets := authorized.Group("/budgets", server.requireBudgetAllowance())
 	budgets.POST("", server.createBudget)
 	budgets.GET("", server.listBudgets)
 	budgets.PUT("/:id", server.updateBudget)

@@ -517,3 +517,45 @@ func dbDashboardEntry(
 		CreatedAt: parsedCreatedAt,
 	}
 }
+
+// P29: the Insights tab's "Biggest expense" comes from the dashboard, on the
+// same terms as "spent".
+func TestDashboardNamesTheLargestExpense(t *testing.T) {
+	useSmokeDatabase(t)
+
+	user := models.User{UUID: "largest-user", Username: "largest-user", IsGuest: true}
+	if err := database.DB.Create(&user).Error; err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	cash := models.Account{UserID: user.ID, Type: "cash", Name: "Cash", IsDefault: true}
+	if err := database.DB.Create(&cash).Error; err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+	entries := []models.Entry{
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-02", "expense", "450", "Food & Drinks", "Cafe", "Cash", "2026-07-02T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-05", "expense", "32550", "Rent", "Landlord", "Cash", "2026-07-05T09:00:00Z"),
+		dbDashboardEntry(user.ID, cash.ID, "2026-07-06", "income", "90000", "Salary", "Work", "Cash", "2026-07-06T09:00:00Z"),
+	}
+	if err := database.DB.Create(&entries).Error; err != nil {
+		t.Fatalf("failed to create entries: %v", err)
+	}
+
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 10, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 21, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          10,
+	}
+	fromDB, err := buildDashboardFromDB(user.ID, dateRange)
+	if err != nil {
+		t.Fatalf("failed to build DB dashboard: %v", err)
+	}
+	for name, dashboard := range map[string]DashboardResponse{"db": fromDB, "memory": buildDashboard(entries, dateRange)} {
+		largest := dashboard.LargestExpense
+		if largest == nil || largest.Amount != 32550 || largest.Category != "Rent" || largest.Date != "2026-07-05" {
+			t.Fatalf("%s: largest expense = %#v", name, largest)
+		}
+	}
+}
