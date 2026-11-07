@@ -233,6 +233,10 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)
 		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
+		authorized.GET("/payment-suggestion", s.getPaymentSuggestion)
+		authorized.GET("/payment-rules", s.listPaymentRules)
+		authorized.POST("/payment-rules", s.savePaymentRule)
+		authorized.DELETE("/payment-rules/:id", s.deletePaymentRule)
 		authorized.GET("/categories", s.listCategories)
 		authorized.GET("/categories/custom", s.listCustomCategories)
 		authorized.POST("/categories/custom", s.addCustomCategory)
@@ -444,6 +448,10 @@ func skipsStaticBearer(path string) bool {
 		// deployed environment.
 		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
+		// "/v1/payment-suggestion" and "/v1/payment-rules": which account pays
+		// for a new expense, asked by the app's add sheet.
+		strings.HasPrefix(path, "/v1/payment-suggestion") ||
+		strings.HasPrefix(path, "/v1/payment-rules") ||
 		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
@@ -1957,6 +1965,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
+			{&models.AccountRule{}, "account rules"},
 			{&models.Entry{}, "entries"},
 			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
@@ -2397,6 +2406,11 @@ func (s *Server) deleteAccount(c *gin.Context) {
 		return
 	}
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// The foreign key cascades in Postgres; deleting here as well keeps a
+		// database without it from offering a rule for an account that is gone.
+		if err := tx.Where("account_id = ? AND user_id = ?", account.ID, userID).Delete(&models.AccountRule{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Delete(&account).Error; err != nil {
 			return err
 		}

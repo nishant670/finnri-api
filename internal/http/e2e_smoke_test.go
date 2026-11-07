@@ -246,6 +246,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.POST("/accounts/:id/paid-off", server.markCardPaidOff)
 	authorized.POST("/accounts", server.saveAccount)
 	authorized.PUT("/accounts/:id", server.updateAccount)
+	authorized.DELETE("/accounts/:id", server.deleteAccount)
 	authorized.POST("/accounts/:id/balance", server.setAccountBalance)
 	budgets := authorized.Group("/budgets", server.requireBudgetAllowance())
 	budgets.POST("", server.createBudget)
@@ -267,6 +268,10 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/entries", server.listEntries)
 	authorized.GET("/entries/export", server.exportEntriesCSV)
 	authorized.GET("/merchants/suggestions", server.listMerchantSuggestions)
+	authorized.GET("/payment-suggestion", server.getPaymentSuggestion)
+	authorized.GET("/payment-rules", server.listPaymentRules)
+	authorized.POST("/payment-rules", server.savePaymentRule)
+	authorized.DELETE("/payment-rules/:id", server.deletePaymentRule)
 	authorized.GET("/categories", server.listCategories)
 	authorized.GET("/categories/custom", server.listCustomCategories)
 	authorized.POST("/categories/custom", server.addCustomCategory)
@@ -379,6 +384,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.CardEMIInstallment{},
 		&models.RecurringCandidateDecision{},
 		&models.UserCategory{},
+		&models.AccountRule{},
 		&models.Event{},
 		&models.AppRelease{},
 		&models.AppReleaseItem{},

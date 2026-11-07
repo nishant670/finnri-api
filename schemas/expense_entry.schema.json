@@ -94,6 +94,14 @@
         null
       ]
     },
+    "mode_source": {
+      "description": "Set by the server: read when the draft said how it was paid, default when mode is the Cash filled in for want of anything.",
+      "type": "string",
+      "enum": [
+        "read",
+        "default"
+      ]
+    },
     "card_network": {
       "type": [
         "string",
