@@ -155,9 +155,6 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		releasesLimit := rateLimit(cfg, "app-releases")
 		appPublic.GET("/releases", releasesLimit, s.listAppReleases)
 		appPublic.GET("/releases/:version_code", releasesLimit, s.getAppRelease)
-		appPublic.GET("/release-media/:name",
-			rateLimitAt(releaseMediaRateLimitRPS, releaseMediaRateLimitBurst, "app-release-media"),
-			s.serveReleaseMedia)
 	}
 
 	admin := r.Group("/v1/admin")
@@ -213,14 +210,6 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), s.publishAdminAppRelease)
 		admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), s.unpublishAdminAppRelease)
 		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
-	}
-
-	// Screenshots are bigger than the admin group's JSON limit allows, so the
-	// one admin upload gets its own group with the upload limit instead.
-	adminUploads := r.Group("/v1/admin")
-	adminUploads.Use(uploadRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
-	{
-		adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), s.uploadAdminReleaseMedia)
 	}
 
 	// Protected Routes (User Token)
