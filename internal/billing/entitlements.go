@@ -81,43 +81,36 @@ func DefaultFeatureRules() map[FeatureCode]FeatureRule {
 			CreditBacked: true,
 		},
 		FeatureAdvancedInsights: {
-			Code:             FeatureAdvancedInsights,
-			Label:            "Advanced insights",
-			RequiresPaidPlan: true,
+			Code:  FeatureAdvancedInsights,
+			Label: "Advanced insights",
 		},
 		FeatureWeeklyReview: {
-			Code:             FeatureWeeklyReview,
-			Label:            "Weekly review",
-			RequiresPaidPlan: true,
+			Code:  FeatureWeeklyReview,
+			Label: "Weekly review",
 		},
 		FeatureBudgets: {
-			Code:             FeatureBudgets,
-			Label:            "Budgets",
-			RequiresPaidPlan: true,
+			Code:  FeatureBudgets,
+			Label: "Budgets",
 		},
 		FeatureSubscriptionReminders: {
-			Code:             FeatureSubscriptionReminders,
-			Label:            "Subscription reminders",
-			RequiresPaidPlan: true,
+			Code:  FeatureSubscriptionReminders,
+			Label: "Subscription reminders",
 		},
 		FeatureSplitLedger: {
 			Code:  FeatureSplitLedger,
 			Label: "Split ledger",
 		},
 		FeatureWebDashboard: {
-			Code:             FeatureWebDashboard,
-			Label:            "Web dashboard",
-			RequiresPaidPlan: true,
+			Code:  FeatureWebDashboard,
+			Label: "Web dashboard",
 		},
 		FeatureExports: {
-			Code:             FeatureExports,
-			Label:            "Exports",
-			RequiresPaidPlan: true,
+			Code:  FeatureExports,
+			Label: "Exports",
 		},
 		FeatureBulkEdit: {
-			Code:             FeatureBulkEdit,
-			Label:            "Bulk edit",
-			RequiresPaidPlan: true,
+			Code:  FeatureBulkEdit,
+			Label: "Bulk edit",
 		},
 		FeatureFutureAIAdvisor: {
 			Code:             FeatureFutureAIAdvisor,
@@ -127,18 +120,13 @@ func DefaultFeatureRules() map[FeatureCode]FeatureRule {
 	}
 }
 
+// PaidFeatureCodes is what a pass adds, as the plans screen lists it. Only AI
+// work costs us money, so only AI work is paid. The AI advisor stays paid but
+// is left off until it exists.
 func PaidFeatureCodes() []string {
 	return []string{
 		string(FeatureAITextCapture),
 		string(FeatureAIVoiceCapture),
-		string(FeatureAdvancedInsights),
-		string(FeatureWeeklyReview),
-		string(FeatureBudgets),
-		string(FeatureSubscriptionReminders),
-		string(FeatureWebDashboard),
-		string(FeatureExports),
-		string(FeatureBulkEdit),
-		string(FeatureFutureAIAdvisor),
 	}
 }
 

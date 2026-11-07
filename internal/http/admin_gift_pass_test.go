@@ -59,9 +59,9 @@ func TestAdminGiftPassUnlocksPaidPlanAndGrantsCredits(t *testing.T) {
 	monthly := seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
 	user, userToken := createBillingTestUserSession(t)
 
-	locked, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureBudgets)
+	locked, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureFutureAIAdvisor)
 	if err != nil || locked.Allowed {
-		t.Fatalf("budgets should be locked before the gift: %#v %v", locked, err)
+		t.Fatalf("paid features should be locked before the gift: %#v %v", locked, err)
 	}
 
 	gift := decodeGiftPass(t, postGiftPass(t, router, supportToken, user.ID, "gift-key-1", map[string]any{
@@ -79,9 +79,9 @@ func TestAdminGiftPassUnlocksPaidPlanAndGrantsCredits(t *testing.T) {
 		t.Fatalf("monthly gift should run 30 days, got %s", length)
 	}
 
-	unlocked, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureBudgets)
+	unlocked, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureFutureAIAdvisor)
 	if err != nil || !unlocked.Allowed {
-		t.Fatalf("budgets should unlock with a gifted pass: %#v %v", unlocked, err)
+		t.Fatalf("paid features should unlock with a gifted pass: %#v %v", unlocked, err)
 	}
 
 	status := performJSONRequest[billingStatusResponse](t, router, http.MethodGet, "/v1/billing/status", userToken, nil, http.StatusOK)
@@ -328,7 +328,7 @@ func TestAdminRevokeRunningGiftEndsItAndTakesBackCredits(t *testing.T) {
 		t.Fatalf("a running gift should end now, ends %s", revoked.Subscription.CurrentPeriodEnd)
 	}
 
-	entitlement, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureBudgets)
+	entitlement, err := billing.NewEntitlementService(database.DB).Check(billing.SubjectForUser(user.ID), billing.FeatureFutureAIAdvisor)
 	if err != nil || entitlement.Allowed {
 		t.Fatalf("paid features should lock again after the revoke: %#v %v", entitlement, err)
 	}
