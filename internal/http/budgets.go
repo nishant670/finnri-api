@@ -214,14 +214,29 @@ func createBudgetAlertIfNeeded(db *gorm.DB, budget models.Budget, periodStart, k
 }
 
 func budgetAlertCopy(budget models.Budget, periodStart, kind string, spend models.Money) (string, string) {
-	target := budgetTargetLabel(budget)
+	subject := spendingSubject(budgetTargetLabel(budget))
 	periodLabel := budgetPeriodLabel(periodStart)
 	switch kind {
 	case budgetExceededKind:
-		return "Budget exceeded", fmt.Sprintf("%s spending is ₹%s against your ₹%s monthly budget for %s.", target, spend.String(), budget.LimitAmount.String(), periodLabel)
+		return "Budget exceeded", fmt.Sprintf("%s is %s against your %s monthly budget for %s.", subject, rupeesForCopy(spend), rupeesForCopy(budget.LimitAmount), periodLabel)
 	default:
-		return "Budget nearing limit", fmt.Sprintf("%s spending has reached ₹%s of your ₹%s monthly budget for %s.", target, spend.String(), budget.LimitAmount.String(), periodLabel)
+		return "Budget nearing limit", fmt.Sprintf("%s has reached %s of your %s monthly budget for %s.", subject, rupeesForCopy(spend), rupeesForCopy(budget.LimitAmount), periodLabel)
 	}
+}
+
+// spendingSubject turns what a budget caps into the subject of a sentence about
+// it: "Food & Drinks" → "Food & Drinks spending". A budget that is already
+// named for spending — the app names an all-spending budget "Monthly
+// spending" — keeps its name, so it never reads "Monthly spending spending".
+func spendingSubject(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "Your spending"
+	}
+	if strings.HasSuffix(strings.ToLower(target), "spending") {
+		return target
+	}
+	return target + " spending"
 }
 
 func budgetTargetLabel(budget models.Budget) string {

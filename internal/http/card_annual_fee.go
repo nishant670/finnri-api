@@ -229,6 +229,20 @@ func indiaLocation() *time.Location {
 	return time.FixedZone("IST", 5*3600+1800)
 }
 
+// dateForCopy writes an API date (YYYY-MM-DD) the way a person reads it in a
+// notification: "30 Sep", with the year only when it isn't this year's. A value
+// that doesn't parse is returned as it came, so a message is never left blank.
+func dateForCopy(apiDate string, now time.Time) string {
+	parsed, err := time.Parse(apiDateLayout, strings.TrimSpace(apiDate))
+	if err != nil {
+		return apiDate
+	}
+	if parsed.Year() != now.In(indiaLocation()).Year() {
+		return parsed.Format("2 Jan 2006")
+	}
+	return parsed.Format("2 Jan")
+}
+
 // rupeesForCopy writes an amount the way a person reads it in a notification:
 // Indian digit grouping, and paise only when there are any. "₹1,00,000",
 // "₹18,000", "₹499.50".
