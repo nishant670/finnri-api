@@ -147,11 +147,11 @@ func splitBalanceAlertCopy(group models.SplitGroup, name string, balance models.
 		name = "Someone"
 	}
 	title := fmt.Sprintf("Balance alert in %s", group.Name)
-	limit := group.BalanceAlertAmount.String()
+	limit := rupeesForCopy(group.BalanceAlertAmount)
 	if balance > 0 {
-		return title, fmt.Sprintf("%s owes you ₹%s in %s, past the ₹%s alert.", name, balance.String(), group.Name, limit)
+		return title, fmt.Sprintf("%s owes you %s in %s, past the %s alert.", name, rupeesForCopy(balance), group.Name, limit)
 	}
-	return title, fmt.Sprintf("You owe %s ₹%s in %s, past the ₹%s alert.", name, absMoney(balance).String(), group.Name, limit)
+	return title, fmt.Sprintf("You owe %s %s in %s, past the %s alert.", name, rupeesForCopy(absMoney(balance)), group.Name, limit)
 }
 
 func derefUint(value *uint) uint {

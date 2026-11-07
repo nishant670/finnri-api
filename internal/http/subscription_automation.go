@@ -431,7 +431,7 @@ func parsePositiveUint(value string) (uint, error) {
 }
 
 func sendOccurrencePush(occurrence models.SubscriptionOccurrence) {
-	sendUserPush(database.DB, occurrence.UserID, "Autopay transaction added", fmt.Sprintf("%s was added for ₹%s. Confirm or review it in Finnri.", occurrence.Entry.Title, occurrence.Entry.Amount.String()), map[string]any{
+	sendUserPush(database.DB, occurrence.UserID, "Autopay transaction added", fmt.Sprintf("%s was added for %s. Confirm or review it in Finnri.", occurrence.Entry.Title, rupeesForCopy(occurrence.Entry.Amount)), map[string]any{
 		"action_url": fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID), "occurrence_id": occurrence.ID, "entry_id": occurrence.EntryID,
 	})
 }

@@ -429,13 +429,14 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	}
 	noun := recurringNoun(subscription.Kind)
 	amount := rupeesForCopy(subscription.Amount)
+	now := time.Now()
 	if kind == subscriptionReminderOverdueKind {
-		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dueDate, amount)
+		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dateForCopy(dueDate, now), amount)
 	}
 	if kind == subscriptionReminderCancelKind {
-		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for %s.", name, subscription.NextDueDate, amount)
+		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for %s.", name, dateForCopy(subscription.NextDueDate, now), amount)
 	}
-	return noun + " due soon", fmt.Sprintf("%s is due on %s for %s.", name, dueDate, amount)
+	return noun + " due soon", fmt.Sprintf("%s is due on %s for %s.", name, dateForCopy(dueDate, now), amount)
 }
 
 func advanceSubscriptionDueDate(currentDueDate, interval string, paidDate time.Time) (string, error) {
