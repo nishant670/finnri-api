@@ -78,39 +78,41 @@ func (CreditLedger) TableName() string {
 }
 
 type AIUsageEvent struct {
-	ID                     uint       `gorm:"primaryKey" json:"id"`
-	UserID                 *uint      `gorm:"index" json:"user_id,omitempty"`
-	User                   *User      `json:"-" gorm:"foreignKey:UserID"`
-	GuestDeviceIDHash      string     `gorm:"type:char(64);index;not null;default:''" json:"guest_device_id_hash,omitempty"`
-	SessionID              string     `gorm:"type:varchar(120);index;not null;default:''" json:"session_id,omitempty"`
-	RequestID              string     `gorm:"type:varchar(120);uniqueIndex;not null" json:"request_id"`
-	IdempotencyKey         string     `gorm:"type:varchar(120);not null;default:''" json:"idempotency_key,omitempty"`
-	ActionCode             string     `gorm:"type:varchar(80);index;not null" json:"action_code"`
-	InputKind              string     `gorm:"type:varchar(20);index;not null" json:"input_kind"`
-	Status                 string     `gorm:"type:varchar(32);index;not null" json:"status"`
-	Provider               string     `gorm:"type:varchar(40);not null;default:''" json:"provider"`
-	Model                  string     `gorm:"type:varchar(80);not null;default:''" json:"model"`
-	SecondaryProvider      string     `gorm:"type:varchar(40);not null;default:''" json:"secondary_provider"`
-	SecondaryModel         string     `gorm:"type:varchar(80);not null;default:''" json:"secondary_model"`
-	EstimatedCredits       int        `gorm:"not null" json:"estimated_credits"`
-	ReservedCredits        int        `gorm:"not null;default:0" json:"reserved_credits"`
-	FinalCredits           int        `gorm:"not null;default:0" json:"final_credits"`
-	EstimatedCostUSDMicros int64      `gorm:"not null;default:0" json:"estimated_cost_usd_micros"`
-	ActualCostUSDMicros    *int64     `json:"actual_cost_usd_micros,omitempty"`
-	PromptTokens           *int       `json:"prompt_tokens,omitempty"`
-	CompletionTokens       *int       `json:"completion_tokens,omitempty"`
-	TotalTokens            *int       `json:"total_tokens,omitempty"`
-	AudioDurationMs        *int       `json:"audio_duration_ms,omitempty"`
-	AudioBytes             *int64     `json:"audio_bytes,omitempty"`
-	InputChars             *int       `json:"input_chars,omitempty"`
-	ResponseBytes          *int       `json:"response_bytes,omitempty"`
-	ErrorCode              string     `gorm:"type:varchar(80);index;not null;default:''" json:"error_code,omitempty"`
-	Intent                 string     `gorm:"type:varchar(16);not null;default:''" json:"intent,omitempty"`
-	StartedAt              time.Time  `gorm:"index;not null" json:"started_at"`
-	ProviderStartedAt      *time.Time `json:"provider_started_at,omitempty"`
-	FinishedAt             *time.Time `gorm:"index" json:"finished_at,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	ID                     uint   `gorm:"primaryKey" json:"id"`
+	UserID                 *uint  `gorm:"index" json:"user_id,omitempty"`
+	User                   *User  `json:"-" gorm:"foreignKey:UserID"`
+	GuestDeviceIDHash      string `gorm:"type:char(64);index;not null;default:''" json:"guest_device_id_hash,omitempty"`
+	SessionID              string `gorm:"type:varchar(120);index;not null;default:''" json:"session_id,omitempty"`
+	RequestID              string `gorm:"type:varchar(120);uniqueIndex;not null" json:"request_id"`
+	IdempotencyKey         string `gorm:"type:varchar(120);not null;default:''" json:"idempotency_key,omitempty"`
+	ActionCode             string `gorm:"type:varchar(80);index;not null" json:"action_code"`
+	InputKind              string `gorm:"type:varchar(20);index;not null" json:"input_kind"`
+	Status                 string `gorm:"type:varchar(32);index;not null" json:"status"`
+	Provider               string `gorm:"type:varchar(40);not null;default:''" json:"provider"`
+	Model                  string `gorm:"type:varchar(80);not null;default:''" json:"model"`
+	SecondaryProvider      string `gorm:"type:varchar(40);not null;default:''" json:"secondary_provider"`
+	SecondaryModel         string `gorm:"type:varchar(80);not null;default:''" json:"secondary_model"`
+	EstimatedCredits       int    `gorm:"not null" json:"estimated_credits"`
+	ReservedCredits        int    `gorm:"not null;default:0" json:"reserved_credits"`
+	FinalCredits           int    `gorm:"not null;default:0" json:"final_credits"`
+	EstimatedCostUSDMicros int64  `gorm:"not null;default:0" json:"estimated_cost_usd_micros"`
+	ActualCostUSDMicros    *int64 `json:"actual_cost_usd_micros,omitempty"`
+	PromptTokens           *int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens       *int   `json:"completion_tokens,omitempty"`
+	TotalTokens            *int   `json:"total_tokens,omitempty"`
+	AudioDurationMs        *int   `json:"audio_duration_ms,omitempty"`
+	AudioBytes             *int64 `json:"audio_bytes,omitempty"`
+	InputChars             *int   `json:"input_chars,omitempty"`
+	ResponseBytes          *int   `json:"response_bytes,omitempty"`
+	ErrorCode              string `gorm:"type:varchar(80);index;not null;default:''" json:"error_code,omitempty"`
+	Intent                 string `gorm:"type:varchar(16);not null;default:''" json:"intent,omitempty"`
+	// EntryID is the entry saved from this read's draft, when there is one (P57).
+	EntryID           *uint      `gorm:"index" json:"entry_id,omitempty"`
+	StartedAt         time.Time  `gorm:"index;not null" json:"started_at"`
+	ProviderStartedAt *time.Time `json:"provider_started_at,omitempty"`
+	FinishedAt        *time.Time `gorm:"index" json:"finished_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type AIUsageLimitEvent struct {
