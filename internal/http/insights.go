@@ -1029,8 +1029,17 @@ func buildInsightCards(
 			TransactionCount: &count,
 		})
 	}
-	if len(dashboard.AccountSpending) > 0 {
-		top := dashboard.AccountSpending[0]
+	// Spending logged without an account is grouped as "Unassigned"; it is
+	// not an account anyone used, so the card names the top real one.
+	var topAccount *DashboardAccount
+	for i := range dashboard.AccountSpending {
+		if dashboard.AccountSpending[i].AccountID != nil {
+			topAccount = &dashboard.AccountSpending[i]
+			break
+		}
+	}
+	if topAccount != nil {
+		top := *topAccount
 		amount := top.Amount
 		percentage := top.Percentage
 		cards = append(cards, InsightCard{

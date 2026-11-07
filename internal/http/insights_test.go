@@ -559,3 +559,31 @@ func TestDashboardNamesTheLargestExpense(t *testing.T) {
 		}
 	}
 }
+
+// Spending with no account is grouped as "Unassigned"; the most-used account
+// card names the top real account instead (found on the device, 7 Nov 2026).
+func TestMostUsedAccountSkipsUnassignedSpending(t *testing.T) {
+	location := time.FixedZone("IST", 5*60*60+30*60)
+	dateRange := dashboardRange{
+		Start:         time.Date(2026, 7, 1, 0, 0, 0, 0, location),
+		End:           time.Date(2026, 7, 3, 0, 0, 0, 0, location),
+		PreviousStart: time.Date(2026, 6, 28, 0, 0, 0, 0, location),
+		PreviousEnd:   time.Date(2026, 6, 30, 0, 0, 0, 0, location),
+		Days:          3,
+	}
+	unassigned := dashboardEntry("2026-07-01", "expense", "900", "Food", "Cafe", 0, "")
+	unassigned.AccountID, unassigned.Account = nil, nil
+	entries := []models.Entry{
+		unassigned,
+		dashboardEntry("2026-07-02", "expense", "300", "Travel", "Metro", 2, "HDFC Card"),
+	}
+
+	dashboard := buildDashboard(entries, dateRange)
+	if len(dashboard.AccountSpending) == 0 || dashboard.AccountSpending[0].AccountID != nil {
+		t.Fatalf("expected unassigned spending to lead the list: %#v", dashboard.AccountSpending)
+	}
+	card := insightByKind(dashboard.Insights, "account_usage")
+	if card == nil || card.AccountName != "HDFC Card" || card.Percentage == nil || *card.Percentage != 25 {
+		t.Fatalf("expected the card to name HDFC Card at 25%%: %#v", card)
+	}
+}
