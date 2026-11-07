@@ -279,6 +279,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Credit card statements
+		authorized.GET("/accounts/:id/categories", s.listAccountCategories)
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
 		authorized.POST("/accounts/:id/statements/read", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.readCardStatement)
