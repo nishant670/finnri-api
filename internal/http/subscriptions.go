@@ -291,6 +291,13 @@ func (s *Server) markSubscriptionPaid(c *gin.Context) {
 	if loggedEntry != nil {
 		_ = maybeCreateBudgetAlertsForEntry(*loggedEntry)
 	}
+	// Paid: its due and overdue reminders are done (P49). A cancel-by
+	// reminder is about something else and stays.
+	resolveNotifications(database.DB.
+		Where("user_id = ? AND type IN ?", userID, []string{"subscription.due", "subscription.overdue"}).
+		Where("id IN (?)", database.DB.Model(&models.SubscriptionReminder{}).
+			Select("notification_id").
+			Where("user_id = ? AND subscription_id = ? AND notification_id IS NOT NULL", userID, subscription.ID)))
 	if finished {
 		notifyRecurringCompleted(subscription)
 	}
@@ -386,7 +393,11 @@ func createSubscriptionReminderIfNeeded(db *gorm.DB, subscription models.Subscri
 		title, body := subscriptionReminderCopy(subscription, dueDate, kind)
 		notification := models.Notification{
 			UserID: subscription.UserID, Type: "subscription." + kind,
-			Title: title, Body: body, ActionURL: "/subscriptions",
+			// Its own subscription, so the app can stack this payment's
+			// reminders and offer Mark paid in place (P46, P47). Apps since
+			// 1.0 read /recurring/:id as Recurring.
+			Title: title, Body: body, ActionURL: fmt.Sprintf("/recurring/%d", subscription.ID),
+			Amount: moneyPointer(subscription.Amount), DueDate: datePointer(dueDate),
 		}
 		if err := tx.Create(&notification).Error; err != nil {
 			return err
@@ -403,7 +414,7 @@ func createSubscriptionReminderIfNeeded(db *gorm.DB, subscription models.Subscri
 	})
 	if err == nil && created {
 		title, body := subscriptionReminderCopy(subscription, dueDate, kind)
-		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": "/subscriptions", "subscription_id": subscription.ID})
+		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": fmt.Sprintf("/recurring/%d", subscription.ID), "subscription_id": subscription.ID})
 	}
 	return created, err
 }

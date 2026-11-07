@@ -293,6 +293,7 @@ func createCardStatementReminderIfNeeded(db *gorm.DB, statement models.CardState
 		notification := models.Notification{
 			UserID: statement.UserID, Type: "card_statement." + kind,
 			Title: title, Body: body, ActionURL: actionURL,
+			Amount: moneyPointer(statement.TotalDue), DueDate: datePointer(statement.DueDate),
 		}
 		if err := tx.Create(&notification).Error; err != nil {
 			return err

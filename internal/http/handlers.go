@@ -2251,6 +2251,12 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	hydrateAccountProvider(&account)
+	// The "finish setting up" prompt asked for the bank and how to tell the
+	// account apart; once both are there it is done (P49).
+	if strings.TrimSpace(account.Provider) != "" && accountHasIdentifier(account) {
+		resolveNotifications(database.DB.
+			Where("user_id = ? AND type = ? AND action_url = ?", userID, "account.needs_setup", fmt.Sprintf("/accounts/%d", account.ID)))
+	}
 	c.JSON(200, account)
 }
 
