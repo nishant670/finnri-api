@@ -19,9 +19,9 @@ var allowedParseRootFields = map[string]bool{
 	"date": true, "time": true, "source_text": true, "recurring_candidate": true,
 	"subscription_candidate": true, "split_candidate": true, "split_candidate_details": true,
 	"refundable_amount": true, "refund_expected_on": true, "refund_received": true,
-	"emi_tenure_months": true, "emi_rate_pct": true,
+	"emi_tenure_months": true, "emi_rate_pct": true, "balance_after": true,
 	"confidence": true, "needs_confirmation": true, "missing_fields": true,
-	"clarifications": true,
+	"clarifications": true, "mode_source": true,
 }
 
 var allowedConfidenceFields = map[string]bool{
@@ -248,13 +248,19 @@ func parseFieldMissing(field string, value any) bool {
 	return false
 }
 
+// mode_source tells the app whether the mode was read ("read") or is the Cash
+// filled in because nothing said how it was paid ("default"). Older apps ignore
+// it and keep the Cash; newer ones try the user's payment rules and habits, and
+// ask the user to check a scanned bill that never said.
 func normalizeParseMode(entry map[string]any, needsConfirmation map[string]any, missingSet map[string]bool) {
 	mode, ok := entry["mode"].(string)
+	entry["mode_source"] = "read"
 	if hint, hintOK := entry["account_hint"].(string); hintOK && isBankAccountHint(hint) {
 		entry["mode"] = "Bank Account"
 		needsConfirmation["account_hint"] = true
 	} else if !ok || strings.TrimSpace(mode) == "" {
 		entry["mode"] = defaultParseMode
+		entry["mode_source"] = "default"
 	} else if normalized, ok := canonicalParseMode(mode); ok {
 		entry["mode"] = normalized
 	} else {
@@ -265,6 +271,7 @@ func normalizeParseMode(entry map[string]any, needsConfirmation map[string]any, 
 			}
 		} else {
 			entry["mode"] = defaultParseMode
+			entry["mode_source"] = "default"
 		}
 	}
 	delete(missingSet, "mode")

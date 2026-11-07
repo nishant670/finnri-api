@@ -89,6 +89,18 @@ type ledgerQuestion struct {
 	Mode      string
 	GroupBy   string
 
+	// Keywords narrow the question to rows whose title, merchant or notes
+	// mention one of them — "fuel" is petrol, diesel and CNG rows, not every
+	// Transport row. SubjectLabel is the user's own word for the thing, which
+	// the card names. See parse_question_precision.go.
+	Keywords     []string
+	SubjectLabel string
+
+	// UnknownCategory is a category the model named that is not built in. It
+	// is resolved against the user's own categories before answering, and
+	// falls back to a keyword search for the word — never to Misc.
+	UnknownCategory string
+
 	PeriodKind  string
 	PeriodLabel string
 	StartDate   string
@@ -141,9 +153,14 @@ type ledgerAnswer struct {
 	GroupBy          string              `json:"group_by,omitempty"`
 	Breakdown        []ledgerAnswerSlice `json:"breakdown"`
 	LargestEntry     *ledgerAnswerEntry  `json:"largest_entry,omitempty"`
-	Reason           string              `json:"reason,omitempty"`
-	Message          string              `json:"message,omitempty"`
-	Suggestions      []string            `json:"suggestions"`
+	// Context is the query this answer was computed over, for the app to hand
+	// back with a follow-up. See parse_query_context.go.
+	Context string `json:"context,omitempty"`
+	// Comparison is the same number for the window before (P64).
+	Comparison  *ledgerAnswerComparison `json:"comparison,omitempty"`
+	Reason      string                  `json:"reason,omitempty"`
+	Message     string                  `json:"message,omitempty"`
+	Suggestions []string                `json:"suggestions"`
 
 	// Filters is the query the number was computed over, in the transaction
 	// list's own parameter names. The app hands it straight to the list, so the
@@ -191,16 +208,26 @@ func normalizeLedgerQuestion(raw any, now timepkg.Time) ledgerQuestion {
 	// The category is resolved against the same canonical list the ledger is
 	// written with. An unrecognised one is not filed under Misc the way a
 	// capture would be: filing a *question* under a fallback answers about the
-	// wrong rows, so it becomes unsupported instead.
+	// wrong rows. It is held aside instead, and resolveUserQuestionCategory
+	// matches it to the user's own categories or searches for the word.
 	if category, ok := values["category"].(string); ok && strings.TrimSpace(category) != "" {
-		resolved, resolvedOK := canonicalCategory(category)
-		if !resolvedOK {
-			question.Metric = metricUnsupported
-			question.UnsupportedReason = "too_complex"
-			return question
+		// Only a word naming the whole category becomes the category filter.
+		// A narrower one — "groceries", "fuel", which the capture aliases map
+		// onto Food & Drinks and Transport — is searched for as itself.
+		if resolved, resolvedOK := broadCategory(category); resolvedOK {
+			question.Category = resolved
+		} else {
+			question.UnknownCategory = cleanQuestionKeyword(category)
+			if question.UnknownCategory == "" {
+				question.Metric = metricUnsupported
+				question.UnsupportedReason = "too_complex"
+				return question
+			}
 		}
-		question.Category = resolved
 	}
+
+	question.Keywords = normalizeQuestionKeywords(values["keywords"])
+	question.SubjectLabel = questionSubjectLabel(values["subject"], question.Keywords)
 
 	if merchant, ok := values["merchant"].(string); ok {
 		question.Merchant = strings.TrimSpace(merchant)
@@ -237,7 +264,7 @@ var unsupportedReasons = map[string]string{
 	// Server-set only, never sent by the model. See parse_question_subject.go:
 	// the question named something, and the query came back filtering on
 	// nothing, so the only honest answer is that it was not understood.
-	"unfiltered_subject": "Finnri totals by category, merchant or payment mode — not by the individual item. Try the category it falls under, or the shop you bought it from.",
+	"unfiltered_subject": "Finnri could not tell what to total for that. Try naming just the item, shop or category — like \"fuel this month\" or \"Swiggy in October\".",
 }
 
 func normalizeUnsupportedReason(raw any) string {
@@ -309,6 +336,32 @@ func resolveQuestionPeriod(raw any, now timepkg.Time) (kind, label, startDate, e
 		return requested, fmt.Sprintf("%d", today.Year()-1), day(start), day(timepkg.Date(today.Year()-1, timepkg.December, 31, 0, 0, 0, 0, today.Location()))
 	case "all_time":
 		return requested, "all time", "", ""
+	case "day":
+		// One date: "09 October spends", "what did I spend on 5th Nov". A
+		// date with no year that lands after today means the last one that
+		// happened — nobody asks what they spent on a day still to come.
+		date, ok := questionDate(values, "start")
+		if !ok {
+			date, ok = questionDate(values, "end")
+		}
+		if !ok {
+			break
+		}
+		date = timepkg.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, today.Location())
+		if date.After(today) && date.Year() == today.Year() {
+			date = date.AddDate(-1, 0, 0)
+		}
+		if date.Equal(today) {
+			return "today", "today", day(today), day(today)
+		}
+		if date.Equal(today.AddDate(0, 0, -1)) {
+			return "yesterday", "yesterday", day(date), day(date)
+		}
+		label := "on " + date.Format("2 January")
+		if date.Year() != today.Year() {
+			label = "on " + date.Format("2 Jan 2006")
+		}
+		return requested, label, day(date), day(date)
 	case "month_of":
 		// The model names the month by handing back any date inside it; the
 		// bounds are derived rather than trusted, so a model that writes the
@@ -321,6 +374,16 @@ func resolveQuestionPeriod(raw any, now timepkg.Time) (kind, label, startDate, e
 			break
 		}
 		start := timepkg.Date(anchor.Year(), anchor.Month(), 1, 0, 0, 0, 0, today.Location())
+		// "December spending" asked in November is last December.
+		if start.After(today) && start.Year() == today.Year() {
+			start = start.AddDate(-1, 0, 0)
+		}
+		// The month in progress, named ("November spends" in November), is
+		// this month: same window and comparison as "this month", rather than
+		// the month's unlived days and all of the month before.
+		if start.Equal(monthStart) {
+			return "this_month", "this month", day(monthStart), day(today)
+		}
 		end := start.AddDate(0, 1, -1)
 		label := start.Format("January 2006")
 		if start.Year() == today.Year() {
@@ -388,6 +451,11 @@ func (q ledgerQuestion) questionFilterValues() url.Values {
 		// notes. A dedicated merchant predicate would match fewer rows here
 		// than the search box matches there, and the two would disagree.
 		values.Set("q", q.Merchant)
+	} else if len(q.Keywords) > 0 {
+		// The same filter with alternatives: "fuel|petrol|diesel" matches a row
+		// mentioning any of them, in the list's search box as much as here.
+		// A named shop is narrower than any item word, so it wins above.
+		values.Set("q", keywordSearch(q.Keywords))
 	}
 	// There is deliberately no tag filter. The API has one, but the app's
 	// filter sheet does not, so an answer scoped by tag could not hand the
@@ -474,6 +542,7 @@ func answerLedgerQuestion(userID uint, question ledgerQuestion) (ledgerAnswer, e
 		Breakdown:   []ledgerAnswerSlice{},
 		Suggestions: []string{},
 		Filters:     flattenFilterValues(values),
+		Context:     encodeQuestionContext(question),
 		Period: ledgerAnswerPeriod{
 			Kind:      question.PeriodKind,
 			Label:     question.PeriodLabel,
@@ -571,6 +640,17 @@ func answerLedgerQuestion(userID uint, question ledgerQuestion) (ledgerAnswer, e
 	}
 	answer.Breakdown = breakdown
 
+	current := amount
+	if question.Metric == metricCount {
+		current = float64(answer.TransactionCount)
+	}
+	comparison, err := loadAnswerComparison(userID, question, current)
+	if err != nil {
+		return ledgerAnswer{}, err
+	}
+	answer.Comparison = comparison
+	answer.Suggestions = followUpQuestions(question)
+
 	return answer, nil
 }
 
@@ -582,6 +662,8 @@ func (q ledgerQuestion) answerSubject() string {
 	}
 	if q.Merchant != "" {
 		parts = append(parts, q.Merchant)
+	} else if len(q.Keywords) > 0 && q.SubjectLabel != "" {
+		parts = append(parts, q.SubjectLabel)
 	}
 	if q.Mode != "" && len(parts) == 0 {
 		parts = append(parts, q.Mode)
@@ -676,6 +758,9 @@ func loadLargestEntry(query *gorm.DB, entryType string) (ledgerAnswerEntry, bool
 }
 
 type answeredQuestionRequest struct {
+	// previous is the query the message follows, when the app sent one back.
+	previous *ledgerQuestion
+
 	userID     uint
 	transcript string
 	tz         string
@@ -702,7 +787,26 @@ type answeredQuestionRequest struct {
 // where "Unable to load X right now" lives, and a question Finnri understood
 // well enough to decline is not an error of that kind.
 func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRequest) {
-	question := normalizeLedgerQuestion(request.rawQuery, timepkg.Now().In(s.questionLocation(request.tz)))
+	now := timepkg.Now().In(s.questionLocation(request.tz))
+	question := normalizeLedgerQuestion(request.rawQuery, now)
+
+	// The user's own words outrank the model's reading of them where they are
+	// unambiguous: "09 October spends" is that day, not that month.
+	// A follow-up Finnri offered is worked out from the earlier query, so the
+	// word guards below have nothing in "Biggest one?" to read.
+	chipResolved := false
+	if request.previous != nil {
+		if followUp, ok := resolveChipFollowUp(request.transcript, *request.previous, now); ok {
+			question, chipResolved = followUp, true
+		}
+	}
+	if !chipResolved {
+		question = applySpokenDay(request.transcript, question, now)
+		resolveUserQuestionCategory(request.userID, &question)
+		applyNarrowSubject(request.transcript, &question)
+		applyNamedCategory(request.transcript, &question)
+		preferUserCategory(request.userID, &question)
+	}
 
 	// The last check before the number is computed, and the only one with the
 	// user's own words to hand. A query that filters on nothing, for a question

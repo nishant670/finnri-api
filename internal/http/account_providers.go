@@ -50,6 +50,16 @@ var accountProviders = []accountProvider{
 	{ID: "bhim", DisplayName: "BHIM", TypeSupport: []string{"upi"}, AssetKey: "qrcode-scan", Aliases: []string{"BHIM UPI"}},
 	{ID: "amazon-pay", DisplayName: "Amazon Pay", TypeSupport: []string{"upi", "wallet"}, AssetKey: "amazon", Aliases: []string{"AmazonPay", "Amazon Pay UPI"}},
 	{ID: "mobikwik", DisplayName: "MobiKwik", TypeSupport: []string{"wallet"}, AssetKey: "wallet", Aliases: []string{"Mobi Kwik"}},
+	// Meal and benefit wallets an employer loads every month.
+	{ID: "pluxee", DisplayName: "Pluxee", TypeSupport: []string{"wallet"}, AssetKey: "wallet", Aliases: []string{"Sodexo", "Pluxee Card", "Sodexo Meal Card", "Pluxee Meal Wallet"}},
+	{ID: "zeta", DisplayName: "Zeta", TypeSupport: []string{"wallet"}, AssetKey: "wallet", Aliases: []string{"Zeta Meal", "Zeta Card"}},
+	// Pay-later credit lines: a limit, a monthly statement and a short window
+	// to repay it, so they are credit_card accounts with credit_kind pay_later.
+	{ID: "cred-flash", DisplayName: "CRED flash", TypeSupport: []string{"credit_card"}, AssetKey: "credit-card", Aliases: []string{"CRED", "Cred Flash", "CRED Pay Later"}, CreditKind: "pay_later"},
+	{ID: "lazypay", DisplayName: "LazyPay", TypeSupport: []string{"credit_card"}, AssetKey: "credit-card", Aliases: []string{"Lazy Pay"}, CreditKind: "pay_later"},
+	{ID: "simpl", DisplayName: "Simpl", TypeSupport: []string{"credit_card"}, AssetKey: "credit-card", Aliases: []string{"Simpl Pay Later"}, CreditKind: "pay_later"},
+	{ID: "amazon-pay-later", DisplayName: "Amazon Pay Later", TypeSupport: []string{"credit_card"}, AssetKey: "amazon", Aliases: []string{"Amazon PayLater"}, CreditKind: "pay_later"},
+	{ID: "flipkart-pay-later", DisplayName: "Flipkart Pay Later", TypeSupport: []string{"credit_card"}, AssetKey: "credit-card", Aliases: []string{"Flipkart PayLater"}, CreditKind: "pay_later"},
 }
 
 func listAccountProviders(c *gin.Context) {

@@ -291,3 +291,33 @@ func TestRefundReceivedIsKeptOnlyWhenItCouldBelongToThePurchase(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeParsedDraftSaysWhetherTheModeWasRead(t *testing.T) {
+	// A scanned bill that never said how it was paid still gets Cash, for
+	// older apps; mode_source lets newer ones know Cash was only the default.
+	cases := []struct {
+		mode any
+		hint any
+		want string
+	}{
+		{nil, nil, "default"},
+		{"", nil, "default"},
+		{"barter", nil, "default"},
+		{"UPI", nil, "read"},
+		{"HDFC credit card", nil, "read"},
+		{nil, "SBI savings account", "read"},
+	}
+	for _, tc := range cases {
+		entry := map[string]any{
+			"type": "expense", "title": "Petrol", "amount": float64(3927.54),
+			"mode": tc.mode, "account_hint": tc.hint, "category": "Transport", "date": "2026-10-09",
+		}
+		normalizeParsedDraft(entry, "petrol bill")
+		if entry["mode_source"] != tc.want {
+			t.Fatalf("mode %#v, hint %#v: mode_source = %#v, want %s", tc.mode, tc.hint, entry["mode_source"], tc.want)
+		}
+		if tc.want == "default" && entry["mode"] != defaultParseMode {
+			t.Fatalf("mode %#v: mode = %#v, want the %s default kept", tc.mode, entry["mode"], defaultParseMode)
+		}
+	}
+}

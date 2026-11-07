@@ -112,27 +112,31 @@ type billingStatusResponse struct {
 }
 
 type aiUsageEventResponse struct {
-	ID               uint       `json:"id"`
-	RequestID        string     `json:"request_id"`
-	ActionCode       string     `json:"action_code"`
-	InputKind        string     `json:"input_kind"`
-	Status           string     `json:"status"`
-	EstimatedCredits int        `json:"estimated_credits"`
-	ReservedCredits  int        `json:"reserved_credits"`
-	FinalCredits     int        `json:"final_credits"`
-	Model            string     `json:"model,omitempty"`
-	SecondaryModel   string     `json:"secondary_model,omitempty"`
-	PromptTokens     *int       `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int       `json:"completion_tokens,omitempty"`
-	TotalTokens      *int       `json:"total_tokens,omitempty"`
-	AudioDurationMs  *int       `json:"audio_duration_ms,omitempty"`
-	AudioBytes       *int64     `json:"audio_bytes,omitempty"`
-	InputChars       *int       `json:"input_chars,omitempty"`
-	ResponseBytes    *int       `json:"response_bytes,omitempty"`
-	ErrorCode        string     `json:"error_code,omitempty"`
-	Intent           string     `json:"intent,omitempty"`
-	StartedAt        time.Time  `json:"started_at"`
-	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	ID               uint   `json:"id"`
+	RequestID        string `json:"request_id"`
+	ActionCode       string `json:"action_code"`
+	InputKind        string `json:"input_kind"`
+	Status           string `json:"status"`
+	EstimatedCredits int    `json:"estimated_credits"`
+	ReservedCredits  int    `json:"reserved_credits"`
+	FinalCredits     int    `json:"final_credits"`
+	Model            string `json:"model,omitempty"`
+	SecondaryModel   string `json:"secondary_model,omitempty"`
+	PromptTokens     *int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int   `json:"completion_tokens,omitempty"`
+	TotalTokens      *int   `json:"total_tokens,omitempty"`
+	AudioDurationMs  *int   `json:"audio_duration_ms,omitempty"`
+	AudioBytes       *int64 `json:"audio_bytes,omitempty"`
+	InputChars       *int   `json:"input_chars,omitempty"`
+	ResponseBytes    *int   `json:"response_bytes,omitempty"`
+	ErrorCode        string `json:"error_code,omitempty"`
+	Intent           string `json:"intent,omitempty"`
+	// EntryID is the entry this read's draft became; Entry is that entry, or
+	// absent when it has been deleted since (P57).
+	EntryID    *uint         `json:"entry_id,omitempty"`
+	Entry      *aiUsageEntry `json:"entry,omitempty"`
+	StartedAt  time.Time     `json:"started_at"`
+	FinishedAt *time.Time    `json:"finished_at,omitempty"`
 }
 
 type aiUsageListResponse struct {
@@ -291,8 +295,17 @@ func (s *Server) listAIUsage(c *gin.Context) {
 		return
 	}
 
+	userID, _ := c.Get("userID")
+	viewerID, _ := userID.(uint)
+	madeEntries := aiUsageEntries(viewerID, events)
 	responseEvents := make([]aiUsageEventResponse, 0, len(events))
 	for _, event := range events {
+		var made *aiUsageEntry
+		if event.EntryID != nil {
+			if entry, ok := madeEntries[*event.EntryID]; ok {
+				made = &entry
+			}
+		}
 		responseEvents = append(responseEvents, aiUsageEventResponse{
 			ID:               event.ID,
 			RequestID:        event.RequestID,
@@ -313,6 +326,8 @@ func (s *Server) listAIUsage(c *gin.Context) {
 			ResponseBytes:    event.ResponseBytes,
 			ErrorCode:        event.ErrorCode,
 			Intent:           event.Intent,
+			EntryID:          event.EntryID,
+			Entry:            made,
 			StartedAt:        event.StartedAt,
 			FinishedAt:       event.FinishedAt,
 		})

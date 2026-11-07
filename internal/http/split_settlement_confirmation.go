@@ -276,15 +276,17 @@ func (s *Server) decideSplitSettlement(c *gin.Context, confirmed bool) {
 
 	// The prompt that sent the user here has been answered. Leaving it unread
 	// is how a decided settlement kept its dot on the bell.
-	_ = database.DB.Model(&models.Notification{}).
-		Where("user_id = ? AND type = ? AND read_at IS NULL", userID, "split.settlement.recorded").
-		Where("action_url = ?", fmt.Sprintf("/split/settlements/%d", settlement.ID)).
-		Update("read_at", now).Error
+	// Answered, so the prompt is done as well as read (P49).
+	resolveNotifications(database.DB.
+		Where("user_id = ? AND type = ?", userID, "split.settlement.recorded").
+		Where("action_url = ?", fmt.Sprintf("/split/settlements/%d", settlement.ID)))
 
 	var responder models.User
 	if err := database.DB.First(&responder, userID).Error; err == nil {
 		notifySettlementDecision(database.DB, settlement, responder, confirmed)
 	}
+	// A denial puts the balance back where it was, which can be over the limit.
+	checkSplitGroupBalanceAlerts(database.DB, derefUint(settlement.GroupID))
 
 	decorated := []models.SplitSettlement{settlement}
 	decorateSettlementsForCounterparty(database.DB, decorated)

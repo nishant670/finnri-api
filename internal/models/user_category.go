@@ -2,7 +2,7 @@ package models
 
 import "time"
 
-// UserCategory is a category a user named themselves ("Dividend", "Pet Care"),
+// UserCategory is a category a user named themselves ("Rental income", "Pet Care"),
 // kept so the picker offers it again on their next transaction.
 //
 // Categories the user's entries already carry are offered without a row here;
@@ -15,7 +15,7 @@ type UserCategory struct {
 	UserID uint   `gorm:"uniqueIndex:idx_user_categories_user_type_key;not null" json:"user_id"`
 	Type   string `gorm:"type:varchar(10);uniqueIndex:idx_user_categories_user_type_key;not null" json:"type"`
 	Name   string `gorm:"type:varchar(40);not null" json:"name"`
-	// NameKey is Name lowercased: "dividend" and "Dividend" are one category.
+	// NameKey is Name lowercased: "pet care" and "Pet Care" are one category.
 	NameKey   string    `gorm:"type:varchar(80);uniqueIndex:idx_user_categories_user_type_key;not null" json:"-"`
 	Removed   bool      `gorm:"not null;default:false" json:"-"`
 	CreatedAt time.Time `json:"created_at"`

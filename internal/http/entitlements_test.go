@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -27,10 +28,6 @@ func TestFreeUserGatedEndpointsReturnPaymentRequired(t *testing.T) {
 		wantFeature billing.FeatureCode
 	}{
 		{"advanced insights", http.MethodGet, "/v1/insights?start_date=2026-07-01&end_date=2026-07-31", nil, billing.FeatureAdvancedInsights},
-		{"create budget", http.MethodPost, "/v1/budgets", validBudgetPayload(), billing.FeatureBudgets},
-		{"list budgets", http.MethodGet, "/v1/budgets", nil, billing.FeatureBudgets},
-		{"update budget", http.MethodPut, "/v1/budgets/1", validBudgetPayload(), billing.FeatureBudgets},
-		{"delete budget", http.MethodDelete, "/v1/budgets/1", nil, billing.FeatureBudgets},
 		{"subscription reminders", http.MethodPost, "/v1/subscriptions/reminders", nil, billing.FeatureSubscriptionReminders},
 	}
 
@@ -48,6 +45,47 @@ func TestFreeUserGatedEndpointsReturnPaymentRequired(t *testing.T) {
 			}
 		})
 	}
+}
+
+// P22: without a pass a user may keep one budget. The second create is the
+// upgrade moment, and it says the limit it hit.
+func TestFreeUserKeepsOneBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	authResponse := performJSONRequest[AuthResponse](
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "p22-one-free-budget"}, http.StatusOK,
+	)
+	token := authResponse.Token
+
+	empty := performJSONRequest[[]models.Budget](t, router, http.MethodGet, "/v1/budgets", token, nil, http.StatusOK)
+	if len(empty) != 0 {
+		t.Fatalf("expected no budgets yet, got %#v", empty)
+	}
+
+	budget := performJSONRequest[models.Budget](t, router, http.MethodPost, "/v1/budgets", token, validBudgetPayload(), http.StatusCreated)
+	if budget.ID == 0 {
+		t.Fatalf("expected the free budget to be created, got %#v", budget)
+	}
+
+	refused := performJSONRequest[map[string]any](t, router, http.MethodPost, "/v1/budgets", token, validBudgetPayload(), http.StatusPaymentRequired)
+	if refused["error"] != billing.EntitlementPaymentRequired || refused["feature_code"] != string(billing.FeatureBudgets) {
+		t.Fatalf("unexpected second-budget refusal: %#v", refused)
+	}
+	if refused["free_limit"] != float64(FreeBudgetLimit) {
+		t.Fatalf("free_limit = %#v, want %d", refused["free_limit"], FreeBudgetLimit)
+	}
+
+	listed := performJSONRequest[[]models.Budget](t, router, http.MethodGet, "/v1/budgets", token, nil, http.StatusOK)
+	if len(listed) != 1 {
+		t.Fatalf("expected the one budget, got %#v", listed)
+	}
+	path := fmt.Sprintf("/v1/budgets/%d", budget.ID)
+	_ = performJSONRequest[models.Budget](t, router, http.MethodPut, path, token, validBudgetPayload(), http.StatusOK)
+	_ = performJSONRequest[map[string]any](t, router, http.MethodDelete, path, token, nil, http.StatusOK)
+
+	// With the one deleted, there is room for one again.
+	_ = performJSONRequest[models.Budget](t, router, http.MethodPost, "/v1/budgets", token, validBudgetPayload(), http.StatusCreated)
 }
 
 func TestInlineEntrySplitStaysFree(t *testing.T) {

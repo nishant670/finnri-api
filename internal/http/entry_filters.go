@@ -165,6 +165,20 @@ func buildFilteredEntriesQuery(
 	if search := strings.TrimSpace(get("q")); search != "" {
 		if len(search) > 200 {
 			fields["q"] = "must not exceed 200 characters"
+		} else if strings.Contains(search, searchAlternativeSeparator) {
+			// "fuel|petrol|diesel" — the form an Ask Finnri answer hands the
+			// list — matches a row mentioning any one of them. Short words
+			// match whole words only; see searchTermClause.
+			if terms := searchAlternatives(search); len(terms) > 0 {
+				clauses := make([]string, 0, len(terms))
+				args := make([]any, 0, len(terms)*12)
+				for _, term := range terms {
+					clause, termArgs := searchTermClause(term)
+					clauses = append(clauses, clause)
+					args = append(args, termArgs...)
+				}
+				query = query.Where("("+strings.Join(clauses, " OR ")+")", args...)
+			}
 		} else {
 			pattern := "%" + strings.ToLower(search) + "%"
 			if amount, ok := searchedAmount(search); ok {

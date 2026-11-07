@@ -3,6 +3,7 @@ package http
 import (
 	"regexp"
 	"strings"
+	timepkg "time"
 )
 
 // People do not ask questions in sentences.
@@ -108,6 +109,13 @@ func ledgerQuestionShape(transcript string) (map[string]any, bool) {
 			text = strings.Replace(text, period.phrase, " ", 1)
 			break
 		}
+	}
+
+	// A calendar day is not an amount: "09 October spends" asks about a day.
+	// Only the date's own digits are removed — the day itself is applied to
+	// the query later, from the user's timezone, by applySpokenDay.
+	if match, normalized, ok := spokenDay(text, timepkg.Now()); ok {
+		text = normalized[:match.start] + " " + normalized[match.end:]
 	}
 
 	if digits.MatchString(text) {

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -198,6 +199,14 @@ func (s *Server) saveCardStatement(c *gin.Context) {
 	}
 	retileNextStatement(account, statement.ID, statement.StatementDate)
 
+	// The bill amount the "statement is out" prompt asked for is in (P49),
+	// and a statement saved already paid needs no due reminder either.
+	resolveNotifications(database.DB.
+		Where("user_id = ? AND type = ? AND action_url = ?", account.UserID, "card_statement.statement_expected", fmt.Sprintf("/accounts/%d", account.ID)))
+	if statement.Status == statementStatusPaid {
+		resolveCardBillReminders(account.UserID, statement.ID)
+	}
+
 	respondWithSavedStatement(c, &statement, created, suggestStatementDay(account, statement))
 }
 
@@ -340,6 +349,10 @@ func (s *Server) recordCardStatementPayment(c *gin.Context) {
 	if err := refreshStatementPaidAmount(&statement); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_record_payment"})
 		return
+	}
+	// Paid in full: its due and overdue reminders are done (P49).
+	if statement.Status == statementStatusPaid {
+		resolveCardBillReminders(statement.UserID, statement.ID)
 	}
 
 	respondWithStatement(c, &statement, true)
