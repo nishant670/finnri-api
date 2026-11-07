@@ -81,9 +81,8 @@ func DefaultFeatureRules() map[FeatureCode]FeatureRule {
 			CreditBacked: true,
 		},
 		FeatureAdvancedInsights: {
-			Code:             FeatureAdvancedInsights,
-			Label:            "Advanced insights",
-			RequiresPaidPlan: true,
+			Code:  FeatureAdvancedInsights,
+			Label: "Advanced insights",
 		},
 		FeatureWeeklyReview: {
 			Code:             FeatureWeeklyReview,
@@ -91,14 +90,12 @@ func DefaultFeatureRules() map[FeatureCode]FeatureRule {
 			RequiresPaidPlan: true,
 		},
 		FeatureBudgets: {
-			Code:             FeatureBudgets,
-			Label:            "Budgets",
-			RequiresPaidPlan: true,
+			Code:  FeatureBudgets,
+			Label: "Budgets",
 		},
 		FeatureSubscriptionReminders: {
-			Code:             FeatureSubscriptionReminders,
-			Label:            "Subscription reminders",
-			RequiresPaidPlan: true,
+			Code:  FeatureSubscriptionReminders,
+			Label: "Subscription reminders",
 		},
 		FeatureSplitLedger: {
 			Code:  FeatureSplitLedger,
@@ -131,10 +128,7 @@ func PaidFeatureCodes() []string {
 	return []string{
 		string(FeatureAITextCapture),
 		string(FeatureAIVoiceCapture),
-		string(FeatureAdvancedInsights),
 		string(FeatureWeeklyReview),
-		string(FeatureBudgets),
-		string(FeatureSubscriptionReminders),
 		string(FeatureWebDashboard),
 		string(FeatureExports),
 		string(FeatureBulkEdit),

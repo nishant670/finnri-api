@@ -310,7 +310,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/monthly-review", s.getMonthlyReview)
 		authorized.POST("/monthly-review/send", s.sendMonthlyReviewNow)
 		authorized.GET("/dashboard", s.getDashboard)
-		authorized.GET("/insights", s.requireEntitlement(billing.FeatureAdvancedInsights), s.getInsights)
+		authorized.GET("/insights", s.getInsights)
 		authorized.POST("/recurring-candidates/decision", s.saveRecurringCandidateDecision)
 		authorized.POST("/recurring-candidates/track", s.trackRecurringCandidates)
 
@@ -322,7 +322,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
 
 		// Budgets
-		budgets := authorized.Group("/budgets", s.requireBudgetAllowance())
+		budgets := authorized.Group("/budgets")
 		{
 			budgets.POST("", s.createBudget)
 			budgets.GET("", s.listBudgets)
@@ -334,7 +334,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/subscriptions", s.createSubscription)
 		authorized.GET("/subscriptions", s.listSubscriptions)
 		authorized.GET("/recurring", s.listRecurring)
-		authorized.POST("/subscriptions/reminders", s.requireEntitlement(billing.FeatureSubscriptionReminders), s.createSubscriptionReminders)
+		authorized.POST("/subscriptions/reminders", s.createSubscriptionReminders)
 		authorized.POST("/subscriptions/sync", s.syncSubscriptionAutomationNow)
 		authorized.PUT("/subscriptions/:id", s.updateSubscription)
 		authorized.DELETE("/subscriptions/:id", s.deleteSubscription)
