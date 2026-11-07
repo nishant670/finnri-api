@@ -153,6 +153,9 @@ type ledgerAnswer struct {
 	GroupBy          string              `json:"group_by,omitempty"`
 	Breakdown        []ledgerAnswerSlice `json:"breakdown"`
 	LargestEntry     *ledgerAnswerEntry  `json:"largest_entry,omitempty"`
+	// Context is the query this answer was computed over, for the app to hand
+	// back with a follow-up. See parse_query_context.go.
+	Context string `json:"context,omitempty"`
 	// Comparison is the same number for the window before (P64).
 	Comparison  *ledgerAnswerComparison `json:"comparison,omitempty"`
 	Reason      string                  `json:"reason,omitempty"`
@@ -375,6 +378,12 @@ func resolveQuestionPeriod(raw any, now timepkg.Time) (kind, label, startDate, e
 		if start.After(today) && start.Year() == today.Year() {
 			start = start.AddDate(-1, 0, 0)
 		}
+		// The month in progress, named ("November spends" in November), is
+		// this month: same window and comparison as "this month", rather than
+		// the month's unlived days and all of the month before.
+		if start.Equal(monthStart) {
+			return "this_month", "this month", day(monthStart), day(today)
+		}
 		end := start.AddDate(0, 1, -1)
 		label := start.Format("January 2006")
 		if start.Year() == today.Year() {
@@ -533,6 +542,7 @@ func answerLedgerQuestion(userID uint, question ledgerQuestion) (ledgerAnswer, e
 		Breakdown:   []ledgerAnswerSlice{},
 		Suggestions: []string{},
 		Filters:     flattenFilterValues(values),
+		Context:     encodeQuestionContext(question),
 		Period: ledgerAnswerPeriod{
 			Kind:      question.PeriodKind,
 			Label:     question.PeriodLabel,
@@ -748,6 +758,9 @@ func loadLargestEntry(query *gorm.DB, entryType string) (ledgerAnswerEntry, bool
 }
 
 type answeredQuestionRequest struct {
+	// previous is the query the message follows, when the app sent one back.
+	previous *ledgerQuestion
+
 	userID     uint
 	transcript string
 	tz         string
@@ -779,11 +792,21 @@ func (s *Server) answerParsedQuestion(c *gin.Context, request answeredQuestionRe
 
 	// The user's own words outrank the model's reading of them where they are
 	// unambiguous: "09 October spends" is that day, not that month.
-	question = applySpokenDay(request.transcript, question, now)
-	resolveUserQuestionCategory(request.userID, &question)
-	applyNarrowSubject(request.transcript, &question)
-	applyNamedCategory(request.transcript, &question)
-	preferUserCategory(request.userID, &question)
+	// A follow-up Finnri offered is worked out from the earlier query, so the
+	// word guards below have nothing in "Biggest one?" to read.
+	chipResolved := false
+	if request.previous != nil {
+		if followUp, ok := resolveChipFollowUp(request.transcript, *request.previous, now); ok {
+			question, chipResolved = followUp, true
+		}
+	}
+	if !chipResolved {
+		question = applySpokenDay(request.transcript, question, now)
+		resolveUserQuestionCategory(request.userID, &question)
+		applyNarrowSubject(request.transcript, &question)
+		applyNamedCategory(request.transcript, &question)
+		preferUserCategory(request.userID, &question)
+	}
 
 	// The last check before the number is computed, and the only one with the
 	// user's own words to hand. A query that filters on nothing, for a question

@@ -371,3 +371,11 @@ func TestAnItemTheUserGaveItsOwnCategoryUsesIt(t *testing.T) {
 		t.Fatalf("answer = %s, want the user's Fuel category", response.Body.String())
 	}
 }
+
+func TestTheCurrentMonthByNameIsThisMonth(t *testing.T) {
+	now := time.Date(2026, time.November, 7, 9, 0, 0, 0, time.UTC)
+	kind, label, start, end := resolveQuestionPeriod(map[string]any{"kind": "month_of", "start": "2026-11-01"}, now)
+	if kind != "this_month" || label != "this month" || start != "2026-11-01" || end != "2026-11-07" {
+		t.Fatalf("November asked in November = %s %q %s..%s, want this month", kind, label, start, end)
+	}
+}

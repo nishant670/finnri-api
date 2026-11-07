@@ -43,7 +43,7 @@ func comparisonWindow(question ledgerQuestion) (start, end, label string, ok boo
 		if question.PeriodKind == "this_month" && to.Day() < lastOfMonth.Day() {
 			beforeEnd = timepkg.Date(before.Year(), before.Month(), to.Day(), 0, 0, 0, 0, timepkg.UTC)
 		}
-	case "this_year", "last_year":
+	case "this_year", "last_year", "custom_year":
 		before = from.AddDate(-1, 0, 0)
 		beforeEnd = to.AddDate(-1, 0, 0)
 	default:
@@ -141,7 +141,7 @@ func followUpQuestions(question ledgerQuestion) []string {
 		previous = "And the week before?"
 	case "today", "yesterday", "day":
 		previous = "And the day before?"
-	case "this_year", "last_year":
+	case "this_year", "last_year", "custom_year":
 		previous = "And the year before?"
 	case "all_time":
 		previous = ""
@@ -181,4 +181,23 @@ func withFollowUpContext(transcript, previous string) string {
 		previous,
 		transcript,
 	)
+}
+
+// followUpPrompt is the text the model reads for a message that may follow an
+// earlier answer. A resolved context (parse_query_context.go) is described
+// exactly; the words of an earlier question, which older apps send, go
+// through withFollowUpContext as before; anything else is ignored.
+func followUpPrompt(transcript, contextQuestion string) string {
+	if strings.HasPrefix(strings.TrimSpace(contextQuestion), questionContextPrefix) {
+		previous, ok := decodeQuestionContext(contextQuestion)
+		if !ok || strings.TrimSpace(transcript) == "" {
+			return transcript
+		}
+		return fmt.Sprintf(
+			"[Earlier answer, for context only — it was computed for: %s. If the message below is a follow-up to it (\"and last month?\", \"what about food?\", \"only UPI?\"), answer it as that query with the change applied: keep every filter the message does not change, and work out any relative period (\"the day before\", \"that week\") from the earlier period's dates, not from today, giving explicit dates with kind \"day\", \"custom\" or \"month_of\". If the message is a new question, read it on its own and ignore the earlier answer.]\n%s",
+			describeQuestionContext(previous),
+			transcript,
+		)
+	}
+	return withFollowUpContext(transcript, contextQuestion)
 }
