@@ -632,7 +632,7 @@ func (s *Server) handleParse(c *gin.Context) {
 		usageEvent = &event
 	}
 
-	parsed, parseUsage, err := s.parser.ParseText(ctx, transcript, tz)
+	parsed, parseUsage, err := s.parser.ParseText(ctx, withFollowUpContext(transcript, c.PostForm("context_question")), tz)
 	// Every finalisation below this line follows a call the provider actually
 	// answered, so each one carries what that answer cost. The `could_not_parse`
 	// branch is the exception: the call itself failed and reported nothing.

@@ -141,9 +141,11 @@ type ledgerAnswer struct {
 	GroupBy          string              `json:"group_by,omitempty"`
 	Breakdown        []ledgerAnswerSlice `json:"breakdown"`
 	LargestEntry     *ledgerAnswerEntry  `json:"largest_entry,omitempty"`
-	Reason           string              `json:"reason,omitempty"`
-	Message          string              `json:"message,omitempty"`
-	Suggestions      []string            `json:"suggestions"`
+	// Comparison is the same number for the window before (P64).
+	Comparison  *ledgerAnswerComparison `json:"comparison,omitempty"`
+	Reason      string                  `json:"reason,omitempty"`
+	Message     string                  `json:"message,omitempty"`
+	Suggestions []string                `json:"suggestions"`
 
 	// Filters is the query the number was computed over, in the transaction
 	// list's own parameter names. The app hands it straight to the list, so the
@@ -570,6 +572,17 @@ func answerLedgerQuestion(userID uint, question ledgerQuestion) (ledgerAnswer, e
 		return ledgerAnswer{}, err
 	}
 	answer.Breakdown = breakdown
+
+	current := amount
+	if question.Metric == metricCount {
+		current = float64(answer.TransactionCount)
+	}
+	comparison, err := loadAnswerComparison(userID, question, current)
+	if err != nil {
+		return ledgerAnswer{}, err
+	}
+	answer.Comparison = comparison
+	answer.Suggestions = followUpQuestions(question)
 
 	return answer, nil
 }
