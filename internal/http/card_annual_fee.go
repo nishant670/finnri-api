@@ -233,7 +233,8 @@ func indiaLocation() *time.Location {
 // notification: "30 Sep", with the year only when it isn't this year's. A value
 // that doesn't parse is returned as it came, so a message is never left blank.
 func dateForCopy(apiDate string, now time.Time) string {
-	parsed, err := time.Parse(apiDateLayout, strings.TrimSpace(apiDate))
+	// CalendarDay also trims a timestamp ("2026-09-30T00:00:00Z") to its day.
+	parsed, err := time.Parse(apiDateLayout, models.CalendarDay(strings.TrimSpace(apiDate)))
 	if err != nil {
 		return apiDate
 	}

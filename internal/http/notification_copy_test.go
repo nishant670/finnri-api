@@ -14,12 +14,13 @@ import (
 func TestDateForCopy(t *testing.T) {
 	now := time.Date(2026, time.November, 7, 12, 0, 0, 0, indiaLocation())
 	cases := map[string]string{
-		"2026-09-30": "30 Sep",
-		"2026-11-07": "7 Nov",
-		"2027-01-05": "5 Jan 2027",
-		"2025-12-31": "31 Dec 2025",
-		"not a date": "not a date",
-		"":           "",
+		"2026-09-30":           "30 Sep",
+		"2026-11-07":           "7 Nov",
+		"2027-01-05":           "5 Jan 2027",
+		"2025-12-31":           "31 Dec 2025",
+		"2026-09-30T00:00:00Z": "30 Sep",
+		"not a date":           "not a date",
+		"":                     "",
 	}
 	for input, want := range cases {
 		if got := dateForCopy(input, now); got != want {
