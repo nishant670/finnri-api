@@ -222,6 +222,7 @@ func buildStatementDiff(statement *models.CardStatement, lines []statementLine) 
 		return statementDiff{}, err
 	}
 	diff := diffStatementLines(lines, entries)
+	diff.CycleWarning = cycleWarningFor(statement, lines)
 
 	// A draft has no amount yet, so there is nothing to add up to.
 	if statement.Status == statementStatusDraft || statement.TotalDue <= 0 {
@@ -307,8 +308,13 @@ func statementLineTitle(line statementLine) string {
 // key stays inside the column's 128 characters whatever the bank wrote.
 func statementLineIdempotencyKey(statementID uint, line statementLine) string {
 	sum := sha256.Sum256([]byte(strings.ToUpper(strings.TrimSpace(line.Description))))
-	return fmt.Sprintf("stmt:%d:%s:%s:%s",
-		statementID, dateOnly(line.Date), line.Amount.String(), hex.EncodeToString(sum[:8]))
+	return fmt.Sprintf("%s%s:%s:%s",
+		statementImportKeyPrefix(statementID), dateOnly(line.Date), line.Amount.String(), hex.EncodeToString(sum[:8]))
+}
+
+// statementImportKeyPrefix starts the key of every row a statement imported.
+func statementImportKeyPrefix(statementID uint) string {
+	return fmt.Sprintf("stmt:%d:", statementID)
 }
 
 // uploadCardStatementPDF reads a statement PDF and returns the diff against

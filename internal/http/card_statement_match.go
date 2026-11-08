@@ -153,7 +153,10 @@ type statementDiff struct {
 	// yet. A mismatch is a review warning, never a reason to hide or reject
 	// the parsed rows.
 	Checksum *statementChecksum `json:"checksum,omitempty"`
-	Source   string             `json:"source,omitempty"`
+	// CycleWarning is set when the rows run past the bill's cycle, which
+	// means the bill was saved with the wrong statement date.
+	CycleWarning *statementCycleWarning `json:"cycle_warning,omitempty"`
+	Source       string                 `json:"source,omitempty"`
 
 	CreditsCharged        *int `json:"credits_charged,omitempty"`
 	CreditsRemainingToday *int `json:"credits_remaining_today,omitempty"`
@@ -197,39 +200,49 @@ type statementDiffTotal struct {
 // arithmetic. Importing one as an income entry would silently reduce the
 // card's outstanding a second time.
 func classifyLine(line statementLine) string {
-	normalized := strings.ToUpper(line.Description)
+	normalized := " " + strings.Join(descriptionWords(line.Description), " ") + " "
+	has := func(markers ...string) bool {
+		for _, marker := range markers {
+			if strings.Contains(normalized, " "+marker+" ") {
+				return true
+			}
+		}
+		return false
+	}
 
 	if line.isCredit() {
-		for _, marker := range []string{
-			"PAYMENT RECEIVED", "PAYMENT - THANK", "PAYMENT THANK", "THANK YOU",
-			"AUTOPAY", "AUTO DEBIT", "AUTO-DEBIT", "NEFT CR", "IMPS CR",
-			"BILL PAYMENT", "PMT RECEIVED", "RECEIVED - THANK",
-		} {
-			if strings.Contains(normalized, marker) {
-				return lineKindPayment
-			}
+		// A credit naming a reversal is money coming back, whatever else the
+		// bank wrote on the row.
+		if has("REFUND", "REVERSAL", "REVERSED", "CASHBACK", "CHARGEBACK") {
+			return lineKindRefund
+		}
+		if has("PAYMENT", "PAYMENTS", "PMT", "THANK YOU", "AUTOPAY", "AUTO DEBIT", "BBPS",
+			"NEFT CR", "IMPS CR", "NEFT", "IMPS", "RTGS", "INFT", "NETBANKING") {
+			return lineKindPayment
 		}
 		return lineKindRefund
 	}
 
-	for _, marker := range []string{"INTEREST", "FINANCE CHARGE", "FIN CHARGE"} {
-		if strings.Contains(normalized, marker) {
-			return lineKindInterest
-		}
+	if has("INTEREST", "FINANCE CHARGE", "FINANCE CHARGES", "FIN CHARGE", "FIN CHARGES") {
+		return lineKindInterest
 	}
-	for _, marker := range []string{
-		"FEE", "CHARGE", "GST", "TAX", "SURCHARGE", "PENALTY", "LATE PAY",
-		"ANNUAL", "MARKUP",
-	} {
-		if strings.Contains(normalized, marker) {
-			return lineKindFee
-		}
+	if has("FEE", "FEES", "CHARGE", "CHARGES", "GST", "IGST", "CGST", "SGST", "TAX", "TAXES",
+		"SURCHARGE", "PENALTY", "LATE PAY", "LATE PAYMENT", "MARKUP") {
+		return lineKindFee
 	}
-	if strings.Contains(normalized, "EMI") || strings.Contains(normalized, "INSTALMENT") ||
-		strings.Contains(normalized, "INSTALLMENT") {
+	if has("EMI", "EMIS", "INSTALMENT", "INSTALLMENT") {
 		return lineKindEMI
 	}
 	return lineKindSpend
+}
+
+// descriptionWords splits a bank description into upper-case words. Markers
+// are compared as whole words because merchant names contain them: COFFEE
+// holds FEE, RECHARGE holds CHARGE, TAXI holds TAX, PREMIUM holds EMI.
+func descriptionWords(description string) []string {
+	return strings.FieldsFunc(strings.ToUpper(description), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 // diffStatementLines produces the three buckets.

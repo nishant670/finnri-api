@@ -27,7 +27,7 @@ type StatementSummaryReader interface {
 // The summary keys, shared by both prompts. Every amount is copied from the
 // document; the caller drops any amount it cannot find printed in the text.
 const statementSummaryKeys = `"summary":{
- "statement_date":"YYYY-MM-DD"|null, "due_date":"YYYY-MM-DD"|null,
+ "statement_date":"YYYY-MM-DD"|null, "cycle_start":"YYYY-MM-DD"|null, "due_date":"YYYY-MM-DD"|null,
  "total_due":number|null, "minimum_due":number|null,
  "credit_limit":number|null, "available_limit":number|null,
  "opening_balance":number|null, "payments":number|null, "purchases":number|null, "fees_and_charges":number|null,
@@ -36,6 +36,8 @@ const statementSummaryKeys = `"summary":{
 
 const statementSummaryRules = `Rules for the summary:
 - Copy every amount exactly as printed, in rupees, as a positive number. Never calculate, estimate or invent one. Use null for anything not printed.
+- statement_date is the date labelled Statement Date, or the last day of the Statement Period. It is never a transaction's date, and it is never earlier than any transaction on the statement. cycle_start is the first day of the printed Statement Period. due_date is the date labelled Payment Due Date.
+- A summary panel can be printed beside the transaction table, so a label or date at the end of a table row may belong to the panel and not to that row.
 - total_due is the total amount due on this bill, never the minimum due, a limit, or a transaction.
 - opening_balance is the previous balance / opening balance; payments is payments and credits received; purchases is purchases and debits; fees_and_charges is the fees, interest and taxes total, each only when the statement's account summary prints it.
 - annual_fee is the card's annual or renewal membership fee before GST, only when the statement states it (as a charge on this bill or in its fee terms). fee_waiver_spend is the yearly spend above which that fee is waived, only when stated.
@@ -45,7 +47,7 @@ const statementSummaryRules = `Rules for the summary:
 
 const statementLinesKeys = `"lines":[{"date":"YYYY-MM-DD","description":"merchant or bank description","amount":123.45,"type":"expense|income"}]`
 
-const statementLinesRules = `Rules for lines: use expense for debits/purchases/fees/interest/EMIs and income for refunds/credits/payments received. Amounts are positive. Include transaction rows only; ignore totals, limits, rewards, headers and footers.`
+const statementLinesRules = `Rules for lines: use expense for debits/purchases/fees/interest/EMIs and income for refunds/credits/payments received. Amounts are positive. Include every transaction row. description is the merchant text from the transaction details column only, never the merchant category column. A reward points column holds small whole numbers next to the amount: it is not part of the amount. Include transaction rows only; ignore totals, limits, rewards, headers and footers.`
 
 const statementReadImagesPrompt = `Read these ordered credit-card statement screenshots and return JSON only:
 {` + statementSummaryKeys + `,
