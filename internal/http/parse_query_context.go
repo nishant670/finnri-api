@@ -179,6 +179,8 @@ func chipFollowUp(transcript string) string {
 		return "where"
 	case "biggest one", "the biggest one", "largest one", "biggest":
 		return "biggest"
+	case "how much in total", "total", "the total", "how much in all":
+		return "total"
 	case "last month":
 		return "last_month"
 	case "the day before", "day before", "the previous day":
@@ -221,6 +223,13 @@ func resolveChipFollowUp(transcript string, previous ledgerQuestion, now timepkg
 		return question, true
 	case "biggest":
 		question.Metric = metricLargest
+		question.GroupBy = "none"
+		return question, true
+	case "total":
+		question.Metric = metricSpendTotal
+		if question.EntryType == "income" {
+			question.Metric = metricIncomeTotal
+		}
 		question.GroupBy = "none"
 		return question, true
 	case "last_month":
