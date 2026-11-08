@@ -61,9 +61,15 @@ var cardBillNotificationTypes = []string{
 // resolveCardBillReminders clears the due and overdue reminders of a
 // statement once it is paid (P49).
 func resolveCardBillReminders(userID, statementID uint) {
-	resolveNotifications(database.DB.
+	resolveCardBillRemindersIn(database.DB, userID, statementID)
+}
+
+// resolveCardBillRemindersIn is resolveCardBillReminders on a given connection,
+// for a caller inside a transaction.
+func resolveCardBillRemindersIn(db *gorm.DB, userID, statementID uint) {
+	resolveNotifications(db.
 		Where("user_id = ? AND type IN ?", userID, cardBillNotificationTypes).
-		Where("id IN (?)", database.DB.Model(&models.CardStatementReminder{}).
+		Where("id IN (?)", db.Model(&models.CardStatementReminder{}).
 			Select("notification_id").
 			Where("user_id = ? AND statement_id = ? AND notification_id IS NOT NULL", userID, statementID)))
 }

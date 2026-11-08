@@ -44,7 +44,9 @@ images in one vision call.
 // statementSummary is what the statement says about the bill and the card.
 // Every field is optional: nil means "not printed", never "zero".
 type statementSummary struct {
-	StatementDate  string        `json:"statement_date,omitempty"`
+	StatementDate string `json:"statement_date,omitempty"`
+	// CycleStart is the first day of the period the statement prints.
+	CycleStart     string        `json:"cycle_start,omitempty"`
 	DueDate        string        `json:"due_date,omitempty"`
 	TotalDue       *models.Money `json:"total_due,omitempty"`
 	MinimumDue     *models.Money `json:"minimum_due,omitempty"`
@@ -224,7 +226,10 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.T
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "no_transactions_found"})
 			return pdfStatementText{}, false
 		}
-		return pdfStatementText{lines: localLines}, true
+		// The dates printed on the statement cost nothing to read.
+		summary := statementSummary{}
+		applyStatementDateChecks(&summary, text, localLines)
+		return pdfStatementText{summary: summary, lines: localLines}, true
 	}
 
 	reader, ok := s.parser.(ai.StatementSummaryReader)
@@ -271,7 +276,7 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.T
 			Status: billing.UsageStatusFailedAfterProvider, ErrorCode: "statement_pdf_read_failed", FinalCredits: statementReadNoCharge(),
 		})
 		if len(localLines) > 0 {
-			return pdfStatementText{lines: localLines}, true
+			return local()
 		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "statement_read_failed"})
 		return pdfStatementText{}, false
@@ -288,10 +293,8 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.T
 		}, usage, s.cfg.OpenAILlmModel))
 		return local()
 	}
-	lines := aiLines
-	if len(localLines) >= len(aiLines) {
-		lines = localLines
-	}
+	lines := chooseStatementRows(localLines, aiLines, summary)
+	applyStatementDateChecks(&summary, text, lines)
 	credits, err := s.finalizeParseSuccess(creditService, usageEvent.ID, subject, action.Code, len(text), responseBytes, 0, usage)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credit_finalization_failed"})
@@ -400,6 +403,7 @@ func (s *Server) readStatementScreenshots(c *gin.Context) (statementReadResponse
 	// Overlapping screenshots repeat rows; the statement does not exist yet,
 	// so dedupe on the same key with no statement id.
 	lines = dedupeStatementLines(0, lines)
+	applyStatementDateChecks(&summary, "", lines)
 
 	response := statementReadResponse{Summary: summary, Lines: lines, Source: "screenshots_ai"}
 	var diff statementDiff
@@ -429,6 +433,7 @@ func decodeStatementSummary(raw []byte, sourceText string) (statementSummary, er
 	var envelope struct {
 		Summary struct {
 			StatementDate  string        `json:"statement_date"`
+			CycleStart     string        `json:"cycle_start"`
 			DueDate        string        `json:"due_date"`
 			TotalDue       *models.Money `json:"total_due"`
 			MinimumDue     *models.Money `json:"minimum_due"`
@@ -479,6 +484,9 @@ func decodeStatementSummary(raw []byte, sourceText string) (statementSummary, er
 	}
 	if date, err := parseStrictAPIDate(in.StatementDate); err == nil {
 		out.StatementDate = date.Format(apiDateLayout)
+		if start, err := parseStrictAPIDate(in.CycleStart); err == nil && start.Before(date) {
+			out.CycleStart = start.Format(apiDateLayout)
+		}
 		if due, err := parseStrictAPIDate(in.DueDate); err == nil && due.After(date) &&
 			due.Sub(date) <= 60*24*time.Hour {
 			out.DueDate = due.Format(apiDateLayout)

@@ -1558,6 +1558,17 @@ func ownedEntries(db *gorm.DB, userID uint) *gorm.DB {
 	return db.Where("user_id = ?", userID)
 }
 
+// deleteEntryDependents clears what exists only because of an entry, ahead of
+// deleting it.
+func deleteEntryDependents(tx *gorm.DB, userID, entryID uint) error {
+	if err := deleteEntrySplitBills(tx, userID, entryID); err != nil {
+		return err
+	}
+	// A recurring payment's entry is filed against its due date; dropping
+	// that filing also frees the date to be logged again.
+	return deleteSubscriptionOccurrences(tx, userID, "entry_id", entryID)
+}
+
 func (s *Server) deleteEntry(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -1577,12 +1588,7 @@ func (s *Server) deleteEntry(c *gin.Context) {
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := deleteEntrySplitBills(tx, userID, uint(id)); err != nil {
-			return err
-		}
-		// A recurring payment's entry is filed against its due date; dropping
-		// that filing also frees the date to be logged again.
-		if err := deleteSubscriptionOccurrences(tx, userID, "entry_id", uint(id)); err != nil {
+		if err := deleteEntryDependents(tx, userID, uint(id)); err != nil {
 			return err
 		}
 		result := ownedEntries(tx, userID).Where("id = ?", id).Delete(&models.Entry{})

@@ -50,6 +50,10 @@ func effectiveStatementDay(statementDay int, statementDate time.Time) int {
 	return statementDate.Day()
 }
 
+// statementDayDriftDays is how far a bill can sit from the card's billing day
+// and still be that day moved for a weekend or holiday.
+const statementDayDriftDays = 7
+
 // statementCycle returns the inclusive window a statement covers.
 //
 // The cycle ends on the statement date and starts the day after the previous
@@ -60,6 +64,14 @@ func effectiveStatementDay(statementDay int, statementDate time.Time) int {
 func statementCycle(statementDate time.Time, statementDay int) (start, end time.Time) {
 	end = truncateDate(statementDate)
 	day := effectiveStatementDay(statementDay, end)
+
+	// A bill dated far from the card's usual day says the card's day is the
+	// wrong one, not that the cycle is short. A card set to the 23rd holding a
+	// bill dated 5 Nov would otherwise start the cycle on 24 Oct and leave
+	// half the bill's spending out of it.
+	if gap := clampDayToMonth(end.Year(), end.Month(), day).Sub(end).Hours() / 24; gap > statementDayDriftDays || gap < -statementDayDriftDays {
+		day = end.Day()
+	}
 
 	previousAnchor := clampDayToMonth(end.Year(), end.Month()-1, day)
 	start = previousAnchor.AddDate(0, 0, 1)

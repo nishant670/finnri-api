@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"finnri/internal/models"
 )
@@ -51,6 +52,13 @@ var statementDatePatterns = []struct {
 var amountPattern = regexp.MustCompile(
 	`(?i)(?:(?:INR|Rs\.?|₹)\s*)?((?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?)\s*(CR|DR|C|D)?\s*$`)
 
+// directionCell is a Dr/Cr column printed apart from the amount.
+var directionCell = regexp.MustCompile(`(?i)^(CR|DR|C|D)$`)
+
+// amountCell is one table cell that is nothing but an amount.
+var amountCell = regexp.MustCompile(
+	`(?i)^(?:(?:INR|Rs\.?|₹)\s*)?((?:\d{1,3}(?:,\d{2,3})+|\d+)(\.\d{1,2})?)\s*(CR|DR|C|D)?$`)
+
 // creditMarkers are what an issuer prints against a credit.
 var creditMarkers = map[string]bool{"CR": true, "C": true}
 
@@ -83,18 +91,17 @@ func parseStatementRow(raw string, fallbackYear int) (statementLine, bool) {
 		return statementLine{}, false
 	}
 
-	amountMatch := amountPattern.FindStringSubmatch(rest)
-	if amountMatch == nil {
+	description, figure, marker, ok := splitRowAmount(rest)
+	if !ok {
 		return statementLine{}, false
 	}
 
-	amount, err := models.ParseMoney(strings.ReplaceAll(amountMatch[1], ",", ""))
+	amount, err := models.ParseMoney(strings.ReplaceAll(figure, ",", ""))
 	if err != nil || amount <= 0 {
 		return statementLine{}, false
 	}
 
-	description := strings.TrimSpace(rest[:len(rest)-len(amountMatch[0])])
-	description = strings.Trim(description, " \t·-|")
+	description = strings.Trim(strings.TrimSpace(description), " \t·-|")
 	if description == "" {
 		// A date and an amount with nothing between them is a running total or
 		// a carried balance, not a transaction.
@@ -102,7 +109,7 @@ func parseStatementRow(raw string, fallbackYear int) (statementLine, bool) {
 	}
 
 	entryType := "expense"
-	if creditMarkers[strings.ToUpper(amountMatch[2])] {
+	if creditMarkers[strings.ToUpper(marker)] {
 		entryType = "income"
 	}
 
@@ -116,6 +123,65 @@ func parseStatementRow(raw string, fallbackYear int) (statementLine, bool) {
 	return line, true
 }
 
+// splitRowAmount finds a row's amount in the text after its date.
+//
+// When the reader kept the row's cells apart, the amount is a cell of its own:
+// the rightmost one that looks like money, preferring paise or a DR/CR marker
+// over a bare number, because a Reward Points cell is a bare number too. The
+// description is then the first cell holding words, which skips a serial number
+// or posting date before it and leaves the merchant category and the points
+// out of the transaction's name.
+//
+// Text with no cell gaps falls back to the amount at the end of the line,
+// unless what ends the line is the tail of a date.
+func splitRowAmount(rest string) (description, figure, marker string, ok bool) {
+	if cells := cellGap.Split(strings.TrimSpace(rest), -1); len(cells) > 1 {
+		for _, strict := range []bool{true, false} {
+			for index := len(cells) - 1; index > 0; index-- {
+				match := amountCell.FindStringSubmatch(cells[index])
+				if match == nil {
+					continue
+				}
+				marker := match[3]
+				if marker == "" && index+1 < len(cells) && directionCell.MatchString(cells[index+1]) {
+					marker = cells[index+1]
+				}
+				if strict && match[2] == "" && marker == "" {
+					continue
+				}
+				return rowName(cells[:index]), match[1], marker, true
+			}
+		}
+	}
+
+	match := amountPattern.FindStringSubmatchIndex(rest)
+	if match == nil {
+		return "", "", "", false
+	}
+	if match[0] > 0 && strings.ContainsRune("/-.", rune(rest[match[0]-1])) {
+		return "", "", "", false
+	}
+	figure = rest[match[2]:match[3]]
+	if match[4] >= 0 {
+		marker = rest[match[4]:match[5]]
+	}
+	return rest[:match[0]], figure, marker, true
+}
+
+// rowName is the first cell that holds words and is not itself a date. Empty
+// means the row has no name, so it is a total or a balance and not a purchase.
+func rowName(cells []string) string {
+	for _, cell := range cells {
+		if _, _, isDate := takeLeadingDate(cell, 0); isDate {
+			continue
+		}
+		if strings.IndexFunc(cell, unicode.IsLetter) >= 0 {
+			return cell
+		}
+	}
+	return ""
+}
+
 // takeLeadingDate reads a date off the front of a row and returns the rest.
 func takeLeadingDate(row string, fallbackYear int) (string, string, bool) {
 	for _, candidate := range statementDatePatterns {
@@ -123,9 +189,18 @@ func takeLeadingDate(row string, fallbackYear int) (string, string, bool) {
 		if match == "" {
 			continue
 		}
-		normalized := strings.NewReplacer("-", "/", ".", "/").Replace(match)
+		// Layouts name the separator they expect: "10-JUL-26" has to be
+		// brought to spaces and "10.07.26" to slashes.
+		separator := "/"
+		switch {
+		case strings.Contains(candidate.layouts[0], "Jan"):
+			separator = " "
+		case strings.Contains(candidate.layouts[0], "-"):
+			separator = "-"
+		}
+		normalized := strings.NewReplacer("-", separator, ".", separator).Replace(match)
 		for _, layout := range candidate.layouts {
-			parsed, err := time.Parse(strings.NewReplacer("-", "/", ".", "/").Replace(layout), normalized)
+			parsed, err := time.Parse(layout, normalized)
 			if err != nil {
 				continue
 			}

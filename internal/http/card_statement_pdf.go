@@ -120,19 +120,26 @@ func decryptPDF(data []byte, password string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// readPDFText pulls the text out row by row, which keeps a statement table's
-// columns on the same line — the layout the row parser depends on.
+// readPDFText lays each page out from where its text sits (see
+// card_statement_layout.go). The library's own row reader is kept only as a
+// fallback for files whose glyph positions yield no transactions at all: it
+// fuses cells and cannot see some positioning, so it never outranks a layout
+// that found rows.
 func readPDFText(data []byte) (string, error) {
 	reader, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return "", err
 	}
 
-	var builder strings.Builder
+	var positioned, byRow strings.Builder
 	for pageIndex := 1; pageIndex <= reader.NumPage(); pageIndex++ {
 		page := reader.Page(pageIndex)
 		if page.V.IsNull() {
 			continue
+		}
+		for _, line := range positionedPageLines(page) {
+			positioned.WriteString(line)
+			positioned.WriteByte('\n')
 		}
 		rows, err := page.GetTextByRow()
 		if err != nil {
@@ -145,15 +152,20 @@ func readPDFText(data []byte) (string, error) {
 			for _, word := range row.Content {
 				line.WriteString(word.S)
 			}
-			builder.WriteString(strings.TrimSpace(line.String()))
-			builder.WriteByte('\n')
+			byRow.WriteString(strings.TrimSpace(line.String()))
+			byRow.WriteByte('\n')
 		}
 	}
 
-	if strings.TrimSpace(builder.String()) == "" {
+	text := positioned.String()
+	if strings.TrimSpace(text) == "" ||
+		(len(parseStatementText(text, 0)) == 0 && len(parseStatementText(byRow.String(), 0)) > 0) {
+		text = byRow.String()
+	}
+	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("no readable text")
 	}
-	return builder.String(), nil
+	return text, nil
 }
 
 // readUploadedPDF reads at most maxStatementPDFBytes and confirms the bytes
