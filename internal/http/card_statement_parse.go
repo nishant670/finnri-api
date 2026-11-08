@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"finnri/internal/models"
 )
@@ -50,6 +51,9 @@ var statementDatePatterns = []struct {
 // statements print magnitudes and annotate direction.
 var amountPattern = regexp.MustCompile(
 	`(?i)(?:(?:INR|Rs\.?|₹)\s*)?((?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d{1,2})?)\s*(CR|DR|C|D)?\s*$`)
+
+// directionCell is a Dr/Cr column printed apart from the amount.
+var directionCell = regexp.MustCompile(`(?i)^(CR|DR|C|D)$`)
 
 // amountCell is one table cell that is nothing but an amount.
 var amountCell = regexp.MustCompile(
@@ -124,8 +128,9 @@ func parseStatementRow(raw string, fallbackYear int) (statementLine, bool) {
 // When the reader kept the row's cells apart, the amount is a cell of its own:
 // the rightmost one that looks like money, preferring paise or a DR/CR marker
 // over a bare number, because a Reward Points cell is a bare number too. The
-// description is then the first cell, which leaves the merchant category and
-// the points out of the transaction's name.
+// description is then the first cell holding words, which skips a serial number
+// or posting date before it and leaves the merchant category and the points
+// out of the transaction's name.
 //
 // Text with no cell gaps falls back to the amount at the end of the line,
 // unless what ends the line is the tail of a date.
@@ -134,10 +139,17 @@ func splitRowAmount(rest string) (description, figure, marker string, ok bool) {
 		for _, strict := range []bool{true, false} {
 			for index := len(cells) - 1; index > 0; index-- {
 				match := amountCell.FindStringSubmatch(cells[index])
-				if match == nil || (strict && match[2] == "" && match[3] == "") {
+				if match == nil {
 					continue
 				}
-				return cells[0], match[1], match[3], true
+				marker := match[3]
+				if marker == "" && index+1 < len(cells) && directionCell.MatchString(cells[index+1]) {
+					marker = cells[index+1]
+				}
+				if strict && match[2] == "" && marker == "" {
+					continue
+				}
+				return rowName(cells[:index]), match[1], marker, true
 			}
 		}
 	}
@@ -154,6 +166,20 @@ func splitRowAmount(rest string) (description, figure, marker string, ok bool) {
 		marker = rest[match[4]:match[5]]
 	}
 	return rest[:match[0]], figure, marker, true
+}
+
+// rowName is the first cell that holds words and is not itself a date. Empty
+// means the row has no name, so it is a total or a balance and not a purchase.
+func rowName(cells []string) string {
+	for _, cell := range cells {
+		if _, _, isDate := takeLeadingDate(cell, 0); isDate {
+			continue
+		}
+		if strings.IndexFunc(cell, unicode.IsLetter) >= 0 {
+			return cell
+		}
+	}
+	return ""
 }
 
 // takeLeadingDate reads a date off the front of a row and returns the rest.

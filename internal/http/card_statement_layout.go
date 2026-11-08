@@ -37,6 +37,9 @@ var cellGap = regexp.MustCompile(`\s{3,}`)
 // sidePanelLabel recognises the headings of a statement's summary panel.
 var sidePanelLabel = regexp.MustCompile(`(?i)^(statement (date|period)|payment due date|due date|total amount due|minimum amount due|total outstanding|previous balance)`)
 
+// pricedRowEnd is a line that ends in an amount no points cell could be.
+var pricedRowEnd = regexp.MustCompile(`(?i)(\.\d{1,2}|\d\s*(CR|DR|C|D))\s*$`)
+
 // textRun is a stretch of text printed in one go, in reading order.
 type textRun struct {
 	x, y, end, size float64
@@ -74,11 +77,13 @@ func layoutStatementPage(glyphs []pdf.Text) []string {
 			main, side = splitAtColumn(row, panelX)
 		}
 		// A date-led line only gives up its right-hand cells when what is
-		// left is a whole transaction. Otherwise the amount itself sits under
-		// the panel's heading, as on a full-width table.
+		// left is a whole transaction, priced in paise or marked DR/CR. A bare
+		// number left over is the Reward Points cell, and the amount itself
+		// sits under the panel's heading.
 		if len(main) > 0 && len(side) > 0 {
-			if _, _, dated := takeLeadingDate(joinCells(main), 0); dated {
-				if _, ok := parseStatementRow(joinCells(main), 0); !ok {
+			joined := joinCells(main)
+			if _, _, dated := takeLeadingDate(joined, 0); dated {
+				if _, ok := parseStatementRow(joined, 0); !ok || !pricedRowEnd.MatchString(joined) {
 					main, side = row, nil
 				}
 			}
@@ -164,7 +169,9 @@ func groupRunsIntoLines(runs []textRun) [][]textRun {
 
 // sidePanelStart is the left edge of a summary panel on the right of the
 // page, or 0 when the page has none. Two headings are required, so one stray
-// "Due Date" column heading cannot claim a whole column of the table.
+// "Due Date" column heading cannot claim a whole column of the table, and they
+// must be stacked: headings side by side are a strip across the page, and the
+// table beneath it uses the full width.
 func sidePanelStart(runs []textRun) float64 {
 	right := 0.0
 	for _, run := range runs {
@@ -172,17 +179,22 @@ func sidePanelStart(runs []textRun) float64 {
 			right = run.end
 		}
 	}
-	left, labels := 0.0, 0
+	left, firstY, labels, stacked := 0.0, 0.0, 0, false
 	for _, run := range runs {
 		if run.x < right*0.55 || !sidePanelLabel.MatchString(run.trimmed()) {
 			continue
+		}
+		if labels == 0 {
+			firstY = run.y
+		} else if absFloat(run.y-firstY) > lineTolerance(run.size) {
+			stacked = true
 		}
 		labels++
 		if left == 0 || run.x < left {
 			left = run.x
 		}
 	}
-	if labels < 2 {
+	if !stacked {
 		return 0
 	}
 	return left
@@ -222,6 +234,12 @@ var (
 	statementPeriodPattern = regexp.MustCompile(`(?i)(` + printedDate + `)\s*(?:to|till|until|-|–)\s*(` + printedDate + `)`)
 	statementDateLabel     = regexp.MustCompile(`(?is)\bstatement\s+date\b[^0-9]{0,40}(` + printedDate + `)`)
 	dueDateLabel           = regexp.MustCompile(`(?is)\b(?:payment\s+)?due\s+(?:date|by|on)\b[^0-9]{0,40}(` + printedDate + `)`)
+	// statementPeriodHeading is what comes before a date range that really is
+	// the statement's period. Offers print ranges a month long too.
+	statementPeriodHeading = regexp.MustCompile(`(?i)\b(?:period|cycle|statement\s+(?:for|from))\b[^0-9]{0,40}$`)
+	// otherStatementDate is a qualifier that makes "Statement Date" some other
+	// bill's date.
+	otherStatementDate = regexp.MustCompile(`(?i)\b(?:next|previous|prev|last)\.?\s+$`)
 )
 
 // A monthly statement covers about a month; a range far from that is some
@@ -248,23 +266,55 @@ func parsePrintedDate(value string) string {
 
 func readStatementDateFacts(text string) statementDateFacts {
 	facts := statementDateFacts{}
-	for _, match := range statementPeriodPattern.FindAllStringSubmatch(text, -1) {
-		start, end := parsePrintedDate(match[1]), parsePrintedDate(match[2])
+	statementAt := -1
+	facts.StatementDate, statementAt = labelledStatementDate(text)
+	if match := dueDateLabel.FindStringSubmatchIndex(text); match != nil {
+		facts.DueDate = parsePrintedDate(text[match[2]:match[3]])
+		// Headings in one row and values in the next: with the due date's
+		// column first, both labels land on the due date.
+		if facts.DueDate == facts.StatementDate && match[0] < statementAt {
+			facts.StatementDate = ""
+		}
+	}
+	for _, match := range statementPeriodPattern.FindAllStringSubmatchIndex(text, -1) {
+		start, end := parsePrintedDate(text[match[2]:match[3]]), parsePrintedDate(text[match[4]:match[5]])
 		if start == "" || end == "" {
 			continue
 		}
-		if span, ok := signedDayGap(start, end); ok && span >= minStatementPeriodDays && span <= maxStatementPeriodDays {
+		span, ok := signedDayGap(start, end)
+		if !ok || span < minStatementPeriodDays || span > maxStatementPeriodDays {
+			continue
+		}
+		if statementPeriodHeading.MatchString(textBefore(text, match[0])) || end == facts.StatementDate {
 			facts.PeriodStart, facts.PeriodEnd = start, end
 			break
 		}
 	}
-	if match := statementDateLabel.FindStringSubmatch(text); match != nil {
-		facts.StatementDate = parsePrintedDate(match[1])
-	}
-	if match := dueDateLabel.FindStringSubmatch(text); match != nil {
-		facts.DueDate = parsePrintedDate(match[1])
-	}
 	return facts
+}
+
+// labelledStatementDate is the date under this bill's "Statement Date" label
+// and where the label sits, or "" and -1.
+func labelledStatementDate(text string) (string, int) {
+	for _, match := range statementDateLabel.FindAllStringSubmatchIndex(text, -1) {
+		if otherStatementDate.MatchString(textBefore(text, match[0])) {
+			continue
+		}
+		if date := parsePrintedDate(text[match[2]:match[3]]); date != "" {
+			return date, match[0]
+		}
+	}
+	return "", -1
+}
+
+// textBefore is the stretch of text just ahead of an offset, enough to hold
+// the heading of whatever sits there.
+func textBefore(text string, offset int) string {
+	start := offset - 80
+	if start < 0 {
+		start = 0
+	}
+	return text[start:offset]
 }
 
 // signedDayGap is whole days from `from` to `to`, negative when `to` is earlier.
@@ -411,16 +461,25 @@ func expectedStatementNet(summary statementSummary, lines []statementLine) (mode
 	return 0, false
 }
 
+// statementRowsGap is how far one reading of the rows is from the statement's
+// own figures, and whether those figures exist to compare with.
+func statementRowsGap(lines []statementLine, summary statementSummary) (models.Money, bool) {
+	expected, known := expectedStatementNet(summary, lines)
+	if !known {
+		return 0, false
+	}
+	return absMoney(statementRowsNet(lines) - expected), true
+}
+
 // chooseStatementRows picks the reading of the rows to believe. Counting rows
 // is not enough: a reader that fuses columns finds just as many rows as one
 // that does not, with every amount wrong. The statement's own total is the
 // test. A reading that adds up wins, the exact local parser first; when
 // neither does, the closer one wins, then the longer.
 func chooseStatementRows(local, model []statementLine, summary statementSummary) []statementLine {
-	expected, known := expectedStatementNet(summary, append(append([]statementLine{}, local...), model...))
+	localGap, known := statementRowsGap(local, summary)
+	modelGap, _ := statementRowsGap(model, summary)
 	if known {
-		localGap := absMoney(statementRowsNet(local) - expected)
-		modelGap := absMoney(statementRowsNet(model) - expected)
 		switch {
 		case len(local) > 0 && localGap <= reconcileTolerance:
 			return local

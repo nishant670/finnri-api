@@ -216,8 +216,12 @@ func classifyLine(line statementLine) string {
 		if has("REFUND", "REVERSAL", "REVERSED", "CASHBACK", "CHARGEBACK") {
 			return lineKindRefund
 		}
-		if has("PAYMENT", "PAYMENTS", "PMT", "THANK YOU", "AUTOPAY", "AUTO DEBIT", "BBPS",
-			"NEFT CR", "IMPS CR", "NEFT", "IMPS", "RTGS", "INFT", "NETBANKING") {
+		// PAYMENT alone is not enough: gateways carry it in the merchant's
+		// name, and a credit from RAZORPAY PAYMENTS is that merchant's refund.
+		if strings.HasPrefix(normalized, " PAYMENT ") || strings.HasPrefix(normalized, " PMT ") ||
+			has("PAYMENT RECEIVED", "PAYMENT RECD", "PAYMENT THANK", "PAYMENT THANKS", "PMT RECEIVED", "PMT RECD",
+				"THANK YOU", "BILL PAYMENT", "CC PAYMENT", "CARD PAYMENT", "ONLINE PAYMENT", "UPI PAYMENT",
+				"AUTOPAY", "AUTO DEBIT", "BBPS", "NEFT", "IMPS", "RTGS", "INFT", "NETBANKING") {
 			return lineKindPayment
 		}
 		return lineKindRefund

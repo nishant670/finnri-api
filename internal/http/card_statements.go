@@ -269,11 +269,19 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 	removeImported := c.Query("remove_imported") == "true"
 
 	removed := int64(0)
+	removedAttachments := []string{}
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		// A paid bill released the limit its EMI instalments held.
-		if err := tx.Model(&models.CardEMIInstallment{}).
-			Where("user_id = ? AND statement_id = ? AND status = ?", userID, statement.ID, emiInstallmentPaid).
-			Update("status", emiInstallmentBilled).Error; err != nil {
+		// A paid bill released the limit its EMI instalments held, the ones
+		// billed before it existed and so never linked to it included.
+		released := tx.Model(&models.CardEMIInstallment{}).
+			Where("user_id = ? AND account_id = ? AND status = ?", userID, statement.AccountID, emiInstallmentPaid)
+		if statement.Status == statementStatusPaid {
+			released = released.Where("statement_id = ? OR (statement_id IS NULL AND due_date BETWEEN ? AND ?)",
+				statement.ID, statement.CycleStart, statement.CycleEnd)
+		} else {
+			released = released.Where("statement_id = ?", statement.ID)
+		}
+		if err := released.Update("status", emiInstallmentBilled).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&models.CardEMIInstallment{}).
@@ -298,18 +306,30 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 				return err
 			}
 		}
+		// While the reminder rows still say which notifications are this bill's.
+		resolveCardBillRemindersIn(tx, userID, statement.ID)
 		if err := tx.Where("statement_id = ? AND user_id = ?", statement.ID, userID).
 			Delete(&models.CardStatementReminder{}).Error; err != nil {
 			return err
 		}
 		if removeImported {
-			result := tx.Where("user_id = ? AND source = ? AND idempotency_key LIKE ?",
+			var imported []models.Entry
+			if err := tx.Where("user_id = ? AND source = ? AND idempotency_key LIKE ?",
 				userID, models.EntrySourceStatement, statementImportKeyPrefix(statement.ID)+"%").
-				Delete(&models.Entry{})
-			if result.Error != nil {
-				return result.Error
+				Find(&imported).Error; err != nil {
+				return err
 			}
-			removed = result.RowsAffected
+			for _, entry := range imported {
+				if err := deleteEntryDependents(tx, userID, entry.ID); err != nil {
+					return err
+				}
+				result := tx.Where("id = ? AND user_id = ?", entry.ID, userID).Delete(&models.Entry{})
+				if result.Error != nil {
+					return result.Error
+				}
+				removed += result.RowsAffected
+				removedAttachments = append(removedAttachments, entry.Attachment)
+			}
 		}
 		bucket := statement.UnitemizedEntryID
 		if bucket != nil {
@@ -331,6 +351,8 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 		return
 	}
 
+	// The rows are gone, so nothing else can reference their receipts now.
+	deleteLocalUploadFiles(removedAttachments)
 	retileNextStatement(account, statement.ID, statement.StatementDate)
 	c.JSON(http.StatusOK, gin.H{"deleted": true, "removed_transactions": removed})
 }
