@@ -310,9 +310,7 @@ func notifyGiftedPass(userID uint, plan models.Plan, periods []models.UserSubscr
 	title, body := giftPassNotificationCopy(plan, periods, now)
 	if err := createNotification(userID, giftPassNotificationType, title, body, giftPassActionURL); err != nil {
 		log.Printf("[WARN] gift pass notification failed user=%d: %v", userID, err)
-		return
 	}
-	go sendUserPush(database.DB, userID, title, body, map[string]any{"action_url": giftPassActionURL})
 }
 
 // giftPassNotificationCopy words the gift for the person receiving it. Dates

@@ -88,6 +88,7 @@ func syncRefundReminders(now time.Time) (int, error) {
 			created++
 			go sendUserPush(database.DB, entry.UserID, notification.Title, notification.Body, map[string]any{
 				"action_url": actionURL,
+				"type":       refundReminderType,
 				"entry_id":   entry.ID,
 			})
 		}

@@ -333,6 +333,6 @@ func notifyRecurringCompleted(subscription models.Subscription) {
 		return
 	}
 	go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{
-		"action_url": actionURL, "subscription_id": subscription.ID,
+		"action_url": actionURL, "type": recurringCompletedType, "subscription_id": subscription.ID,
 	})
 }

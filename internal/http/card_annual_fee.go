@@ -191,7 +191,7 @@ func createAnnualFeeReminderIfNeeded(card models.Account, status annualFeeStatus
 	}
 	if created {
 		go sendUserPush(database.DB, card.UserID, title, body, map[string]any{
-			"action_url": actionURL, "account_id": card.ID,
+			"action_url": actionURL, "type": annualFeeReminderType, "account_id": card.ID,
 		})
 	}
 	return created, nil

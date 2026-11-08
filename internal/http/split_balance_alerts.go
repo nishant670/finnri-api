@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 
-	"finnri/internal/database"
 	"finnri/internal/models"
 
 	"gorm.io/gorm"
@@ -132,10 +131,6 @@ func checkSplitGroupBalanceAlertFor(db *gorm.DB, group models.SplitGroup, userID
 		if err := createNotification(userID, "split.balance_alert", title, body, actionURL); err != nil {
 			return err
 		}
-		go sendUserPush(database.DB, userID, title, body, map[string]any{
-			"action_url": actionURL,
-			"type":       "split.balance_alert",
-		})
 	}
 	return nil
 }

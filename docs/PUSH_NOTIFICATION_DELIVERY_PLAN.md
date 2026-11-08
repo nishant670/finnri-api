@@ -1,7 +1,8 @@
 # Push notification delivery — deferred
 
-**Status:** not started. Deferred deliberately on 2026-08-18; everything below is
-scoped but unbuilt.
+**Status:** superseded on 2026-11-08. `createNotification` now pushes, and
+`internal/http/push_delivery.go` holds the categories and receipt checks. Kept for
+history; only the FCM credentials step (4) still depends on setup outside the code.
 
 ## The problem
 

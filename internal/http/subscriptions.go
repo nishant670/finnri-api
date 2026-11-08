@@ -414,7 +414,7 @@ func createSubscriptionReminderIfNeeded(db *gorm.DB, subscription models.Subscri
 	})
 	if err == nil && created {
 		title, body := subscriptionReminderCopy(subscription, dueDate, kind)
-		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": fmt.Sprintf("/recurring/%d", subscription.ID), "subscription_id": subscription.ID})
+		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": fmt.Sprintf("/recurring/%d", subscription.ID), "type": "subscription." + kind, "subscription_id": subscription.ID})
 	}
 	return created, err
 }
