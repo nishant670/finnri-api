@@ -602,10 +602,23 @@ func (s *Server) handleParse(c *gin.Context) {
 	}
 	if strings.TrimSpace(transcript) == "" {
 		if usageEvent != nil {
+			// A recording with nothing in it. Stopping the mic sends straight
+			// away, so a pocket tap or a silent room gets here easily, and
+			// there was nothing to read: like a failed bill scan, it is free.
+			// It still counts as a failure, so the repeated-failure cooldown
+			// sees it.
+			noCharge := 0
 			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-				Status:    billing.UsageStatusFailedAfterProvider,
-				ErrorCode: "empty_transcript",
+				Status:       billing.UsageStatusFailedAfterProvider,
+				ErrorCode:    "empty_transcript",
+				FinalCredits: &noCharge,
 			})
+			c.JSON(400, gin.H{
+				"error":           "empty_transcript",
+				"message":         "Finnri couldn't hear anything in that recording, so no credits were used. Tap the mic and say what you spent.",
+				"credits_charged": 0,
+			})
+			return
 		}
 		c.JSON(400, gin.H{"error": "no audio or hint_text provided"})
 		return
