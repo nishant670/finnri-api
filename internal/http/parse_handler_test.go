@@ -717,6 +717,49 @@ func (p cancellingParser) ParseText(ctx context.Context, _ string, _ string) ([]
 	return p.result, ai.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}, nil
 }
 
+func TestParseHandlerDoesNotChargeForASilentRecording(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := &Server{
+		cfg: &config.Config{
+			ReqTimeoutSec:              2,
+			TZDefault:                  "Asia/Kolkata",
+			MaxUploadMB:                2,
+			AIProviderFailureThreshold: 0,
+		},
+		parser: fixtureParser{transcript: "  "},
+	}
+	ginContext, response := newParseAudioContext(32 * 1024)
+	user := attachParseCreditUser(t, ginContext)
+	before, err := billing.NewCreditService(database.DB).CheckAllowance(billing.SubjectForUser(user.ID), ai.ActionTransactionParseVoiceShort)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.handleParse(ginContext)
+
+	body := response.Body.String()
+	if response.Code != 400 || !strings.Contains(body, `"error":"empty_transcript"`) || !strings.Contains(body, `"credits_charged":0`) {
+		t.Fatalf("status = %d, body = %s", response.Code, body)
+	}
+	if strings.Contains(body, "hint_text") {
+		t.Fatalf("the raw server wording reached the person: %s", body)
+	}
+	var event models.AIUsageEvent
+	if err := database.DB.Where("user_id = ?", user.ID).Order("id DESC").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != billing.UsageStatusFailedAfterProvider || event.ErrorCode != "empty_transcript" || event.FinalCredits != 0 {
+		t.Fatalf("usage event = %q %q final %v", event.Status, event.ErrorCode, event.FinalCredits)
+	}
+	after, err := billing.NewCreditService(database.DB).CheckAllowance(billing.SubjectForUser(user.ID), ai.ActionTransactionParseVoiceShort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.AvailableCredits != before.AvailableCredits {
+		t.Fatalf("available credits %d → %d, want unchanged", before.AvailableCredits, after.AvailableCredits)
+	}
+}
+
 func TestParseHandlerReleasesCreditsWhenClientCancels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	requestContext, cancel := context.WithCancel(context.Background())
