@@ -191,7 +191,7 @@ func createAnnualFeeReminderIfNeeded(card models.Account, status annualFeeStatus
 	}
 	if created {
 		go sendUserPush(database.DB, card.UserID, title, body, map[string]any{
-			"action_url": actionURL, "account_id": card.ID,
+			"action_url": actionURL, "type": annualFeeReminderType, "account_id": card.ID,
 		})
 	}
 	return created, nil
@@ -227,6 +227,21 @@ func indiaLocation() *time.Location {
 		return location
 	}
 	return time.FixedZone("IST", 5*3600+1800)
+}
+
+// dateForCopy writes an API date (YYYY-MM-DD) the way a person reads it in a
+// notification: "30 Sep", with the year only when it isn't this year's. A value
+// that doesn't parse is returned as it came, so a message is never left blank.
+func dateForCopy(apiDate string, now time.Time) string {
+	// CalendarDay also trims a timestamp ("2026-09-30T00:00:00Z") to its day.
+	parsed, err := time.Parse(apiDateLayout, models.CalendarDay(strings.TrimSpace(apiDate)))
+	if err != nil {
+		return apiDate
+	}
+	if parsed.Year() != now.In(indiaLocation()).Year() {
+		return parsed.Format("2 Jan 2006")
+	}
+	return parsed.Format("2 Jan")
 }
 
 // rupeesForCopy writes an amount the way a person reads it in a notification:

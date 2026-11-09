@@ -1181,11 +1181,11 @@ func buildBudgetInsightCards(statuses []DashboardBudgetStatus) []InsightCard {
 		kind := "budget_watch"
 		severity := "warning"
 		title := target + " budget nearing limit"
-		body := fmt.Sprintf("%s spending is nearing its monthly limit.", target)
+		body := fmt.Sprintf("%s is nearing its monthly limit.", spendingSubject(target))
 		if status.Status == "exceeded" {
 			kind = "budget_exceeded"
 			title = target + " budget exceeded"
-			body = fmt.Sprintf("%s spending has exceeded its monthly limit.", target)
+			body = fmt.Sprintf("%s has exceeded its monthly limit.", spendingSubject(target))
 		}
 		cards = append(cards, InsightCard{
 			Kind:            kind,

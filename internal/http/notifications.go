@@ -19,6 +19,9 @@ const (
 	maxNotificationPageSize     = 100
 )
 
+// createNotification writes a notification and pushes it to the person's
+// phones. The row is what counts: a push that fails never fails the request
+// that raised it.
 func createNotification(userID uint, notificationType, title, body, actionURL string) error {
 	notification := models.Notification{
 		UserID:    userID,
@@ -30,7 +33,16 @@ func createNotification(userID uint, notificationType, title, body, actionURL st
 	if notification.Type == "" || notification.Title == "" || notification.Body == "" {
 		return fmt.Errorf("notification requires type, title, and body")
 	}
-	return database.DB.Create(&notification).Error
+	if err := database.DB.Create(&notification).Error; err != nil {
+		return err
+	}
+	if !notificationStaysInApp(notification.Type) {
+		go sendUserPush(database.DB, userID, notification.Title, notification.Body, map[string]any{
+			"action_url": notification.ActionURL,
+			"type":       notification.Type,
+		})
+	}
+	return nil
 }
 
 func parseNotificationPagination(pageParam, pageSizeParam string) (int, int, gin.H) {

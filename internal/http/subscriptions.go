@@ -414,7 +414,7 @@ func createSubscriptionReminderIfNeeded(db *gorm.DB, subscription models.Subscri
 	})
 	if err == nil && created {
 		title, body := subscriptionReminderCopy(subscription, dueDate, kind)
-		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": fmt.Sprintf("/recurring/%d", subscription.ID), "subscription_id": subscription.ID})
+		go sendUserPush(database.DB, subscription.UserID, title, body, map[string]any{"action_url": fmt.Sprintf("/recurring/%d", subscription.ID), "type": "subscription." + kind, "subscription_id": subscription.ID})
 	}
 	return created, err
 }
@@ -429,13 +429,14 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	}
 	noun := recurringNoun(subscription.Kind)
 	amount := rupeesForCopy(subscription.Amount)
+	now := time.Now()
 	if kind == subscriptionReminderOverdueKind {
-		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dueDate, amount)
+		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dateForCopy(dueDate, now), amount)
 	}
 	if kind == subscriptionReminderCancelKind {
-		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for %s.", name, subscription.NextDueDate, amount)
+		return "Cancellation reminder", fmt.Sprintf("You asked to review cancelling %s today. Its next payment is %s for %s.", name, dateForCopy(subscription.NextDueDate, now), amount)
 	}
-	return noun + " due soon", fmt.Sprintf("%s is due on %s for %s.", name, dueDate, amount)
+	return noun + " due soon", fmt.Sprintf("%s is due on %s for %s.", name, dateForCopy(dueDate, now), amount)
 }
 
 func advanceSubscriptionDueDate(currentDueDate, interval string, paidDate time.Time) (string, error) {

@@ -60,7 +60,7 @@ func TestSettlementTellsTheOtherSideHowItWasPaid(t *testing.T) {
 
 	// What reaches their notification bell.
 	body := latestNotificationBody(t, member.UserID, "split.settlement.recorded")
-	if !strings.Contains(body, "says they paid you ₹500.00 by UPI.") {
+	if !strings.Contains(body, "says they paid you ₹500 by UPI.") {
 		t.Fatalf("the notification should say how it was paid, got %q", body)
 	}
 
@@ -131,7 +131,7 @@ func TestSettlementWithoutAPaymentModeStillRecords(t *testing.T) {
 		t.Fatalf("expected no payment mode, got %q", settlement.PaymentMode)
 	}
 	body := latestNotificationBody(t, member.UserID, "split.settlement.recorded")
-	if !strings.Contains(body, "says they paid you ₹500.00.") {
+	if !strings.Contains(body, "says they paid you ₹500.") {
 		t.Fatalf("unexpected notification wording: %q", body)
 	}
 }

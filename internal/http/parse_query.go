@@ -649,7 +649,7 @@ func answerLedgerQuestion(userID uint, question ledgerQuestion) (ledgerAnswer, e
 		return ledgerAnswer{}, err
 	}
 	answer.Comparison = comparison
-	answer.Suggestions = followUpQuestions(question)
+	answer.Suggestions = followUpQuestions(question, answer.TransactionCount)
 
 	return answer, nil
 }

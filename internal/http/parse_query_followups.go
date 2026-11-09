@@ -131,7 +131,12 @@ func loadAnswerComparison(userID uint, question ledgerQuestion, current float64)
 // followUpQuestions are the chips under an answer (P65): where it went, the
 // biggest one, and the same for the period before — each worded as a
 // follow-up, which the app sends with the question it follows (P67).
-func followUpQuestions(question ledgerQuestion) []string {
+//
+// A chip has to make sense of the answer above it. One expense has nowhere
+// else to have gone and nothing bigger than itself, so "Where did it go?" and
+// "Biggest one?" need more than one transaction; after "biggest expense" the
+// natural next question is the total it came out of.
+func followUpQuestions(question ledgerQuestion, transactions int) []string {
 	previous := "And last month?"
 	switch question.PeriodKind {
 	case "last_month", "month_of":
@@ -147,10 +152,13 @@ func followUpQuestions(question ledgerQuestion) []string {
 		previous = ""
 	}
 	questions := []string{}
-	if question.Metric != metricBreakdown {
-		questions = append(questions, "Where did it go?")
-	}
-	if question.Metric != metricLargest {
+	switch {
+	case question.Metric == metricLargest:
+		questions = append(questions, "How much in total?")
+	case transactions > 1:
+		if question.Metric != metricBreakdown {
+			questions = append(questions, "Where did it go?")
+		}
 		questions = append(questions, "Biggest one?")
 	}
 	if previous != "" {

@@ -3,6 +3,7 @@ package http
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestComparisonWindowUsesTheSameDaysBefore(t *testing.T) {
@@ -28,11 +29,11 @@ func TestComparisonWindowUsesTheSameDaysBefore(t *testing.T) {
 }
 
 func TestFollowUpQuestionsFitTheAnswer(t *testing.T) {
-	got := followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "this_month"})
+	got := followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "this_month"}, 5)
 	if strings.Join(got, "|") != "Where did it go?|Biggest one?|And last month?" {
 		t.Fatalf("spend follow-ups = %v", got)
 	}
-	got = followUpQuestions(ledgerQuestion{Metric: metricBreakdown, PeriodKind: "this_week"})
+	got = followUpQuestions(ledgerQuestion{Metric: metricBreakdown, PeriodKind: "this_week"}, 5)
 	if strings.Join(got, "|") != "Biggest one?|And the week before?" {
 		t.Fatalf("breakdown follow-ups = %v", got)
 	}
@@ -49,8 +50,39 @@ func TestFollowUpContextReachesOnlyTheModel(t *testing.T) {
 }
 
 func TestFollowUpAfterAPastMonthAsksForTheOneBefore(t *testing.T) {
-	got := followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "last_month"})
+	got := followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "last_month"}, 5)
 	if got[len(got)-1] != "And the month before?" {
 		t.Fatalf("follow-ups = %v", got)
+	}
+}
+
+// Reported on staging, 8 Nov 2026: "biggest expense all time" offered "Where
+// did it go?", which then listed all 62 transactions.
+func TestFollowUpsFitASingleExpense(t *testing.T) {
+	got := followUpQuestions(ledgerQuestion{Metric: metricLargest, PeriodKind: "all_time"}, 62)
+	if strings.Join(got, "|") != "How much in total?" {
+		t.Fatalf("largest follow-ups = %v", got)
+	}
+	got = followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "day"}, 1)
+	if strings.Join(got, "|") != "And the day before?" {
+		t.Fatalf("one-transaction follow-ups = %v", got)
+	}
+	got = followUpQuestions(ledgerQuestion{Metric: metricSpendTotal, PeriodKind: "this_month"}, 0)
+	if strings.Join(got, "|") != "And last month?" {
+		t.Fatalf("empty-answer follow-ups = %v", got)
+	}
+}
+
+func TestTotalChipKeepsTheQuestionsFilters(t *testing.T) {
+	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
+	previous := ledgerQuestion{Metric: metricLargest, GroupBy: "none", PeriodKind: "this_month", Category: "Food & Drinks", EntryType: "expense"}
+	got, ok := resolveChipFollowUp("How much in total?", previous, now)
+	if !ok || got.Metric != metricSpendTotal || got.Category != "Food & Drinks" || got.PeriodKind != "this_month" {
+		t.Fatalf("total = %+v, ok=%v", got, ok)
+	}
+	previous.EntryType = "income"
+	got, _ = resolveChipFollowUp("How much in total?", previous, now)
+	if got.Metric != metricIncomeTotal {
+		t.Fatalf("income total metric = %q", got.Metric)
 	}
 }

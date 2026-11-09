@@ -437,7 +437,7 @@ func sendMonthlyReview(userID uint, month string, dateRange dashboardRange) (boo
 		return false, err
 	}
 
-	sendUserPush(database.DB, userID, title, body, map[string]any{"action_url": actionURL})
+	sendUserPush(database.DB, userID, title, body, map[string]any{"action_url": actionURL, "type": monthlyReviewNotificationType})
 	return true, nil
 }
 

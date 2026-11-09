@@ -59,7 +59,7 @@ func syncRefundReminders(now time.Time) (int, error) {
 			UserID:    entry.UserID,
 			Type:      refundReminderType,
 			Title:     "Refund expected",
-			Body:      fmt.Sprintf("₹%s from %s was expected back. Mark it received or written off.", entry.RefundableAmount.String(), strings.TrimSpace(entry.Title)),
+			Body:      fmt.Sprintf("%s from %s was expected back. Mark it received or written off.", rupeesForCopy(*entry.RefundableAmount), strings.TrimSpace(entry.Title)),
 			ActionURL: actionURL,
 		}
 		if entry.RefundableAmount != nil {
@@ -88,6 +88,7 @@ func syncRefundReminders(now time.Time) (int, error) {
 			created++
 			go sendUserPush(database.DB, entry.UserID, notification.Title, notification.Body, map[string]any{
 				"action_url": actionURL,
+				"type":       refundReminderType,
 				"entry_id":   entry.ID,
 			})
 		}

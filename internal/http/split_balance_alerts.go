@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 
-	"finnri/internal/database"
 	"finnri/internal/models"
 
 	"gorm.io/gorm"
@@ -132,10 +131,6 @@ func checkSplitGroupBalanceAlertFor(db *gorm.DB, group models.SplitGroup, userID
 		if err := createNotification(userID, "split.balance_alert", title, body, actionURL); err != nil {
 			return err
 		}
-		go sendUserPush(database.DB, userID, title, body, map[string]any{
-			"action_url": actionURL,
-			"type":       "split.balance_alert",
-		})
 	}
 	return nil
 }
@@ -147,11 +142,11 @@ func splitBalanceAlertCopy(group models.SplitGroup, name string, balance models.
 		name = "Someone"
 	}
 	title := fmt.Sprintf("Balance alert in %s", group.Name)
-	limit := group.BalanceAlertAmount.String()
+	limit := rupeesForCopy(group.BalanceAlertAmount)
 	if balance > 0 {
-		return title, fmt.Sprintf("%s owes you ₹%s in %s, past the ₹%s alert.", name, balance.String(), group.Name, limit)
+		return title, fmt.Sprintf("%s owes you %s in %s, past the %s alert.", name, rupeesForCopy(balance), group.Name, limit)
 	}
-	return title, fmt.Sprintf("You owe %s ₹%s in %s, past the ₹%s alert.", name, absMoney(balance).String(), group.Name, limit)
+	return title, fmt.Sprintf("You owe %s %s in %s, past the %s alert.", name, rupeesForCopy(absMoney(balance)), group.Name, limit)
 }
 
 func derefUint(value *uint) uint {
