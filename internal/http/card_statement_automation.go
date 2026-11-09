@@ -344,10 +344,10 @@ func cardStatementReminderCopy(statement models.CardStatement, card models.Accou
 		// rather than assuming the debit went through.
 		if card.AutopayEnabled {
 			return "Autopay due today",
-				fmt.Sprintf("Your %s autopay should take ₹%s today. Did it go through?", name, remaining.String())
+				fmt.Sprintf("Your %s autopay should take %s today. Did it go through?", name, rupeesForCopy(remaining))
 		}
 		return "Bill due today",
-			fmt.Sprintf("₹%s is due on your %s today.", remaining.String(), name)
+			fmt.Sprintf("%s is due on your %s today.", rupeesForCopy(remaining), name)
 
 	case statementReminderDueSoon:
 		days := daysBetween(truncateDate(time.Now()).Format(apiDateLayout), statement.DueDate)
@@ -356,11 +356,11 @@ func cardStatementReminderCopy(statement models.CardStatement, card models.Accou
 			unit = "day"
 		}
 		return "Bill due soon",
-			fmt.Sprintf("₹%s is due on your %s in %d %s.", remaining.String(), name, days, unit)
+			fmt.Sprintf("%s is due on your %s in %d %s.", rupeesForCopy(remaining), name, days, unit)
 
 	default: // statementReminderOverdue
 		return "Bill past due",
-			fmt.Sprintf("₹%s on your %s was due on %s. Record the payment once it's done.",
-				remaining.String(), name, statement.DueDate)
+			fmt.Sprintf("%s on your %s was due on %s. Record the payment once it's done.",
+				rupeesForCopy(remaining), name, dateForCopy(statement.DueDate, time.Now()))
 	}
 }

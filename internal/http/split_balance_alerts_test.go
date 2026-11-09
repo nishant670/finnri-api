@@ -68,9 +68,9 @@ func TestSplitGroupBalanceAlertFiresOncePerCrossing(t *testing.T) {
 
 	addBill("500.00") // 1,100: over.
 	ownerAlerts := balanceAlertNotifications(t, owner.ID)
-	if len(ownerAlerts) != 1 || !strings.Contains(ownerAlerts[0].Body, "owes you ₹1100") ||
+	if len(ownerAlerts) != 1 || !strings.Contains(ownerAlerts[0].Body, "owes you ₹1,100 in Goa trip, past the ₹1,000 alert.") ||
 		ownerAlerts[0].ActionURL != fmt.Sprintf("/split/groups/%d", group.ID) {
-		t.Fatalf("expected one owner alert for ₹1100, got %#v", ownerAlerts)
+		t.Fatalf("expected one owner alert for ₹1,100, got %#v", ownerAlerts)
 	}
 	memberAlerts := balanceAlertNotifications(t, member.ID)
 	if len(memberAlerts) != 1 || !strings.HasPrefix(memberAlerts[0].Body, "You owe ") {
