@@ -171,10 +171,6 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	appPublic.Use(jsonRequestLimits(cfg))
 	appPublic.GET("/releases", server.listAppReleases)
 	appPublic.GET("/releases/:version_code", server.getAppRelease)
-	appPublic.GET("/release-media/:name", server.serveReleaseMedia)
-	adminUploads := router.Group("/v1/admin")
-	adminUploads.Use(uploadRequestLimits(cfg), server.requireAdminSession(), server.adminAuditMiddleware())
-	adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), server.uploadAdminReleaseMedia)
 
 	admin := router.Group("/v1/admin")
 	admin.Use(jsonRequestLimits(cfg), rateLimit(cfg, "admin"), server.requireAdminSession(), server.adminAuditMiddleware())
