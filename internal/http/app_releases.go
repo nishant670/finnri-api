@@ -46,9 +46,9 @@ const (
 
 var (
 	releaseVersionNamePattern = regexp.MustCompile(`^\d{1,4}(\.\d{1,4}){0,3}$`)
-	// An in-app route such as /events or /entry/new?type=expense. The app
-	// opens it with the router, so it never names another host or scheme.
-	releaseDeepLinkPattern = regexp.MustCompile(`^/[A-Za-z0-9_\-/]*(\?[A-Za-z0-9_\-=&.]*)?$`)
+	// An in-app route such as /events, /(tabs)/split or /entry/new?type=expense.
+	// The app opens it with the router, so it never names another host or scheme.
+	releaseDeepLinkPattern = regexp.MustCompile(`^/[A-Za-z0-9_\-/()]*(\?[A-Za-z0-9_\-=&.]*)?$`)
 )
 
 type appReleaseItemInput struct {
@@ -68,9 +68,6 @@ type appReleaseInput struct {
 	MinSupported bool                  `json:"min_supported"`
 	Items        []appReleaseItemInput `json:"items"`
 }
-
-// AppReleaseView is a release as the app and the admin endpoints return it.
-type AppReleaseView = models.AppRelease
 
 // normalize cleans the input in place and returns what is wrong with it.
 // Fields that do not apply to an item's kind are cleared rather than refused,
@@ -180,23 +177,6 @@ func (input appReleaseInput) items(releaseID uint) []models.AppReleaseItem {
 	return items
 }
 
-// appReleaseView and appReleaseViews keep the handlers' call sites stable now
-// that a release is returned as stored: there is nothing left to resolve.
-func appReleaseView(_ *http.Request, release models.AppRelease) AppReleaseView {
-	if release.Items == nil {
-		release.Items = []models.AppReleaseItem{}
-	}
-	return release
-}
-
-func appReleaseViews(r *http.Request, releases []models.AppRelease) []AppReleaseView {
-	views := make([]AppReleaseView, len(releases))
-	for index, release := range releases {
-		views[index] = appReleaseView(r, release)
-	}
-	return views
-}
-
 func preloadReleaseItems(db *gorm.DB) *gorm.DB {
 	return db.Order("position ASC, id ASC")
 }
@@ -264,7 +244,7 @@ func (s *Server) listAppReleases(c *gin.Context) {
 	// that every app launch is not a database read.
 	c.Header("Cache-Control", "public, max-age=300")
 	c.JSON(http.StatusOK, gin.H{
-		"releases":                   appReleaseViews(c.Request, releases),
+		"releases":                   releases,
 		"latest_version_code":        bounds.Latest,
 		"min_supported_version_code": bounds.MinSupported,
 	})
@@ -297,7 +277,7 @@ func (s *Server) getAppRelease(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "public, max-age=300")
-	c.JSON(http.StatusOK, appReleaseView(c.Request, release))
+	c.JSON(http.StatusOK, release)
 }
 
 // --- the admin dashboard -----------------------------------------------------
@@ -383,7 +363,7 @@ func (s *Server) listAdminAppReleases(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_list_releases"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"releases": appReleaseViews(c.Request, releases)})
+	c.JSON(http.StatusOK, gin.H{"releases": releases})
 }
 
 func (s *Server) getAdminAppRelease(c *gin.Context) {
@@ -391,7 +371,7 @@ func (s *Server) getAdminAppRelease(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, appReleaseView(c.Request, release))
+	c.JSON(http.StatusOK, release)
 }
 
 // createAdminAppRelease starts a release as a draft; nothing reaches the app
@@ -431,7 +411,7 @@ func (s *Server) createAdminAppRelease(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_release"})
 		return
 	}
-	c.JSON(http.StatusCreated, appReleaseView(c.Request, release))
+	c.JSON(http.StatusCreated, release)
 }
 
 // updateAdminAppRelease replaces a release and all of its cards in one save,
@@ -480,7 +460,7 @@ func (s *Server) updateAdminAppRelease(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_release"})
 		return
 	}
-	c.JSON(http.StatusOK, appReleaseView(c.Request, release))
+	c.JSON(http.StatusOK, release)
 }
 
 func (s *Server) publishAdminAppRelease(c *gin.Context) {
@@ -501,7 +481,7 @@ func (s *Server) publishAdminAppRelease(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, appReleaseView(c.Request, release))
+	c.JSON(http.StatusOK, release)
 }
 
 func (s *Server) unpublishAdminAppRelease(c *gin.Context) {
@@ -517,7 +497,7 @@ func (s *Server) unpublishAdminAppRelease(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, appReleaseView(c.Request, release))
+	c.JSON(http.StatusOK, release)
 }
 
 // deleteAdminAppRelease removes a draft. A published release has to be

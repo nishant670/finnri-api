@@ -25,12 +25,12 @@ var (
 	AppReleaseItemKinds = []string{AppReleaseItemNew, AppReleaseItemUI, AppReleaseItemFix, AppReleaseItemImproved}
 )
 
-// AppRelease is the release notes for one store build, written in the admin
-// dashboard and read by the app.
+// AppRelease is the text of one store build's release notes.
 //
-// The notes have to live here rather than in the app: the update card is shown
-// by the build the user already has, which cannot know what the next one
-// contains. VersionCode is the store's build number (Android versionCode, iOS
+// The notes are written in the app's repo (lib/whats-new) and published here by
+// a script, so edit them there: the next publish replaces this copy. It exists
+// because the update card is shown by the build the user already has, which
+// cannot know what the next one contains. VersionCode is the store's build number (Android versionCode, iOS
 // build number); VersionName is what users see ("1.1").
 //
 // MinSupported marks a critical fix. Every build below the highest published
