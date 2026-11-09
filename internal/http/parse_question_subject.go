@@ -59,7 +59,7 @@ func questionSubjectWasDropped(transcript string, question ledgerQuestion) bool 
 		return false
 	}
 	// Something was filtered on, so nothing was silently discarded.
-	if question.Category != "" || question.Merchant != "" || question.Mode != "" {
+	if question.Category != "" || question.Merchant != "" || question.Mode != "" || len(question.Keywords) > 0 {
 		return false
 	}
 

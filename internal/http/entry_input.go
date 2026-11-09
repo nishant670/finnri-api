@@ -11,6 +11,10 @@ import (
 )
 
 type entryInput struct {
+	// AIRequestID is the request_id of the AI read whose draft this is, when
+	// it is one; it links the read to the entry in AI usage (P57). Not stored
+	// on the entry.
+	AIRequestID      string             `json:"ai_request_id"`
 	Title            string             `json:"title"`
 	Type             string             `json:"type"`
 	Amount           models.Money       `json:"amount"`

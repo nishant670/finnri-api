@@ -59,8 +59,14 @@ func syncRefundReminders(now time.Time) (int, error) {
 			UserID:    entry.UserID,
 			Type:      refundReminderType,
 			Title:     "Refund expected",
-			Body:      fmt.Sprintf("₹%s from %s was expected back. Mark it received or written off.", entry.RefundableAmount.String(), strings.TrimSpace(entry.Title)),
+			Body:      fmt.Sprintf("%s from %s was expected back. Mark it received or written off.", rupeesForCopy(*entry.RefundableAmount), strings.TrimSpace(entry.Title)),
 			ActionURL: actionURL,
+		}
+		if entry.RefundableAmount != nil {
+			notification.Amount = moneyPointer(*entry.RefundableAmount)
+		}
+		if entry.RefundExpectedOn != nil {
+			notification.DueDate = datePointer(*entry.RefundExpectedOn)
 		}
 		didCreate := false
 		err := database.DB.Transaction(func(tx *gorm.DB) error {
@@ -82,6 +88,7 @@ func syncRefundReminders(now time.Time) (int, error) {
 			created++
 			go sendUserPush(database.DB, entry.UserID, notification.Title, notification.Body, map[string]any{
 				"action_url": actionURL,
+				"type":       refundReminderType,
 				"entry_id":   entry.ID,
 			})
 		}
@@ -146,10 +153,10 @@ func (s *Server) updateRefundStatus(c *gin.Context) {
 			return err
 		}
 		if status != refundStatusPending {
-			now := time.Now().UTC()
-			return tx.Model(&models.Notification{}).
-				Where("user_id = ? AND type = ? AND action_url = ?", userID, refundReminderType, fmt.Sprintf("/entry/%d", entry.ID)).
-				Where("read_at IS NULL").Update("read_at", now).Error
+			// The refund is settled either way: its reminder is done (P49).
+			resolveNotifications(tx.
+				Where("user_id = ? AND type = ? AND action_url = ?", userID, refundReminderType, fmt.Sprintf("/entry/%d", entry.ID)))
+			return nil
 		}
 		return nil
 	}); err != nil {

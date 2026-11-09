@@ -269,8 +269,15 @@ func (s *Server) updateCardStatement(c *gin.Context) {
 		dueDate = dueDateFor(statementDate, effectiveDueDay(account, statementDate)).Format(apiDateLayout)
 	}
 
+	// Editing only the amounts keeps the window the bill was saved with, which
+	// may be the period the bank printed.
+	if newDate != oldDate || input.CycleStart != "" {
+		statement.CycleStart = cycleStart.Format(apiDateLayout)
+		if input.CycleStart != "" {
+			statement.CycleStart = input.CycleStart
+		}
+	}
 	statement.StatementDate = newDate
-	statement.CycleStart = cycleStart.Format(apiDateLayout)
 	statement.CycleEnd = cycleEnd.Format(apiDateLayout)
 	statement.DueDate = dueDate
 	statement.TotalDue = input.TotalDue

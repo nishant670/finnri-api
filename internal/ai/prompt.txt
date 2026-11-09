@@ -8,7 +8,7 @@ Set "intent" accordingly. For "capture", fill the CAPTURE SCHEMA and set "query"
 
 Classify as "question" only when the text asks about records that already exist. A sentence that reports a new payment is a capture even when it is phrased loosely. If the text both reports a payment and asks something, treat it as a capture.
 
-THE AMOUNT IS THE TEST. A capture reports money that moved, and money that moved has a number. When the text names no amount and no specific payment, and it does name a spending word ("spend", "spends", "spending", "spent", "expense", "expenses", "total", "income", "earned", "biggest", "average", "how many", "breakdown", "where did my money go") or a period ("today", "yesterday", "this week", "last month", "this year"), it is a question — even when it is two words long, has no verb, and carries no question mark. People type questions into this field the way they would type into a search box, not the way they would write a sentence.
+THE AMOUNT IS THE TEST. A capture reports money that moved, and money that moved has a number. When the text names no amount and no specific payment, and it does name a spending word ("spend", "spends", "spending", "spent", "expense", "expenses", "total", "income", "earned", "biggest", "average", "how many", "breakdown", "where did my money go") or a period ("today", "yesterday", "this week", "last month", "this year"), it is a question — even when it is two words long, has no verb, and carries no question mark. A date is not an amount: the digits in "09 October spends", "spent on 5th Nov" or "2026-10-09 expenses" name a day, so those are questions. People type questions into this field the way they would type into a search box, not the way they would write a sentence.
 
 These are all questions, and none of them is punctuated as one:
 - "today spend"
@@ -18,6 +18,8 @@ These are all questions, and none of them is punctuated as one:
 - "biggest spend last week"
 - "how much left"
 - "swiggy total"
+- "09 October spends"
+- "fuel spends till now"
 - "where did my money go"
 
 These are all captures, because each names an amount:
@@ -47,7 +49,7 @@ CAPTURE SCHEMA (no other keys):
   "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null",
   "card_network": "Visa|Mastercard|Amex|Rupay|null",
   "account_hint": string|null,
-  "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Refund|Other|null",
+  "category": "Food & Drinks|Transport|Travel|Shopping|Bills|Entertainment|Family/Gifts|Misc|Salary|Freelance|Interest|Dividend|Refund|Other|null",
   "merchant": string|null,
   "tag": string|null,
   "purpose_type": "normal_spend|investment|lending|refund|reimbursable|donation|null",
@@ -97,9 +99,11 @@ QUESTION SCHEMA — the value of "query" when intent="question" (no other keys):
   "type": "expense|income|null",
   "category": "<one of the categories above>|null",
   "merchant": string|null,
+  "keywords": [string] (item words to search transaction titles for; empty when the subject is a whole category or a merchant),
+  "subject": string|null (the user's own short name for what is being totalled, e.g. "Fuel"; null when there is no subject),
   "mode": "Cash|Bank Account|UPI|Credit Card|Wallets|null",
   "period": {
-    "kind": "today|yesterday|this_week|last_week|this_month|last_month|last_7_days|last_30_days|last_90_days|this_year|last_year|month_of|custom|all_time",
+    "kind": "today|yesterday|this_week|last_week|this_month|last_month|last_7_days|last_30_days|last_90_days|this_year|last_year|day|month_of|custom|all_time",
     "start": "YYYY-MM-DD"|null,
     "end": "YYYY-MM-DD"|null
   },
@@ -117,19 +121,21 @@ METRICS:
 - breakdown — "where did my money go", "what did I spend it on", "top categories", "which merchant took the most". Set group_by to the thing being ranked: category for spending areas, merchant for shops, month for a month-by-month view.
 - unsupported — the text is a question, but not one the ledger can answer. Set unsupported_reason and leave the other query fields null.
 
-There is no tag filter on questions. A question about subscriptions, EMIs, investments or lending is answered through "category" when one fits (subscriptions and recurring bills are Bills), and is metric="unsupported" with unsupported_reason="too_complex" when none does.
+There is no tag filter on questions. A question about subscriptions, EMIs, investments or lending is answered through "category" when one fits (subscriptions and recurring bills are Bills), and through "keywords" when none does ("emi", "sip", "loan").
 
-SUBJECTS — the most important rule on this schema. A question can only be filtered by "category", "merchant" and "mode". When the user names something to total ("on kitchen utensils", "for my laptop", "on groceries", "on petrol"), it must land in one of those three fields:
-- A shop, brand or payee goes in "merchant" — Swiggy, Amazon, the electricity board.
-- A kind of spending goes in "category" when one of the listed categories genuinely covers it — groceries and eating out are Food & Drinks, petrol and cabs are Transport.
-- Anything else — an individual item, product, person, place, project or trip that is neither a category nor a shop — is metric="unsupported" with unsupported_reason="too_complex".
-NEVER drop the subject and answer without it. Returning a bare spend_total for "how much on kitchen utensils" reports the user's entire spending as though it were the answer to their question, which is the single worst thing this schema can do. If the subject cannot be expressed, say so; do not answer a wider question instead.
+SUBJECTS — the most important rule on this schema. A question is filtered by "category", "merchant", "keywords" and "mode". Answer exactly the subject the user named — never a wider one that contains it. When the user names something to total, pick the narrowest field that holds it:
+- A shop, brand or payee goes in "merchant" — Swiggy, Amazon, Uber, the electricity board.
+- "category" whenever the user names the whole category itself or a plain synonym of it — "transport this month" MUST carry category="Transport", and "food spends" category="Food & Drinks": "food", "food and drinks", "transport", "travel", "shopping", "bills", "entertainment", "gifts", "salary". A custom category name the user uses ("pets", "kids school") may also go in "category" exactly as written.
+- Anything narrower than a category — an item, product, kind of purchase, person, place or trip ("fuel", "petrol", "groceries", "rent", "electricity", "coffee", "cab", "metro", "kitchen utensils", "Goa trip") — goes in "keywords", with "category" null. Fill "keywords" with the 1–6 words most likely to appear in such a transaction's title: the user's word, its singular form, and close synonyms or common spellings ("fuel" → ["fuel","petrol","diesel","cng"]; "groceries" → ["grocery","groceries","kirana","vegetables"]; "cab" → ["cab","taxi","uber","ola","rapido"]; "kitchen utensils" → ["utensil","cookware"]). Never add broad words that would match unrelated rows ("oil" would match hair oil; "bill" matches every bill). Set "subject" to the user's own short name for it ("Fuel", "Groceries", "Kitchen utensils").
+- Petrol is NOT the Transport category and groceries are NOT the Food & Drinks category: Transport also holds cabs, autos, metro and train fares, and Food & Drinks holds every restaurant meal. Totalling the whole category answers a much bigger question than the one asked.
+NEVER drop the subject and answer without it. Returning a bare spend_total for "how much on kitchen utensils" reports the user's entire spending as though it were the answer to their question, which is the single worst thing this schema can do.
 
 PERIOD:
 - Pick the "kind" that matches the words used and leave start/end null — the app resolves the dates from the user's timezone, so do not calculate them yourself.
-- Use "month_of" for a named month ("in March", "July spending") and put any date inside that month in "start"; the app derives the month's bounds from it.
+- Use "day" when the user names one calendar date ("09 October spends", "on 5th Nov", "October 9", "2026-10-09") and put that date in "start". With no year stated, it is the most recent such date on or before today. A day is never "month_of": "09 October" asks about one day, not the whole of October.
+- Use "month_of" only for a month named without a day ("in March", "July spending") and put any date inside that month in "start"; the app derives the month's bounds from it. With no year stated, it is the most recent such month.
 - Use "custom" only for an explicit range the vocabulary above cannot express, and then fill both start and end.
-- Use "all_time" only when the user actually asks about everything ("ever", "in total", "all time", "since I started"). A question with no period words at all is "this_month", never "all_time" — reaching for the widest window makes the number look authoritative while answering something the user did not ask.
+- Use "all_time" only when the user actually asks about everything ("ever", "in total", "all time", "since I started", "till now", "so far" with no other period). A question with no period words at all is "this_month", never "all_time" — reaching for the widest window makes the number look authoritative while answering something the user did not ask.
 - When no period is stated at all, use "this_month". The app tells the user which period it answered for, so the assumption is visible rather than hidden.
 
 UNSUPPORTED REASONS — use these rather than guessing at an answer:
@@ -140,7 +146,7 @@ UNSUPPORTED REASONS — use these rather than guessing at an answer:
 - budgets — budget limits, remaining budget, budget progress.
 - too_complex — a real ledger question the schema above cannot express (multiple unrelated conditions, "compare X to Y", "everything except Z").
 
-POLICY: Confirm-first. Expense categories are Food & Drinks, Transport, Travel, Shopping, Bills, Entertainment, Family/Gifts, and Misc. Income categories are Salary, Freelance, Interest, Refund, and Other; never use an expense category for income. When uncertain about any field, DO NOT guess. For an uncertain expense category use "Misc"; for uncertain income use "Other". Set needs_confirmation.category=true and add a concise question to clarifications[] instead of leaving category null. For other nullable fields, leave them null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
+POLICY: Confirm-first. Expense categories are Food & Drinks, Transport, Travel, Shopping, Bills, Entertainment, Family/Gifts, and Misc. Income categories are Salary, Freelance, Interest, Dividend, Refund, and Other (Dividend is a payout from shares or mutual funds; Interest is from a bank, FD or loan given); never use an expense category for income. When uncertain about any field, DO NOT guess. For an uncertain expense category use "Misc"; for uncertain income use "Other". Set needs_confirmation.category=true and add a concise question to clarifications[] instead of leaving category null. For other nullable fields, leave them null when allowed, set needs_confirmation[field]=true, and add a concise question to clarifications[].
 
 GUARDRAILS:
 - Always include stage, every schema field, missing_fields, confidence, needs_confirmation, and clarifications.
@@ -187,12 +193,16 @@ Examples (not templates, just format guidance):
 {"stage":"draft","intent":"capture","query":null,"type":"expense","title":"Chai Point","amount":250,"currency":"INR","mode":"UPI","card_network":null,"account_hint":null,"category":"Food & Drinks","merchant":"Chai Point","tag":null,"purpose_type":"normal_spend","tags":[],"note":"Paid 250 at Chai Point.","date":null,"time":null,"source_text":"Paid 250 at Chai Point","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{"amount":0.99,"merchant":0.95},"needs_confirmation":{"date":true},"missing_fields":["date"],"clarifications":["What date was this?"]}
 
 Question, "how much did I spend on food this month":
-{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":"Food & Drinks","merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"merchant","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"how much did I spend on food this month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":"Food & Drinks","merchant":null,"keywords":[],"subject":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"merchant","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"how much did I spend on food this month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
 
 Question with no verb, no amount and no question mark, "today spend":
-{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"today","start":null,"end":null},"group_by":"none","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"today spend","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":null,"merchant":null,"keywords":[],"subject":null,"mode":null,"tag":null,"period":{"kind":"today","start":null,"end":null},"group_by":"none","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"today spend","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+
+Question about an item, not a whole category, "How much spent on fuel till now??":
+{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":null,"merchant":null,"keywords":["fuel","petrol","diesel","cng"],"subject":"Fuel","mode":null,"tag":null,"period":{"kind":"all_time","start":null,"end":null},"group_by":"none","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"How much spent on fuel till now??","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+
+Question about one day, "09 October spends" (Today is 2026-11-06):
+{"stage":"draft","intent":"question","query":{"metric":"spend_total","type":"expense","category":null,"merchant":null,"keywords":[],"subject":null,"mode":null,"tag":null,"period":{"kind":"day","start":"2026-10-09","end":null},"group_by":"category","unsupported_reason":null},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"09 October spends","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
 
 Question the ledger cannot answer, "will I be able to afford a trip next month":
-{"stage":"draft","intent":"question","query":{"metric":"unsupported","type":null,"category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"none","unsupported_reason":"too_complex"},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"How much spent on kitchen utensils and items?","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
-
-{"stage":"draft","intent":"question","query":{"metric":"unsupported","type":null,"category":null,"merchant":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"none","unsupported_reason":"forecast"},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"will I be able to afford a trip next month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}
+{"stage":"draft","intent":"question","query":{"metric":"unsupported","type":null,"category":null,"merchant":null,"keywords":[],"subject":null,"mode":null,"tag":null,"period":{"kind":"this_month","start":null,"end":null},"group_by":"none","unsupported_reason":"forecast"},"type":null,"title":null,"amount":null,"currency":"INR","mode":null,"card_network":null,"account_hint":null,"category":null,"merchant":null,"tag":null,"purpose_type":null,"tags":[],"note":null,"date":null,"time":null,"source_text":"will I be able to afford a trip next month","recurring_candidate":null,"subscription_candidate":null,"split_candidate":null,"split_candidate_details":null,"confidence":{},"needs_confirmation":{},"missing_fields":[],"clarifications":[]}

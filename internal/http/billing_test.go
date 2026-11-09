@@ -38,8 +38,9 @@ func TestBillingPlansExposePublicCatalog(t *testing.T) {
 	if monthly.CheckoutEnabled {
 		t.Fatal("checkout should stay disabled until a payment provider is configured")
 	}
-	if len(monthly.FeatureGates) == 0 {
-		t.Fatal("expected paid feature gates in plan response")
+	// Only AI work is paid, so a pass lists only AI features.
+	if strings.Join(monthly.FeatureGates, ",") != "ai_text_capture,ai_voice_capture" {
+		t.Fatalf("a pass should list only AI features, got %v", monthly.FeatureGates)
 	}
 	lifetime := findBillingPlanResponse(response.Plans, "lifetime_quote")
 	if lifetime == nil || lifetime.RequiresPriorPaidMonths != 3 || lifetime.CheckoutEnabled {

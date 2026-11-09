@@ -184,7 +184,8 @@ func budgetAlertKind(budget models.Budget, spend models.Money) string {
 }
 
 func createBudgetAlertIfNeeded(db *gorm.DB, budget models.Budget, periodStart, kind string, spend models.Money) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+	var created *models.Notification
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var existing int64
 		if err := tx.Model(&models.BudgetAlert{}).
 			Where("user_id = ? AND budget_id = ? AND period_start = ? AND kind = ?",
@@ -209,19 +210,44 @@ func createBudgetAlertIfNeeded(db *gorm.DB, budget models.Budget, periodStart, k
 			Kind: kind, SpendAmount: spend, LimitAmount: budget.LimitAmount,
 			NotificationID: &notification.ID,
 		}
-		return tx.Create(&alert).Error
+		if err := tx.Create(&alert).Error; err != nil {
+			return err
+		}
+		created = &notification
+		return nil
 	})
+	if err == nil && created != nil {
+		go sendUserPush(database.DB, budget.UserID, created.Title, created.Body, map[string]any{
+			"action_url": created.ActionURL, "type": created.Type,
+		})
+	}
+	return err
 }
 
 func budgetAlertCopy(budget models.Budget, periodStart, kind string, spend models.Money) (string, string) {
-	target := budgetTargetLabel(budget)
+	subject := spendingSubject(budgetTargetLabel(budget))
 	periodLabel := budgetPeriodLabel(periodStart)
 	switch kind {
 	case budgetExceededKind:
-		return "Budget exceeded", fmt.Sprintf("%s spending is ₹%s against your ₹%s monthly budget for %s.", target, spend.String(), budget.LimitAmount.String(), periodLabel)
+		return "Budget exceeded", fmt.Sprintf("%s is %s against your %s monthly budget for %s.", subject, rupeesForCopy(spend), rupeesForCopy(budget.LimitAmount), periodLabel)
 	default:
-		return "Budget nearing limit", fmt.Sprintf("%s spending has reached ₹%s of your ₹%s monthly budget for %s.", target, spend.String(), budget.LimitAmount.String(), periodLabel)
+		return "Budget nearing limit", fmt.Sprintf("%s has reached %s of your %s monthly budget for %s.", subject, rupeesForCopy(spend), rupeesForCopy(budget.LimitAmount), periodLabel)
 	}
+}
+
+// spendingSubject turns what a budget caps into the subject of a sentence about
+// it: "Food & Drinks" → "Food & Drinks spending". A budget that is already
+// named for spending — the app names an all-spending budget "Monthly
+// spending" — keeps its name, so it never reads "Monthly spending spending".
+func spendingSubject(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "Your spending"
+	}
+	if strings.HasSuffix(strings.ToLower(target), "spending") {
+		return target
+	}
+	return target + " spending"
 }
 
 func budgetTargetLabel(budget models.Budget) string {

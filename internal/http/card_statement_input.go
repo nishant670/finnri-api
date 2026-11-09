@@ -2,21 +2,28 @@ package http
 
 import (
 	"strings"
+	"time"
 
 	"finnri/internal/models"
 )
+
+// maxPrintedCycleDays bounds a printed statement period.
+const maxPrintedCycleDays = 62
 
 // cardStatementInput is a bill as the user reads it off their statement. Only
 // the statement date and total are really theirs to give; the cycle window is
 // derived, and the due date is derived unless they correct it.
 type cardStatementInput struct {
-	StatementDate string       `json:"statement_date"`
-	DueDate       string       `json:"due_date"`
-	TotalDue      models.Money `json:"total_due"`
-	MinimumDue    models.Money `json:"minimum_due"`
-	Currency      string       `json:"currency"`
-	Source        string       `json:"source"`
-	Notes         string       `json:"notes"`
+	StatementDate string `json:"statement_date"`
+	// CycleStart is the first day of the period the statement prints, when it
+	// was read from one. Without it the cycle is derived.
+	CycleStart string       `json:"cycle_start"`
+	DueDate    string       `json:"due_date"`
+	TotalDue   models.Money `json:"total_due"`
+	MinimumDue models.Money `json:"minimum_due"`
+	Currency   string       `json:"currency"`
+	Source     string       `json:"source"`
+	Notes      string       `json:"notes"`
 }
 
 func (input cardStatementInput) validate() map[string]string {
@@ -35,6 +42,15 @@ func (input cardStatementInput) validate() map[string]string {
 		case err == nil && !dueDate.After(statementDate):
 			// A bill is never due the day it bills, and never before.
 			fields["due_date"] = "must be after the statement date"
+		}
+	}
+
+	if strings.TrimSpace(input.CycleStart) != "" {
+		start, startErr := parseStrictAPIDate(input.CycleStart)
+		if startErr != nil {
+			fields["cycle_start"] = "must be a YYYY-MM-DD date"
+		} else if err == nil && (!start.Before(statementDate) || statementDate.Sub(start) > maxPrintedCycleDays*24*time.Hour) {
+			fields["cycle_start"] = "must be within the two months before the statement date"
 		}
 	}
 

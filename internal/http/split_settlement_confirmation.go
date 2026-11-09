@@ -72,11 +72,11 @@ func settlementCounterpartySentence(direction string, amount models.Money, recor
 	}
 	switch direction {
 	case settlementDirectionFriendPaidUser:
-		return fmt.Sprintf("%s says you paid them ₹%s%s.", recorder, amount.String(), how)
+		return fmt.Sprintf("%s says you paid them %s%s.", recorder, rupeesForCopy(amount), how)
 	case settlementDirectionUserPaidFriend:
-		return fmt.Sprintf("%s says they paid you ₹%s%s.", recorder, amount.String(), how)
+		return fmt.Sprintf("%s says they paid you %s%s.", recorder, rupeesForCopy(amount), how)
 	default:
-		return fmt.Sprintf("%s recorded a settlement of ₹%s%s.", recorder, amount.String(), how)
+		return fmt.Sprintf("%s recorded a settlement of %s%s.", recorder, rupeesForCopy(amount), how)
 	}
 }
 
@@ -127,7 +127,7 @@ func notifySettlementDecision(db *gorm.DB, settlement models.SplitSettlement, re
 			settlement.UserID,
 			"split.settlement.confirmed",
 			fmt.Sprintf("%s confirmed your settlement", name),
-			fmt.Sprintf("The ₹%s settlement you recorded%s is confirmed. The balance is settled.", settlement.Amount.String(), suffix),
+			fmt.Sprintf("The %s settlement you recorded%s is confirmed. The balance is settled.", rupeesForCopy(settlement.Amount), suffix),
 			fmt.Sprintf("/split/settlements/%d", settlement.ID),
 		)
 		return
@@ -136,7 +136,7 @@ func notifySettlementDecision(db *gorm.DB, settlement models.SplitSettlement, re
 		settlement.UserID,
 		"split.settlement.denied",
 		fmt.Sprintf("%s denied your settlement", name),
-		fmt.Sprintf("The ₹%s settlement you recorded%s was denied, so the balance is back to what it was. Check with %s.", settlement.Amount.String(), suffix, name),
+		fmt.Sprintf("The %s settlement you recorded%s was denied, so the balance is back to what it was. Check with %s.", rupeesForCopy(settlement.Amount), suffix, name),
 		fmt.Sprintf("/split/settlements/%d", settlement.ID),
 	)
 }
@@ -276,15 +276,17 @@ func (s *Server) decideSplitSettlement(c *gin.Context, confirmed bool) {
 
 	// The prompt that sent the user here has been answered. Leaving it unread
 	// is how a decided settlement kept its dot on the bell.
-	_ = database.DB.Model(&models.Notification{}).
-		Where("user_id = ? AND type = ? AND read_at IS NULL", userID, "split.settlement.recorded").
-		Where("action_url = ?", fmt.Sprintf("/split/settlements/%d", settlement.ID)).
-		Update("read_at", now).Error
+	// Answered, so the prompt is done as well as read (P49).
+	resolveNotifications(database.DB.
+		Where("user_id = ? AND type = ?", userID, "split.settlement.recorded").
+		Where("action_url = ?", fmt.Sprintf("/split/settlements/%d", settlement.ID)))
 
 	var responder models.User
 	if err := database.DB.First(&responder, userID).Error; err == nil {
 		notifySettlementDecision(database.DB, settlement, responder, confirmed)
 	}
+	// A denial puts the balance back where it was, which can be over the limit.
+	checkSplitGroupBalanceAlerts(database.DB, derefUint(settlement.GroupID))
 
 	decorated := []models.SplitSettlement{settlement}
 	decorateSettlementsForCounterparty(database.DB, decorated)

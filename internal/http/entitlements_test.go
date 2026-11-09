@@ -1,53 +1,47 @@
 package http
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"finnri/internal/billing"
 	"finnri/internal/models"
 )
 
-func TestFreeUserGatedEndpointsReturnPaymentRequired(t *testing.T) {
+// Only AI work is paid. Budgets, insights and subscription reminders cost
+// nothing to run, so a user without a pass gets all of them, and any number
+// of budgets.
+func TestFreeUserGetsNonAIFeatures(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	useSmokeDatabase(t)
 	router := smokeRouter(t)
 	authResponse := performJSONRequest[AuthResponse](
-		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "phase-7-free-gates"}, http.StatusOK,
+		t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "free-non-ai-features"}, http.StatusOK,
 	)
+	token := authResponse.Token
 
-	cases := []struct {
-		name        string
-		method      string
-		path        string
-		body        any
-		wantFeature billing.FeatureCode
-	}{
-		{"advanced insights", http.MethodGet, "/v1/insights?start_date=2026-07-01&end_date=2026-07-31", nil, billing.FeatureAdvancedInsights},
-		{"create budget", http.MethodPost, "/v1/budgets", validBudgetPayload(), billing.FeatureBudgets},
-		{"list budgets", http.MethodGet, "/v1/budgets", nil, billing.FeatureBudgets},
-		{"update budget", http.MethodPut, "/v1/budgets/1", validBudgetPayload(), billing.FeatureBudgets},
-		{"delete budget", http.MethodDelete, "/v1/budgets/1", nil, billing.FeatureBudgets},
-		{"subscription reminders", http.MethodPost, "/v1/subscriptions/reminders", nil, billing.FeatureSubscriptionReminders},
+	_ = performJSONRequest[map[string]any](t, router, http.MethodGet, "/v1/insights?start_date=2026-07-01&end_date=2026-07-31", token, nil, http.StatusOK)
+	_ = performJSONRequest[map[string]any](t, router, http.MethodPost, "/v1/subscriptions/reminders", token, nil, http.StatusOK)
+
+	var created []models.Budget
+	for i := 0; i < 3; i++ {
+		budget := performJSONRequest[models.Budget](t, router, http.MethodPost, "/v1/budgets", token, validBudgetPayload(), http.StatusCreated)
+		if budget.ID == 0 {
+			t.Fatalf("expected budget %d to be created, got %#v", i+1, budget)
+		}
+		created = append(created, budget)
 	}
 
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			response := performJSONRequest[map[string]any](t, router, test.method, test.path, authResponse.Token, test.body, http.StatusPaymentRequired)
-			if response["error"] != billing.EntitlementPaymentRequired {
-				t.Fatalf("unexpected gated error: %#v", response)
-			}
-			if response["feature_code"] != string(test.wantFeature) {
-				t.Fatalf("feature_code = %#v, want %s; response = %#v", response["feature_code"], test.wantFeature, response)
-			}
-			if response["required_plan"] != "paid" || response["upgrade_required"] != true {
-				t.Fatalf("unexpected upgrade metadata: %#v", response)
-			}
-		})
+	listed := performJSONRequest[[]models.Budget](t, router, http.MethodGet, "/v1/budgets", token, nil, http.StatusOK)
+	if len(listed) != len(created) {
+		t.Fatalf("expected %d budgets, got %#v", len(created), listed)
 	}
+	path := fmt.Sprintf("/v1/budgets/%d", created[0].ID)
+	_ = performJSONRequest[models.Budget](t, router, http.MethodPut, path, token, validBudgetPayload(), http.StatusOK)
+	_ = performJSONRequest[map[string]any](t, router, http.MethodDelete, path, token, nil, http.StatusOK)
 }
 
 func TestInlineEntrySplitStaysFree(t *testing.T) {

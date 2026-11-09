@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -33,6 +34,9 @@ type cardStatementResponse struct {
 	DaysToDue      int                           `json:"days_to_due"`
 	Reconciliation statementReconciliation       `json:"reconciliation"`
 	Payments       []models.CardStatementPayment `json:"payments"`
+	// ImportedCount is how many transactions came from reading this
+	// statement, so the delete prompt can offer to remove them.
+	ImportedCount int64 `json:"imported_count"`
 }
 
 // --- routing helpers -------------------------------------------------------
@@ -165,6 +169,10 @@ func (s *Server) saveCardStatement(c *gin.Context) {
 	statement.AccountID = accountID
 	statement.StatementDate = input.StatementDate
 	statement.CycleStart = cycleStart.Format(apiDateLayout)
+	if input.CycleStart != "" {
+		// The period the bank printed beats any window Finnri can derive.
+		statement.CycleStart = input.CycleStart
+	}
 	statement.CycleEnd = cycleEnd.Format(apiDateLayout)
 	statement.DueDate = dueDate
 	statement.TotalDue = input.TotalDue
@@ -198,6 +206,14 @@ func (s *Server) saveCardStatement(c *gin.Context) {
 	}
 	retileNextStatement(account, statement.ID, statement.StatementDate)
 
+	// The bill amount the "statement is out" prompt asked for is in (P49),
+	// and a statement saved already paid needs no due reminder either.
+	resolveNotifications(database.DB.
+		Where("user_id = ? AND type = ? AND action_url = ?", account.UserID, "card_statement.statement_expected", fmt.Sprintf("/accounts/%d", account.ID)))
+	if statement.Status == statementStatusPaid {
+		resolveCardBillReminders(account.UserID, statement.ID)
+	}
+
 	respondWithSavedStatement(c, &statement, created, suggestStatementDay(account, statement))
 }
 
@@ -222,9 +238,14 @@ func (s *Server) getCardStatement(c *gin.Context) {
 	respondWithStatement(c, &statement, false)
 }
 
-// deleteCardStatement removes a bill and the bucket entry it owns. Real
-// transactions in the cycle are untouched — they are the user's record of
-// their own spending, not this statement's property.
+// deleteCardStatement removes a bill and everything that exists only because
+// of it: the bucket entry, its payments and the bank entries they wrote, and
+// its reminders. EMI instalments it covered go back to being owed. The card's
+// next statement is re-tiled, because its cycle may have started from this one.
+//
+// Transactions in the cycle are the user's own record and stay. Rows this
+// statement imported stay too, unless `remove_imported=true`: after a bad read
+// those rows are exactly what the user wants gone.
 func (s *Server) deleteCardStatement(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	statementID, ok := parseIDParam(c, "id")
@@ -240,16 +261,110 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "statement not found"})
 		return
 	}
+	account, err := loadUserCard(userID, statement.AccountID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "card not found"})
+		return
+	}
+	removeImported := c.Query("remove_imported") == "true"
 
-	if err := clearUnitemizedEntry(&statement); err != nil {
+	removed := int64(0)
+	removedAttachments := []string{}
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		// A paid bill released the limit its EMI instalments held, the ones
+		// billed before it existed and so never linked to it included.
+		released := tx.Model(&models.CardEMIInstallment{}).
+			Where("user_id = ? AND account_id = ? AND status = ?", userID, statement.AccountID, emiInstallmentPaid)
+		if statement.Status == statementStatusPaid {
+			released = released.Where("statement_id = ? OR (statement_id IS NULL AND due_date BETWEEN ? AND ?)",
+				statement.ID, statement.CycleStart, statement.CycleEnd)
+		} else {
+			released = released.Where("statement_id = ?", statement.ID)
+		}
+		if err := released.Update("status", emiInstallmentBilled).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.CardEMIInstallment{}).
+			Where("user_id = ? AND statement_id = ?", userID, statement.ID).
+			Update("statement_id", nil).Error; err != nil {
+			return err
+		}
+		var payments []models.CardStatementPayment
+		if err := tx.Where("statement_id = ? AND user_id = ?", statement.ID, userID).Find(&payments).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("statement_id = ? AND user_id = ?", statement.ID, userID).
+			Delete(&models.CardStatementPayment{}).Error; err != nil {
+			return err
+		}
+		for _, payment := range payments {
+			if payment.BankEntryID == nil {
+				continue
+			}
+			if err := tx.Where("id = ? AND user_id = ?", *payment.BankEntryID, userID).
+				Delete(&models.Entry{}).Error; err != nil {
+				return err
+			}
+		}
+		// While the reminder rows still say which notifications are this bill's.
+		resolveCardBillRemindersIn(tx, userID, statement.ID)
+		if err := tx.Where("statement_id = ? AND user_id = ?", statement.ID, userID).
+			Delete(&models.CardStatementReminder{}).Error; err != nil {
+			return err
+		}
+		if removeImported {
+			var imported []models.Entry
+			if err := tx.Where("user_id = ? AND source = ? AND idempotency_key LIKE ?",
+				userID, models.EntrySourceStatement, statementImportKeyPrefix(statement.ID)+"%").
+				Find(&imported).Error; err != nil {
+				return err
+			}
+			for _, entry := range imported {
+				if err := deleteEntryDependents(tx, userID, entry.ID); err != nil {
+					return err
+				}
+				result := tx.Where("id = ? AND user_id = ?", entry.ID, userID).Delete(&models.Entry{})
+				if result.Error != nil {
+					return result.Error
+				}
+				removed += result.RowsAffected
+				removedAttachments = append(removedAttachments, entry.Attachment)
+			}
+		}
+		bucket := statement.UnitemizedEntryID
+		if bucket != nil {
+			if err := tx.Model(&statement).Update("unitemized_entry_id", nil).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Delete(&statement).Error; err != nil {
+			return err
+		}
+		if bucket != nil {
+			return tx.Where("id = ? AND user_id = ?", *bucket, userID).Delete(&models.Entry{}).Error
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("card statement: could not delete statement %d: %v", statement.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_statement"})
 		return
 	}
-	if err := database.DB.Delete(&statement).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_statement"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"deleted": true})
+
+	// The rows are gone, so nothing else can reference their receipts now.
+	deleteLocalUploadFiles(removedAttachments)
+	retileNextStatement(account, statement.ID, statement.StatementDate)
+	c.JSON(http.StatusOK, gin.H{"deleted": true, "removed_transactions": removed})
+}
+
+// countStatementImports is how many transactions a statement's import created.
+func countStatementImports(userID, statementID uint) (int64, error) {
+	var count int64
+	err := database.DB.Model(&models.Entry{}).
+		Where("user_id = ? AND source = ? AND idempotency_key LIKE ?",
+			userID, models.EntrySourceStatement, statementImportKeyPrefix(statementID)+"%").
+		Count(&count).Error
+	return count, err
 }
 
 // recordCardStatementPayment logs a payment the user made in their bank's
@@ -340,6 +455,10 @@ func (s *Server) recordCardStatementPayment(c *gin.Context) {
 	if err := refreshStatementPaidAmount(&statement); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_record_payment"})
 		return
+	}
+	// Paid in full: its due and overdue reminders are done (P49).
+	if statement.Status == statementStatusPaid {
+		resolveCardBillReminders(statement.UserID, statement.ID)
 	}
 
 	respondWithStatement(c, &statement, true)
@@ -516,8 +635,15 @@ func buildStatementResponse(c *gin.Context, statement *models.CardStatement) (ca
 		payments = []models.CardStatementPayment{}
 	}
 
+	imported, err := countStatementImports(statement.UserID, statement.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_load_statement"})
+		return cardStatementResponse{}, false
+	}
+
 	today := truncateDate(time.Now()).Format(apiDateLayout)
 	return cardStatementResponse{
+		ImportedCount:  imported,
 		CardStatement:  *statement,
 		RemainingDue:   remainingDue(*statement),
 		IsOverdue:      statementIsOverdue(*statement, today),

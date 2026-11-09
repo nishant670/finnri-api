@@ -275,6 +275,13 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE feedback
 			ADD COLUMN IF NOT EXISTS admin_notes TEXT NOT NULL DEFAULT '',
 			ADD COLUMN IF NOT EXISTS resolved_by BIGINT REFERENCES users(id) ON DELETE SET NULL`,
+		// P59: the app and phone a report came from (migration 0069). The
+		// live table is GORM's `feedbacks`, as in migration 0058.
+		`ALTER TABLE feedbacks
+			ADD COLUMN IF NOT EXISTS app_version VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS device VARCHAR(120) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS os_version VARCHAR(40) NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS screen VARCHAR(80) NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created
 			ON feedback (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created
@@ -431,6 +438,16 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_kind_check
 			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill'))`,
+		// See migrations/0066_add_wallet_balance_and_pay_later.sql.
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS balance_tracked BOOLEAN NOT NULL DEFAULT FALSE,
+			ADD COLUMN IF NOT EXISTS credit_kind VARCHAR(16) NOT NULL DEFAULT ''`,
+		// Every balance entered before the flag existed was a real one.
+		`UPDATE accounts SET balance_tracked = TRUE
+			WHERE balance_tracked = FALSE AND balance <> 0 AND type <> 'credit_card'`,
+		`ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_credit_kind_check`,
+		`ALTER TABLE accounts ADD CONSTRAINT accounts_credit_kind_check
+			CHECK (credit_kind IN ('', 'pay_later') AND (credit_kind = '' OR type = 'credit_card'))`,
 		// See migrations/0052_add_card_annual_fee.sql.
 		`ALTER TABLE accounts
 			ADD COLUMN IF NOT EXISTS annual_fee NUMERIC(19,2) NOT NULL DEFAULT 0,
@@ -537,6 +554,20 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE user_categories
 			ADD CONSTRAINT user_categories_type_check
 			CHECK (type IN ('expense', 'income'))`,
+		// See migrations/0071_create_account_rules.sql.
+		`CREATE TABLE IF NOT EXISTS account_rules (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+			phrase VARCHAR(40) NOT NULL,
+			phrase_key VARCHAR(40) NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_account_rules_user_phrase
+			ON account_rules (user_id, phrase_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_rules_account
+			ON account_rules (account_id)`,
 		// See migrations/0064_create_events.sql. AutoMigrate adds
 		// entries.event_id; the table and the foreign key are created here, and
 		// the key is replaced rather than trusted, because a GORM-made one would
@@ -600,11 +631,13 @@ func runtimeSchemaStatements() []string {
 			body VARCHAR(400) NOT NULL DEFAULT '',
 			problem VARCHAR(300) NOT NULL DEFAULT '',
 			fix VARCHAR(300) NOT NULL DEFAULT '',
-			image VARCHAR(64) NOT NULL DEFAULT '',
-			before_image VARCHAR(64) NOT NULL DEFAULT '',
-			after_image VARCHAR(64) NOT NULL DEFAULT '',
 			deep_link VARCHAR(200) NOT NULL DEFAULT ''
 		)`,
+		// See migrations/0072_drop_app_release_images.sql: notes are text, and
+		// each build draws its own previews.
+		`ALTER TABLE app_release_items DROP COLUMN IF EXISTS image`,
+		`ALTER TABLE app_release_items DROP COLUMN IF EXISTS before_image`,
+		`ALTER TABLE app_release_items DROP COLUMN IF EXISTS after_image`,
 		`CREATE INDEX IF NOT EXISTS idx_app_release_items_release_id
 			ON app_release_items (release_id, position)`,
 		`ALTER TABLE app_release_items DROP CONSTRAINT IF EXISTS app_release_items_kind_check`,
@@ -877,6 +910,12 @@ func runtimeSchemaStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// P57: the entry an AI read made (migration 0069). No foreign key.
+		`ALTER TABLE ai_usage_events
+			ADD COLUMN IF NOT EXISTS entry_id BIGINT`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_entry
+			ON ai_usage_events (entry_id)
+			WHERE entry_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_user_started
 			ON ai_usage_events (user_id, started_at DESC)
 			WHERE user_id IS NOT NULL`,
@@ -1499,6 +1538,27 @@ func runtimeSchemaStatements() []string {
 		// deletes rows, and this function runs on every start.
 		`ALTER TABLE split_groups
 			ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT ''`,
+		// An "other" group's own name and icon (migration 0067).
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS kind_label VARCHAR(32) NOT NULL DEFAULT ''`,
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS kind_icon VARCHAR(48) NOT NULL DEFAULT ''`,
+		// Group balance alerts (migration 0068).
+		`ALTER TABLE split_groups
+			ADD COLUMN IF NOT EXISTS balance_alert_amount NUMERIC(19,2) NOT NULL DEFAULT 0`,
+		`ALTER TABLE split_groups
+			DROP CONSTRAINT IF EXISTS split_groups_balance_alert_amount_check`,
+		`ALTER TABLE split_groups
+			ADD CONSTRAINT split_groups_balance_alert_amount_check CHECK (balance_alert_amount >= 0)`,
+		`CREATE TABLE IF NOT EXISTS split_group_balance_alerts (
+			id BIGSERIAL PRIMARY KEY,
+			group_id BIGINT NOT NULL REFERENCES split_groups(id) ON DELETE CASCADE,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			friend_id BIGINT NOT NULL REFERENCES split_friends(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_split_group_balance_alert_pair
+			ON split_group_balance_alerts (group_id, user_id, friend_id)`,
 		`ALTER TABLE split_settlements
 			ADD COLUMN IF NOT EXISTS group_id BIGINT REFERENCES split_groups(id) ON DELETE CASCADE`,
 		`CREATE INDEX IF NOT EXISTS idx_split_settlements_group

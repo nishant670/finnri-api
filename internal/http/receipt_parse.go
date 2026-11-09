@@ -194,6 +194,8 @@ func (s *Server) handleParseReceipt(c *gin.Context) {
 	for key, value := range credits {
 		draft[key] = value
 	}
+	// Sent back with the saved entry, so AI usage can open what this read made.
+	draft["ai_request_id"] = usageEvent.RequestID
 	c.JSON(http.StatusOK, draft)
 }
 

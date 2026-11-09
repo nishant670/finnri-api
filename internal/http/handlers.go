@@ -155,9 +155,6 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		releasesLimit := rateLimit(cfg, "app-releases")
 		appPublic.GET("/releases", releasesLimit, s.listAppReleases)
 		appPublic.GET("/releases/:version_code", releasesLimit, s.getAppRelease)
-		appPublic.GET("/release-media/:name",
-			rateLimitAt(releaseMediaRateLimitRPS, releaseMediaRateLimitBurst, "app-release-media"),
-			s.serveReleaseMedia)
 	}
 
 	admin := r.Group("/v1/admin")
@@ -215,14 +212,6 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
 	}
 
-	// Screenshots are bigger than the admin group's JSON limit allows, so the
-	// one admin upload gets its own group with the upload limit instead.
-	adminUploads := r.Group("/v1/admin")
-	adminUploads.Use(uploadRequestLimits(cfg), adminRateLimit(cfg), s.requireAdminSession(), s.adminAuditMiddleware())
-	{
-		adminUploads.POST("/release-media", requireAdminRole(models.AdminRoleSupport), s.uploadAdminReleaseMedia)
-	}
-
 	// Protected Routes (User Token)
 	authorized := r.Group("/v1")
 	authorized.Use(AuthMiddleware())
@@ -233,6 +222,10 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/entries", s.listEntries)
 		authorized.GET("/entries/export", s.exportEntriesCSV)
 		authorized.GET("/merchants/suggestions", s.listMerchantSuggestions)
+		authorized.GET("/payment-suggestion", s.getPaymentSuggestion)
+		authorized.GET("/payment-rules", s.listPaymentRules)
+		authorized.POST("/payment-rules", s.savePaymentRule)
+		authorized.DELETE("/payment-rules/:id", s.deletePaymentRule)
 		authorized.GET("/categories", s.listCategories)
 		authorized.GET("/categories/custom", s.listCustomCategories)
 		authorized.POST("/categories/custom", s.addCustomCategory)
@@ -275,9 +268,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/account-providers", listAccountProviders)
 		authorized.PUT("/accounts/:id", s.updateAccount)
 		authorized.POST("/accounts/:id/paid-off", s.markCardPaidOff)
+		authorized.POST("/accounts/:id/balance", s.setAccountBalance)
 		authorized.DELETE("/accounts/:id", s.deleteAccount)
 
 		// Credit card statements
+		authorized.GET("/accounts/:id/categories", s.listAccountCategories)
 		authorized.GET("/accounts/:id/statements", s.listCardStatements)
 		authorized.POST("/accounts/:id/statements", s.saveCardStatement)
 		authorized.POST("/accounts/:id/statements/read", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.readCardStatement)
@@ -304,7 +299,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.GET("/monthly-review", s.getMonthlyReview)
 		authorized.POST("/monthly-review/send", s.sendMonthlyReviewNow)
 		authorized.GET("/dashboard", s.getDashboard)
-		authorized.GET("/insights", s.requireEntitlement(billing.FeatureAdvancedInsights), s.getInsights)
+		authorized.GET("/insights", s.getInsights)
 		authorized.POST("/recurring-candidates/decision", s.saveRecurringCandidateDecision)
 		authorized.POST("/recurring-candidates/track", s.trackRecurringCandidates)
 
@@ -316,7 +311,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/notifications/:id", s.deleteNotification)
 
 		// Budgets
-		budgets := authorized.Group("/budgets", s.requireEntitlement(billing.FeatureBudgets))
+		budgets := authorized.Group("/budgets")
 		{
 			budgets.POST("", s.createBudget)
 			budgets.GET("", s.listBudgets)
@@ -328,7 +323,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/subscriptions", s.createSubscription)
 		authorized.GET("/subscriptions", s.listSubscriptions)
 		authorized.GET("/recurring", s.listRecurring)
-		authorized.POST("/subscriptions/reminders", s.requireEntitlement(billing.FeatureSubscriptionReminders), s.createSubscriptionReminders)
+		authorized.POST("/subscriptions/reminders", s.createSubscriptionReminders)
 		authorized.POST("/subscriptions/sync", s.syncSubscriptionAutomationNow)
 		authorized.PUT("/subscriptions/:id", s.updateSubscription)
 		authorized.DELETE("/subscriptions/:id", s.deleteSubscription)
@@ -442,6 +437,10 @@ func skipsStaticBearer(path string) bool {
 		// deployed environment.
 		strings.HasPrefix(path, "/v1/recurring") ||
 		strings.HasPrefix(path, "/v1/merchants") ||
+		// "/v1/payment-suggestion" and "/v1/payment-rules": which account pays
+		// for a new expense, asked by the app's add sheet.
+		strings.HasPrefix(path, "/v1/payment-suggestion") ||
+		strings.HasPrefix(path, "/v1/payment-rules") ||
 		strings.HasPrefix(path, "/v1/categories") ||
 		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
@@ -577,7 +576,11 @@ func (s *Server) handleParse(c *gin.Context) {
 		}
 		usageEvent = &event
 
-		if t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes); err == nil {
+		t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes)
+		if s.releaseReadIfClientCancelled(c, creditService, event.ID) {
+			return
+		}
+		if err == nil {
 			transcript = t
 		} else {
 			s.recordAIProviderFailure()
@@ -599,10 +602,23 @@ func (s *Server) handleParse(c *gin.Context) {
 	}
 	if strings.TrimSpace(transcript) == "" {
 		if usageEvent != nil {
+			// A recording with nothing in it. Stopping the mic sends straight
+			// away, so a pocket tap or a silent room gets here easily, and
+			// there was nothing to read: like a failed bill scan, it is free.
+			// It still counts as a failure, so the repeated-failure cooldown
+			// sees it.
+			noCharge := 0
 			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
-				Status:    billing.UsageStatusFailedAfterProvider,
-				ErrorCode: "empty_transcript",
+				Status:       billing.UsageStatusFailedAfterProvider,
+				ErrorCode:    "empty_transcript",
+				FinalCredits: &noCharge,
 			})
+			c.JSON(400, gin.H{
+				"error":           "empty_transcript",
+				"message":         "Finnri couldn't hear anything in that recording, so no credits were used. Tap the mic and say what you spent.",
+				"credits_charged": 0,
+			})
+			return
 		}
 		c.JSON(400, gin.H{"error": "no audio or hint_text provided"})
 		return
@@ -630,7 +646,12 @@ func (s *Server) handleParse(c *gin.Context) {
 		usageEvent = &event
 	}
 
-	parsed, parseUsage, err := s.parser.ParseText(ctx, transcript, tz)
+	contextQuestion := c.PostForm("context_question")
+	previousQuestion, hasPreviousQuestion := decodeQuestionContext(contextQuestion)
+	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz)
+	if s.releaseReadIfClientCancelled(c, creditService, usageEvent.ID) {
+		return
+	}
 	// Every finalisation below this line follows a call the provider actually
 	// answered, so each one carries what that answer cost. The `could_not_parse`
 	// branch is the exception: the call itself failed and reported nothing.
@@ -676,8 +697,19 @@ func (s *Server) handleParse(c *gin.Context) {
 	// `parsedQuestionQuery` is the model's answer plus a deterministic backstop
 	// for the fragments it routes to capture — "today spend" and its kind. See
 	// parse_intent.go.
-	if rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript); isQuestion {
+	rawQuery, isQuestion := parsedQuestionQuery(parsedObj, transcript)
+	// A follow-up Finnri offered is a question whatever the model made of
+	// it: "And the day before?" names no metric for the backstop to find.
+	if !isQuestion && hasPreviousQuestion && chipFollowUp(transcript) != "" {
+		rawQuery, isQuestion = nil, true
+	}
+	if isQuestion {
+		var previous *ledgerQuestion
+		if hasPreviousQuestion {
+			previous = &previousQuestion
+		}
 		s.answerParsedQuestion(c, answeredQuestionRequest{
+			previous:      previous,
 			userID:        c.MustGet("userID").(uint),
 			transcript:    transcript,
 			tz:            tz,
@@ -811,6 +843,8 @@ func (s *Server) handleParse(c *gin.Context) {
 	for key, value := range credits {
 		parsedObj[key] = value
 	}
+	// Sent back with the saved entry, so AI usage can open what this read made.
+	parsedObj["ai_request_id"] = usageEvent.RequestID
 	c.JSON(200, parsedObj)
 }
 
@@ -874,6 +908,29 @@ func (s *Server) repairInvalidParsedDraft(entry map[string]any) ([]byte, []strin
 		return repaired, dropped, true
 	}
 	return nil, nil, false
+}
+
+// releaseReadIfClientCancelled gives a read's reserved credits back when the
+// app cancelled it before the answer arrived. The app's draft sheet has a
+// Cancel while it waits: "I said the wrong thing, let me say it again". A read
+// the person never sees is not one they should pay for, so the reservation is
+// cancelled (not finalised as failed, which would keep the charge) and nothing
+// is written back to a connection that is already gone.
+//
+// Only the request's own context counts. The handler's timeout context ends
+// with DeadlineExceeded, which is a slow provider, not the person — that path
+// keeps its existing failure handling.
+func (s *Server) releaseReadIfClientCancelled(c *gin.Context, creditService *billing.CreditService, eventID uint) bool {
+	if creditService == nil || !errors.Is(c.Request.Context().Err(), context.Canceled) {
+		return false
+	}
+	if _, err := creditService.CancelReservation(eventID); err != nil {
+		log.Printf("parse cancelled by client: release reservation %d: %v", eventID, err)
+	}
+	// 499 is nginx's "client closed request"; nobody reads it, but the access
+	// log then says what happened instead of a 200 with no body.
+	c.AbortWithStatus(499)
+	return true
 }
 
 // finalizeParseSuccess settles the credit reservation for a completed provider
@@ -1145,6 +1202,7 @@ func (s *Server) saveEntry(c *gin.Context) {
 		return
 	}
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
+	linkAIUsageToEntry(c, input.AIRequestID, entry.ID)
 	// No notification here: the client already confirms its own save inline. Only
 	// events the user could not otherwise know about belong in the inbox.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
@@ -1532,6 +1590,17 @@ func ownedEntries(db *gorm.DB, userID uint) *gorm.DB {
 	return db.Where("user_id = ?", userID)
 }
 
+// deleteEntryDependents clears what exists only because of an entry, ahead of
+// deleting it.
+func deleteEntryDependents(tx *gorm.DB, userID, entryID uint) error {
+	if err := deleteEntrySplitBills(tx, userID, entryID); err != nil {
+		return err
+	}
+	// A recurring payment's entry is filed against its due date; dropping
+	// that filing also frees the date to be logged again.
+	return deleteSubscriptionOccurrences(tx, userID, "entry_id", entryID)
+}
+
 func (s *Server) deleteEntry(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -1551,12 +1620,7 @@ func (s *Server) deleteEntry(c *gin.Context) {
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := deleteEntrySplitBills(tx, userID, uint(id)); err != nil {
-			return err
-		}
-		// A recurring payment's entry is filed against its due date; dropping
-		// that filing also frees the date to be logged again.
-		if err := deleteSubscriptionOccurrences(tx, userID, "entry_id", uint(id)); err != nil {
+		if err := deleteEntryDependents(tx, userID, uint(id)); err != nil {
 			return err
 		}
 		result := ownedEntries(tx, userID).Where("id = ?", id).Delete(&models.Entry{})
@@ -1939,6 +2003,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
+			{&models.AccountRule{}, "account rules"},
 			{&models.Entry{}, "entries"},
 			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
@@ -2122,6 +2187,11 @@ func (s *Server) saveAccount(c *gin.Context) {
 	}
 	account := models.Account{UserID: userID}
 	input.apply(&account)
+	if input.CurrentBalance != nil {
+		// A new account has no entries, so today's balance is its opening.
+		account.Balance = *input.CurrentBalance
+		account.BalanceTracked = true
+	}
 	var accountCount int64
 	if err := database.DB.Model(&models.Account{}).Where("user_id = ?", userID).Count(&accountCount).Error; err != nil {
 		c.JSON(500, gin.H{"error": "failed_count_accounts"})
@@ -2212,6 +2282,15 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	input.apply(&account)
+	if input.CurrentBalance != nil {
+		opening, err := openingForCurrentBalance(userID, account.ID, *input.CurrentBalance)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed_load_account_activity"})
+			return
+		}
+		account.Balance = opening
+		account.BalanceTracked = true
+	}
 	// Reaching the edit handler means the user intentionally reviewed the
 	// account, even when they kept some optional fields empty.
 	account.AutoCreated = false
@@ -2232,6 +2311,12 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	hydrateAccountProvider(&account)
+	// The "finish setting up" prompt asked for the bank and how to tell the
+	// account apart; once both are there it is done (P49).
+	if strings.TrimSpace(account.Provider) != "" && accountHasIdentifier(account) {
+		resolveNotifications(database.DB.
+			Where("user_id = ? AND type = ? AND action_url = ?", userID, "account.needs_setup", fmt.Sprintf("/accounts/%d", account.ID)))
+	}
 	c.JSON(200, account)
 }
 
@@ -2359,6 +2444,11 @@ func (s *Server) deleteAccount(c *gin.Context) {
 		return
 	}
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		// The foreign key cascades in Postgres; deleting here as well keeps a
+		// database without it from offering a rule for an account that is gone.
+		if err := tx.Where("account_id = ? AND user_id = ?", account.ID, userID).Delete(&models.AccountRule{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Delete(&account).Error; err != nil {
 			return err
 		}

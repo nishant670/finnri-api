@@ -150,7 +150,8 @@ func newStatementReadContextFor(t *testing.T, grantCredits bool, build func(*mul
 
 func TestReadStatementPDFReturnsRowsAndAVerifiedSummary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "statement.pdf")
-	if err := writeMinimalPDF(t, path); err != nil {
+	// A real statement prints its own date; a date it does not print is dropped.
+	if err := writeTextPDF(t, path, "BT /F1 12 Tf 72 720 Td (10/07/2026 SWIGGY BANGALORE 480.00) Tj ET BT /F1 12 Tf 72 700 Td (Statement Date 15/07/2026) Tj ET"); err != nil {
 		t.Skipf("could not build a test PDF: %v", err)
 	}
 	pdf, err := os.ReadFile(path)
