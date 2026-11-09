@@ -897,14 +897,6 @@ func (s *Server) repairInvalidParsedDraft(entry map[string]any) ([]byte, []strin
 	return nil, nil, false
 }
 
-// finalizeParseSuccess settles the credit reservation for a completed provider
-// call and returns the credit fields every parse response carries.
-//
-// Both directions charge the same action. The reservation is made before the
-// text is read, so at that point nobody — not the app, not this handler, not
-// the model — knows yet whether the user is recording an expense or asking
-// about one. Billing a question differently would mean reserving twice, or
-// reserving after the provider call and letting an over-limit user through.
 // releaseReadIfClientCancelled gives a read's reserved credits back when the
 // app cancelled it before the answer arrived. The app's draft sheet has a
 // Cancel while it waits: "I said the wrong thing, let me say it again". A read
@@ -928,6 +920,14 @@ func (s *Server) releaseReadIfClientCancelled(c *gin.Context, creditService *bil
 	return true
 }
 
+// finalizeParseSuccess settles the credit reservation for a completed provider
+// call and returns the credit fields every parse response carries.
+//
+// Both directions charge the same action. The reservation is made before the
+// text is read, so at that point nobody — not the app, not this handler, not
+// the model — knows yet whether the user is recording an expense or asking
+// about one. Billing a question differently would mean reserving twice, or
+// reserving after the provider call and letting an over-limit user through.
 func (s *Server) finalizeParseSuccess(
 	creditService *billing.CreditService,
 	usageEventID uint,
