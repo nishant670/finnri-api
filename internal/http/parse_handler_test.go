@@ -700,3 +700,63 @@ func TestParseHandlerRecordsProviderTokensOnUsageEvent(t *testing.T) {
 		t.Fatalf("model = %q — cost cannot be priced without it", event.Model)
 	}
 }
+
+// cancellingParser stands in for a person tapping Cancel on the draft sheet
+// while the model is still reading: the request's context ends mid-call.
+type cancellingParser struct {
+	cancel func()
+	result []byte
+}
+
+func (p cancellingParser) Transcribe(context.Context, string, []byte) (string, error) {
+	return "", nil
+}
+
+func (p cancellingParser) ParseText(ctx context.Context, _ string, _ string) ([]byte, ai.Usage, error) {
+	p.cancel()
+	return p.result, ai.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}, nil
+}
+
+func TestParseHandlerReleasesCreditsWhenClientCancels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	requestContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := &Server{
+		cfg: &config.Config{ReqTimeoutSec: 2, TZDefault: "Asia/Kolkata"},
+		parser: cancellingParser{cancel: cancel, result: []byte(`{
+			"title":"Metro","amount":45,"type":"expense","currency":"INR",
+			"mode":"UPI","category":"Travel","date":"2026-07-09"
+		}`)},
+	}
+
+	ginContext, response := newParseTextContext("metro 45 via upi")
+	ginContext.Request = ginContext.Request.WithContext(requestContext)
+	user := attachParseCreditUser(t, ginContext)
+	before, err := billing.NewCreditService(database.DB).CheckAllowance(billing.SubjectForUser(user.ID), ai.ActionTransactionParseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.handleParse(ginContext)
+
+	if ginContext.Writer.Status() != 499 || strings.Contains(response.Body.String(), "credits_charged") {
+		t.Fatalf("status = %d, body = %s", ginContext.Writer.Status(), response.Body.String())
+	}
+	var event models.AIUsageEvent
+	if err := database.DB.Where("user_id = ?", user.ID).Order("id DESC").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.Status != billing.UsageStatusCancelled {
+		t.Fatalf("usage status = %q, want cancelled", event.Status)
+	}
+	if event.FinalCredits != 0 {
+		t.Fatalf("final credits = %v, want 0", event.FinalCredits)
+	}
+	after, err := billing.NewCreditService(database.DB).CheckAllowance(billing.SubjectForUser(user.ID), ai.ActionTransactionParseText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.AvailableCredits != before.AvailableCredits {
+		t.Fatalf("available credits %d → %d, want unchanged", before.AvailableCredits, after.AvailableCredits)
+	}
+}

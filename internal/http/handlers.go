@@ -576,7 +576,11 @@ func (s *Server) handleParse(c *gin.Context) {
 		}
 		usageEvent = &event
 
-		if t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes); err == nil {
+		t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes)
+		if s.releaseReadIfClientCancelled(c, creditService, event.ID) {
+			return
+		}
+		if err == nil {
 			transcript = t
 		} else {
 			s.recordAIProviderFailure()
@@ -632,6 +636,9 @@ func (s *Server) handleParse(c *gin.Context) {
 	contextQuestion := c.PostForm("context_question")
 	previousQuestion, hasPreviousQuestion := decodeQuestionContext(contextQuestion)
 	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz)
+	if s.releaseReadIfClientCancelled(c, creditService, usageEvent.ID) {
+		return
+	}
 	// Every finalisation below this line follows a call the provider actually
 	// answered, so each one carries what that answer cost. The `could_not_parse`
 	// branch is the exception: the call itself failed and reported nothing.
@@ -898,6 +905,29 @@ func (s *Server) repairInvalidParsedDraft(entry map[string]any) ([]byte, []strin
 // the model — knows yet whether the user is recording an expense or asking
 // about one. Billing a question differently would mean reserving twice, or
 // reserving after the provider call and letting an over-limit user through.
+// releaseReadIfClientCancelled gives a read's reserved credits back when the
+// app cancelled it before the answer arrived. The app's draft sheet has a
+// Cancel while it waits: "I said the wrong thing, let me say it again". A read
+// the person never sees is not one they should pay for, so the reservation is
+// cancelled (not finalised as failed, which would keep the charge) and nothing
+// is written back to a connection that is already gone.
+//
+// Only the request's own context counts. The handler's timeout context ends
+// with DeadlineExceeded, which is a slow provider, not the person — that path
+// keeps its existing failure handling.
+func (s *Server) releaseReadIfClientCancelled(c *gin.Context, creditService *billing.CreditService, eventID uint) bool {
+	if creditService == nil || !errors.Is(c.Request.Context().Err(), context.Canceled) {
+		return false
+	}
+	if _, err := creditService.CancelReservation(eventID); err != nil {
+		log.Printf("parse cancelled by client: release reservation %d: %v", eventID, err)
+	}
+	// 499 is nginx's "client closed request"; nobody reads it, but the access
+	// log then says what happened instead of a 200 with no body.
+	c.AbortWithStatus(499)
+	return true
+}
+
 func (s *Server) finalizeParseSuccess(
 	creditService *billing.CreditService,
 	usageEventID uint,
