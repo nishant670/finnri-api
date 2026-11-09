@@ -25,6 +25,11 @@ func TestRevokeAllSessionsRevokesEveryUserSession(t *testing.T) {
 	first := performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "logout-all"}, http.StatusOK)
 	second := performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/guest", "", map[string]string{"device_id": "logout-all"}, http.StatusOK)
 
+	phone := models.PushDevice{UserID: second.User.ID, Token: "ExponentPushToken[revoked]", Platform: "android", Active: true}
+	if err := database.DB.Create(&phone).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	response := performJSONRequest[map[string]any](t, router, http.MethodPost, "/v1/auth/sessions/revoke-all", second.Token, nil, http.StatusOK)
 	if response["revoked"].(float64) < 2 {
 		t.Fatalf("expected both sessions revoked, got %#v", response)
@@ -35,5 +40,8 @@ func TestRevokeAllSessionsRevokesEveryUserSession(t *testing.T) {
 	var active int64
 	if err := database.DB.Model(&models.AuthSession{}).Where("revoked_at IS NULL").Count(&active).Error; err != nil || active != 0 {
 		t.Fatalf("active sessions = %d, err = %v", active, err)
+	}
+	if err := database.DB.First(&phone, phone.ID).Error; err != nil || phone.Active {
+		t.Fatalf("a signed-out phone should stop receiving pushes: active=%v err=%v", phone.Active, err)
 	}
 }

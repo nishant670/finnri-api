@@ -25,6 +25,8 @@ const (
 	subscriptionOccurrencePending   = "pending"
 	subscriptionOccurrenceConfirmed = "confirmed"
 	subscriptionOccurrenceReverted  = "reverted"
+
+	subscriptionAutopayNotificationType = "subscription.autopay"
 )
 
 // expoPushURL is Expo's push service. A variable so tests can point it at a
@@ -170,7 +172,7 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 			return err
 		}
 		notification := models.Notification{
-			UserID: subscription.UserID, Type: "subscription.autopay",
+			UserID: subscription.UserID, Type: subscriptionAutopayNotificationType,
 			Title:     recurringAutopayTitle(subscription.Kind),
 			Body:      fmt.Sprintf("Added %s for %s from %s. Confirm it or open it to make changes.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(*subscription)),
 			ActionURL: fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID),
@@ -432,7 +434,7 @@ func parsePositiveUint(value string) (uint, error) {
 
 func sendOccurrencePush(occurrence models.SubscriptionOccurrence) {
 	sendUserPush(database.DB, occurrence.UserID, "Autopay transaction added", fmt.Sprintf("%s was added for %s. Confirm or review it in Finnri.", occurrence.Entry.Title, rupeesForCopy(occurrence.Entry.Amount)), map[string]any{
-		"action_url": fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID), "occurrence_id": occurrence.ID, "entry_id": occurrence.EntryID,
+		"action_url": fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID), "type": subscriptionAutopayNotificationType, "occurrence_id": occurrence.ID, "entry_id": occurrence.EntryID,
 	})
 }
 
@@ -440,6 +442,7 @@ func sendOccurrencePush(occurrence models.SubscriptionOccurrence) {
 // order sent, or request-level errors when the whole send was refused.
 type expoPushTickets struct {
 	Data []struct {
+		ID      string `json:"id"`
 		Status  string `json:"status"`
 		Message string `json:"message"`
 		Details struct {
@@ -458,7 +461,11 @@ type expoPushTickets struct {
 // token all looked the same as success, which is how Android pushes went
 // missing unnoticed. Each of those now leaves a log line, and a token Expo
 // says is no longer registered (the app was uninstalled, say) is switched
-// off so it isn't tried again.
+// off so it isn't tried again. What happens after Expo accepts a message is
+// read later, in checkPushReceipts.
+//
+// data should carry "type": it picks the Android category here, and the app
+// uses it to choose the screen a tap opens.
 func sendUserPush(db *gorm.DB, userID uint, title, body string, data map[string]any) {
 	if db == nil {
 		return
@@ -477,7 +484,8 @@ func sendUserPush(db *gorm.DB, userID uint, title, body string, data map[string]
 		messages = append(messages, map[string]any{
 			"to": device.Token, "sound": "default", "title": title, "body": body, "data": data,
 			// Shown at once rather than batched by Android's power saving.
-			"priority": "high",
+			"priority":  "high",
+			"channelId": pushChannelFor(data),
 		})
 	}
 	payload, _ := json.Marshal(messages)
@@ -500,15 +508,21 @@ func sendUserPush(db *gorm.DB, userID uint, title, body string, data map[string]
 		log.Printf("[WARN] push refused user=%d status=%d errors=%v", userID, response.StatusCode, tickets.Errors)
 		return
 	}
+	pending := make(map[string]models.PushDevice, len(devices))
 	for index, ticket := range tickets.Data {
-		if ticket.Status == "ok" || index >= len(devices) {
-			continue
+		if index >= len(devices) {
+			break
 		}
 		device := devices[index]
+		if ticket.Status == "ok" {
+			if ticket.ID != "" {
+				pending[ticket.ID] = device
+			}
+			continue
+		}
 		log.Printf("[WARN] push rejected user=%d device=%d platform=%s: %s %s",
 			userID, device.ID, device.Platform, ticket.Details.Error, ticket.Message)
-		if ticket.Details.Error == "DeviceNotRegistered" {
-			_ = db.Model(&models.PushDevice{}).Where("id = ?", device.ID).Update("active", false).Error
-		}
+		deactivateGonePushDevice(db, device, ticket.Details.Error)
 	}
+	schedulePushReceiptCheck(db, userID, pending)
 }

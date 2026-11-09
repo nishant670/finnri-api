@@ -70,6 +70,12 @@ func (s *Server) authRevokeAllSessions(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_revoke_sessions"})
 		return
 	}
+	// Those phones are signed out and can't unregister themselves, and nothing
+	// about this person's money should reach them. Each registers again at its
+	// next sign-in.
+	if err := database.DB.Model(&models.PushDevice{}).Where("user_id = ?", userID).Update("active", false).Error; err != nil {
+		log.Printf("[WARN] push devices not switched off after sign-out everywhere user=%d: %v", userID, err)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "all_sessions_revoked", "revoked": result.RowsAffected})
 }
 

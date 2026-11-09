@@ -312,7 +312,7 @@ func createCardStatementReminderIfNeeded(db *gorm.DB, statement models.CardState
 	if err == nil && created {
 		title, body := cardStatementReminderCopy(statement, card, kind)
 		go sendUserPush(database.DB, statement.UserID, title, body, map[string]any{
-			"action_url": actionURL, "statement_id": statement.ID,
+			"action_url": actionURL, "type": "card_statement." + kind, "statement_id": statement.ID,
 		})
 	}
 	return created, err

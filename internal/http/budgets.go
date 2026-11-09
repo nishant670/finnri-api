@@ -184,7 +184,8 @@ func budgetAlertKind(budget models.Budget, spend models.Money) string {
 }
 
 func createBudgetAlertIfNeeded(db *gorm.DB, budget models.Budget, periodStart, kind string, spend models.Money) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+	var created *models.Notification
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var existing int64
 		if err := tx.Model(&models.BudgetAlert{}).
 			Where("user_id = ? AND budget_id = ? AND period_start = ? AND kind = ?",
@@ -209,8 +210,18 @@ func createBudgetAlertIfNeeded(db *gorm.DB, budget models.Budget, periodStart, k
 			Kind: kind, SpendAmount: spend, LimitAmount: budget.LimitAmount,
 			NotificationID: &notification.ID,
 		}
-		return tx.Create(&alert).Error
+		if err := tx.Create(&alert).Error; err != nil {
+			return err
+		}
+		created = &notification
+		return nil
 	})
+	if err == nil && created != nil {
+		go sendUserPush(database.DB, budget.UserID, created.Title, created.Body, map[string]any{
+			"action_url": created.ActionURL, "type": created.Type,
+		})
+	}
+	return err
 }
 
 func budgetAlertCopy(budget models.Budget, periodStart, kind string, spend models.Money) (string, string) {
