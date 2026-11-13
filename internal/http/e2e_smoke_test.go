@@ -209,6 +209,9 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), server.publishAdminAppRelease)
 	admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), server.unpublishAdminAppRelease)
 	admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), server.deleteAdminAppRelease)
+	admin.GET("/card-products", server.listAdminCardProducts)
+	admin.POST("/card-products", requireAdminRole(models.AdminRoleSupport), server.createAdminCardProduct)
+	admin.PUT("/card-products/:id", requireAdminRole(models.AdminRoleSupport), server.updateAdminCardProduct)
 	admin.GET("/feedback", server.listAdminFeedback)
 	admin.GET("/feedback/stats", server.getAdminFeedbackStats)
 	admin.GET("/feedback/:id/attachments/:index", server.getAdminFeedbackAttachment)
@@ -239,6 +242,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/ai/usage", server.listAIUsage)
 	authorized.GET("/ai/credits", server.getAICredits)
 	authorized.GET("/accounts", server.listAccounts)
+	authorized.GET("/card-products", listCardProducts)
 	authorized.POST("/accounts/:id/paid-off", server.markCardPaidOff)
 	authorized.POST("/accounts", server.saveAccount)
 	authorized.PUT("/accounts/:id", server.updateAccount)
@@ -381,6 +385,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.RecurringCandidateDecision{},
 		&models.UserCategory{},
 		&models.AccountRule{},
+		&models.CardProduct{},
 		&models.Event{},
 		&models.AppRelease{},
 		&models.AppReleaseItem{},

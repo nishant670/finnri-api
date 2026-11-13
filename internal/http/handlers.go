@@ -210,6 +210,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), s.publishAdminAppRelease)
 		admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), s.unpublishAdminAppRelease)
 		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
+		admin.GET("/card-products", s.listAdminCardProducts)
+		admin.POST("/card-products", requireAdminRole(models.AdminRoleSupport), s.createAdminCardProduct)
+		admin.PUT("/card-products/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminCardProduct)
 	}
 
 	// Protected Routes (User Token)
@@ -266,6 +269,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/accounts", s.saveAccount)
 		authorized.GET("/accounts", s.listAccounts)
 		authorized.GET("/account-providers", listAccountProviders)
+		authorized.GET("/card-products", listCardProducts)
 		authorized.PUT("/accounts/:id", s.updateAccount)
 		authorized.POST("/accounts/:id/paid-off", s.markCardPaidOff)
 		authorized.POST("/accounts/:id/balance", s.setAccountBalance)
@@ -445,6 +449,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/account-providers") ||
+		strings.HasPrefix(path, "/v1/card-products") ||
 		// Statements nested under a card are covered by the line above, but
 		// the top-level ones are not: "/v1/statements/:id" and
 		// "/v1/statements/upcoming" do not have "/v1/accounts" as a prefix.
@@ -2187,6 +2192,13 @@ func (s *Server) saveAccount(c *gin.Context) {
 	}
 	account := models.Account{UserID: userID}
 	input.apply(&account)
+	if fields, err := applyAccountCardProduct(input, &account); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_card_product"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
 	if input.CurrentBalance != nil {
 		// A new account has no entries, so today's balance is its opening.
 		account.Balance = *input.CurrentBalance
@@ -2282,6 +2294,13 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	input.apply(&account)
+	if fields, err := applyAccountCardProduct(input, &account); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_card_product"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
 	if input.CurrentBalance != nil {
 		opening, err := openingForCurrentBalance(userID, account.ID, *input.CurrentBalance)
 		if err != nil {
