@@ -86,6 +86,9 @@ func runMaintenanceOnce(cfg *config.Config) (maintenanceResult, error) {
 	if err != nil {
 		return maintenanceResult{}, fmt.Errorf("purge anonymous guest usage: %w", err)
 	}
+	if _, err := purgeOldProductEvents(time.Now().UTC()); err != nil {
+		return maintenanceResult{}, fmt.Errorf("purge old product events: %w", err)
+	}
 	if err := rollupAdminDailyMetrics(time.Now().UTC().AddDate(0, 0, -1)); err != nil {
 		return maintenanceResult{}, fmt.Errorf("roll up admin metrics: %w", err)
 	}
