@@ -214,7 +214,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 
 	// Protected Routes (User Token)
 	authorized := r.Group("/v1")
-	authorized.Use(AuthMiddleware())
+	authorized.Use(AuthMiddlewareWithConfig(cfg), authenticatedBodyLimit(), userRateLimit(cfg.UserRateLimitRPS, cfg.UserRateLimitBurst, "user"))
 	{
 		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
 		authorized.POST("/parse/receipt", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParseReceipt)
@@ -251,7 +251,9 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/user", s.deleteUser)
 		authorized.POST("/auth/logout", s.authLogout)
 		authorized.POST("/auth/sessions/revoke-all", s.authRevokeAllSessions)
-		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
+		// Its own, tighter count: a file is written to disk before any record
+		// points at it, so this is the one route that can fill the volume.
+		authorized.POST("/upload", uploadRequestLimits(cfg), userRateLimit(cfg.UploadRateLimitRPS, cfg.UploadRateLimitBurst, "upload"), s.handleUpload)
 		authorized.POST("/feedback", s.createFeedback)
 
 		// Billing and AI credit visibility
