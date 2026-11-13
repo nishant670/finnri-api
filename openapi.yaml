@@ -4209,6 +4209,9 @@ components:
           description: >-
             Non-card accounts with an opening balance only — opening plus money in
             minus money out. Absent otherwise, because net flow is not a balance.
+        paid_in_full_streak:
+          type: integer
+          description: Credit cards. Bills paid in full in a row, newest first; an open bill not yet due is skipped.
         annual_fee:
           type: object
           description: >-

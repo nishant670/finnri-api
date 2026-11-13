@@ -320,3 +320,23 @@ func TestAdminEditsTheCardCatalogue(t *testing.T) {
 	_, viewer := createAdminSessionForTest(t, models.AdminRoleViewer)
 	decodeRelease[map[string]any](t, releaseRequest(t, router, http.MethodPut, "/v1/admin/card-products/hdfc-millennia", viewer, product), http.StatusForbidden)
 }
+
+func TestPaidInFullStreakCountsBillsPaidInARow(t *testing.T) {
+	today := "2026-11-13"
+	paid := func(due string) statementMark { return statementMark{Status: statementStatusPaid, DueDate: due} }
+	for name, tc := range map[string]struct {
+		history []statementMark
+		want    int
+	}{
+		"no bills":                    {nil, 0},
+		"three paid":                  {[]statementMark{paid("2026-11-05"), paid("2026-10-05"), paid("2026-09-05")}, 3},
+		"open bill not yet due":       {[]statementMark{{Status: "unpaid", DueDate: "2026-11-25"}, paid("2026-10-25"), paid("2026-09-25")}, 2},
+		"open bill past due":          {[]statementMark{{Status: "unpaid", DueDate: "2026-11-10"}, paid("2026-10-10")}, 0},
+		"a partial breaks the run":    {[]statementMark{paid("2026-11-05"), {Status: "partial", DueDate: "2026-10-05"}, paid("2026-09-05")}, 1},
+		"partial bill, still not due": {[]statementMark{{Status: "partial", DueDate: "2026-11-20"}, paid("2026-10-20")}, 1},
+	} {
+		if got := paidInFullStreak(tc.history, today); got != tc.want {
+			t.Fatalf("%s: streak = %d, want %d", name, got, tc.want)
+		}
+	}
+}

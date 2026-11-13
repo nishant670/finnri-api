@@ -36,6 +36,33 @@ type cardStatementContext struct {
 	Latest              *models.CardStatement
 	SpendAfterStatement models.Money
 	EMIBlockedPrincipal models.Money
+	// Every priced bill, newest first, as much as the paid-in-full streak
+	// needs to know about it.
+	History []statementMark
+}
+
+type statementMark struct {
+	Status  string
+	DueDate string
+}
+
+// paidInFullStreak counts the bills paid in full in a row, newest first: the
+// "Paid in full 12 times" chip on the All cards list. A bill still open and not
+// yet due is skipped rather than breaking the run, since nothing has been
+// missed yet.
+func paidInFullStreak(history []statementMark, today string) int {
+	streak := 0
+	for index, mark := range history {
+		if mark.Status == statementStatusPaid {
+			streak++
+			continue
+		}
+		if index == 0 && mark.DueDate >= today {
+			continue
+		}
+		break
+	}
+	return streak
 }
 
 // loadCardStatementContexts fetches the newest priced statement for every
@@ -75,11 +102,11 @@ func loadCardStatementContexts(userID uint, cardIDs []uint) (map[uint]cardStatem
 	// is the one that counts.
 	for index := range statements {
 		statement := statements[index]
-		if existing, seen := contexts[statement.AccountID]; seen && existing.Latest != nil {
-			continue
-		}
 		context := contexts[statement.AccountID]
-		context.Latest = &statement
+		context.History = append(context.History, statementMark{Status: statement.Status, DueDate: statement.DueDate})
+		if context.Latest == nil {
+			context.Latest = &statement
+		}
 		contexts[statement.AccountID] = context
 	}
 
