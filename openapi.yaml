@@ -269,6 +269,16 @@ paths:
       summary: Return feature and guest-conversion adoption metrics
       responses:
         "200": {description: Feature adoption metrics}
+  /v1/analytics/events:
+    post:
+      summary: Record a batch of product usage events (a listed name and one optional lowercase label each)
+      responses:
+        "200": {description: Counts of accepted and dropped events}
+  /v1/admin/analytics/product-funnel:
+    get:
+      summary: Return product usage events by step and label for a date window
+      responses:
+        "200": {description: Product funnel}
   /v1/admin/audit-log:
     get:
       summary: Browse immutable admin action records
