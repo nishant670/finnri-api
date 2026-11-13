@@ -20,7 +20,15 @@ import (
 // lastActiveWriteInterval bounds how often a request refreshes users.last_active_at.
 const lastActiveWriteInterval = 5 * time.Minute
 
+// AuthMiddleware authenticates with the default session lifetimes. Tests and
+// anything built without a config use it; the server uses the configured one.
 func AuthMiddleware() gin.HandlerFunc {
+	return AuthMiddlewareWithConfig(nil)
+}
+
+func AuthMiddlewareWithConfig(cfg *config.Config) gin.HandlerFunc {
+	ttl := sessionTTLForConfig(cfg)
+	maxLifetime := sessionMaxLifetimeForConfig(cfg)
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -61,6 +69,16 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Set("user", &user)
 		c.Set("userID", user.ID)
 		c.Set("authSessionID", session.ID)
+		// Admin-console sessions are deliberately short and never renew.
+		if session.Kind != adminSessionKind {
+			if renewed, ok := renewedSessionExpiry(session.CreatedAt, session.ExpiresAt, time.Now().UTC(), ttl, maxLifetime); ok {
+				// Guarded on the expiry it read, so two requests racing here
+				// write once, and a session revoked in between stays revoked.
+				_ = database.DB.Model(&models.AuthSession{}).
+					Where("id = ? AND revoked_at IS NULL AND expires_at = ?", session.ID, session.ExpiresAt).
+					UpdateColumn("expires_at", renewed).Error
+			}
+		}
 		// Coarse enough for "last active" on the admin console, and it keeps the
 		// hottest path in the product from issuing a row update on every single
 		// authenticated request.
@@ -249,6 +267,58 @@ func adminRateLimit(cfg *config.Config) gin.HandlerFunc {
 
 func webhookRateLimit(cfg *config.Config) gin.HandlerFunc {
 	return rateLimitAt(cfg.WebhookRateLimitRPS, cfg.WebhookRateLimitBurst, "billing-webhook")
+}
+
+// userRateLimit counts by account. It must run after AuthMiddleware; a request
+// that somehow reaches it without a user falls back to the address so it is
+// still counted rather than waved through.
+func userRateLimit(rps float64, burst int, scope string) gin.HandlerFunc {
+	limiter := newMemoryRateLimiter(rps, burst)
+	return func(c *gin.Context) {
+		key := scope + ":ip:" + requestClientIP(c)
+		if value, ok := c.Get("userID"); ok {
+			if userID, ok := value.(uint); ok && userID != 0 {
+				key = scope + ":user:" + strconv.FormatUint(uint64(userID), 10)
+			}
+		}
+		ok, retryAfter := limiter.allow(key)
+		if !ok {
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.AbortWithStatusJSON(429, gin.H{"error": "rate_limited"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// maxAuthenticatedJSONBytes bounds every signed-in request that is not a file
+// upload. Nothing the clients send comes near it — the largest is a statement
+// import of a few hundred lines — and without it a signed-in caller could post
+// a body of any size to any route and have it read into memory.
+const maxAuthenticatedJSONBytes = 1 << 20
+
+// uploadBodyRoutes are the routes that carry files and set their own, larger
+// limit with uploadRequestLimits. They are skipped here because limits nest:
+// the smaller reader would win and every upload would fail at 1 MB.
+// TestUploadBodyRoutesAreRegistered keeps this list honest.
+var uploadBodyRoutes = map[string]bool{
+	"/v1/parse":                        true,
+	"/v1/parse/receipt":                true,
+	"/v1/upload":                       true,
+	"/v1/accounts/:id/statements/read": true,
+	"/v1/statements/:id/upload":        true,
+	"/v1/statements/:id/screenshots":   true,
+}
+
+func authenticatedBodyLimit() gin.HandlerFunc {
+	limit := requestLimits(maxAuthenticatedJSONBytes, 0)
+	return func(c *gin.Context) {
+		if uploadBodyRoutes[c.FullPath()] {
+			c.Next()
+			return
+		}
+		limit(c)
+	}
 }
 
 func rateLimitAt(rps float64, burst int, scope string) gin.HandlerFunc {

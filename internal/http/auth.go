@@ -43,6 +43,41 @@ func sessionTTLForConfig(cfg *config.Config) time.Duration {
 	return time.Duration(cfg.AuthSessionTTLDays) * 24 * time.Hour
 }
 
+const defaultSessionMaxLifetime = 180 * 24 * time.Hour
+
+func sessionMaxLifetimeForConfig(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.AuthSessionMaxDays < 7 || cfg.AuthSessionMaxDays > 365 {
+		return defaultSessionMaxLifetime
+	}
+	return time.Duration(cfg.AuthSessionMaxDays) * 24 * time.Hour
+}
+
+// renewedSessionExpiry answers whether a session that was just used should
+// live longer, and until when.
+//
+// Sessions used to end a fixed seven days after sign-in however often the app
+// was opened, so everybody was sent back to the sign-in screen once a week in
+// the middle of logging something. Now a session past the halfway point of its
+// life is pushed out a full TTL from now. Waiting for halfway keeps this to one
+// write every few days per session rather than one per request, and a session
+// nobody uses still lapses on schedule.
+//
+// maxLifetime is the wall: measured from when the session was created, so a
+// stolen token cannot be kept alive for ever by using it.
+func renewedSessionExpiry(createdAt, expiresAt, now time.Time, ttl, maxLifetime time.Duration) (time.Time, bool) {
+	if ttl <= 0 || expiresAt.Sub(now) >= ttl/2 {
+		return expiresAt, false
+	}
+	renewed := now.Add(ttl)
+	if limit := createdAt.Add(maxLifetime); renewed.After(limit) {
+		renewed = limit
+	}
+	if !renewed.After(expiresAt) {
+		return expiresAt, false
+	}
+	return renewed, true
+}
+
 func (s *Server) authLogout(c *gin.Context) {
 	sessionID, ok := c.Get("authSessionID")
 	if !ok {

@@ -15,6 +15,9 @@ type Config struct {
 	AllowOrigins       string
 	AuthBearer         string
 	AuthSessionTTLDays int
+	// AuthSessionMaxDays caps how long a session can be kept alive by use.
+	// Renewal slides the expiry forward; this is the wall it cannot pass.
+	AuthSessionMaxDays int
 	TZDefault          string
 	OpenAIKey          string
 	OpenAIBaseURL      string
@@ -33,10 +36,17 @@ type Config struct {
 	ReqTimeoutSec               int
 	RateLimitRPS                float64
 	RateLimitBurst              int
-	MaxJSONKB                   int64
-	MaxUploadMB                 int64
-	MaxTranscriptChars          int
-	AIParseDisabled             bool
+	// The per-user limits apply to signed-in routes and key on the account,
+	// not the address: carrier NAT puts many phones behind one IP, and one
+	// account can also arrive from several.
+	UserRateLimitRPS     float64
+	UserRateLimitBurst   int
+	UploadRateLimitRPS   float64
+	UploadRateLimitBurst int
+	MaxJSONKB            int64
+	MaxUploadMB          int64
+	MaxTranscriptChars   int
+	AIParseDisabled      bool
 	// LaunchOfferStartsAt switches the launch offer on. Unset means no offer:
 	// the API is shared with builds already in testing, so the offer starts
 	// when someone sets this, never merely because the code was deployed.
@@ -201,6 +211,7 @@ func Load() *Config {
 		AllowOrigins:                    getenv("ALLOW_ORIGINS", ""),
 		AuthBearer:                      getenv("AUTH_BEARER", ""),
 		AuthSessionTTLDays:              boundedInt("AUTH_SESSION_TTL_DAYS", 7, 1, 30),
+		AuthSessionMaxDays:              boundedInt("AUTH_SESSION_MAX_DAYS", 180, 7, 365),
 		TZDefault:                       getenv("TZ_DEFAULT", "Asia/Kolkata"),
 		OpenAIKey:                       getenv("OPENAI_API_KEY", ""),
 		OpenAIBaseURL:                   getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
@@ -213,6 +224,10 @@ func Load() *Config {
 		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),
 		RateLimitRPS:                    atof("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:                  atoi("RATE_LIMIT_BURST", 10),
+		UserRateLimitRPS:                atof("USER_RATE_LIMIT_RPS", 20),
+		UserRateLimitBurst:              atoi("USER_RATE_LIMIT_BURST", 60),
+		UploadRateLimitRPS:              atof("UPLOAD_RATE_LIMIT_RPS", 0.5),
+		UploadRateLimitBurst:            atoi("UPLOAD_RATE_LIMIT_BURST", 12),
 		MaxJSONKB:                       int64(atoi("MAX_JSON_KB", 64)),
 		MaxUploadMB:                     int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars:              atoi("MAX_TRANSCRIPT_CHARS", 1000),
