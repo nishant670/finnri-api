@@ -916,6 +916,12 @@ func runtimeSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_entry
 			ON ai_usage_events (entry_id)
 			WHERE entry_id IS NOT NULL`,
+		// P95: bill reads of one multi-bill scan (migration 0077).
+		`ALTER TABLE ai_usage_events
+			ADD COLUMN IF NOT EXISTS batch_id VARCHAR(64) NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_batch
+			ON ai_usage_events (batch_id)
+			WHERE batch_id <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_ai_usage_events_user_started
 			ON ai_usage_events (user_id, started_at DESC)
 			WHERE user_id IS NOT NULL`,
