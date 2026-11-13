@@ -46,9 +46,14 @@ type accountInput struct {
 	BalanceTracked *bool         `json:"balance_tracked"`
 	// "pay_later" or "card"/"" — credit_card accounts only. A pointer so an
 	// older client's edit cannot turn a pay-later line back into a card.
-	CreditKind  *string `json:"credit_kind"`
-	IsDefault   bool    `json:"is_default"`
-	AutoCreated bool    `json:"auto_created"`
+	CreditKind *string `json:"credit_kind"`
+	// The exact card from the catalogue and its network, credit cards only.
+	// Pointers: nil leaves them as they are, "" clears them. Checked against
+	// the catalogue by applyAccountCardProduct, after apply.
+	CardProductID *string `json:"card_product_id"`
+	CardNetwork   *string `json:"card_network"`
+	IsDefault     bool    `json:"is_default"`
+	AutoCreated   bool    `json:"auto_created"`
 
 	// Card statement settings are pointers so that omitting them means "leave
 	// as is" rather than "reset to zero". The app sends the whole account back

@@ -61,7 +61,12 @@ func Migrate() error {
 	); err != nil {
 		return err
 	}
-	return EnsureRuntimeSchema()
+	if err := EnsureRuntimeSchema(); err != nil {
+		return err
+	}
+	// Data, not schema, but it needs the table above and must reach every
+	// environment with the release that reads it.
+	return SeedCardProducts(DB)
 }
 
 func preAutoMigrateStatements() []string {
@@ -568,6 +573,58 @@ func runtimeSchemaStatements() []string {
 			ON account_rules (user_id, phrase_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_account_rules_account
 			ON account_rules (account_id)`,
+		// See migrations/0076_create_card_products.sql. The catalogue of real
+		// cards; Migrate seeds the launch rows after these statements.
+		`CREATE TABLE IF NOT EXISTS card_products (
+			id VARCHAR(64) PRIMARY KEY,
+			issuer_id VARCHAR(64) NOT NULL,
+			name VARCHAR(80) NOT NULL,
+			tone VARCHAR(8) NOT NULL,
+			drawing VARCHAR(32) NOT NULL,
+			orientation VARCHAR(10) NOT NULL DEFAULT 'landscape',
+			art_idea VARCHAR(120) NOT NULL DEFAULT '',
+			art_drawn_as VARCHAR(120) NOT NULL DEFAULT '',
+			art_reviewed BOOLEAN NOT NULL DEFAULT FALSE,
+			joining_fee NUMERIC(19,2),
+			annual_fee NUMERIC(19,2),
+			fee_waiver_spend NUMERIC(19,2),
+			source_urls TEXT NOT NULL DEFAULT '[]',
+			last_verified_at TIMESTAMPTZ,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			hidden BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_card_products_issuer_id
+			ON card_products (issuer_id, sort_order)`,
+		`ALTER TABLE card_products DROP CONSTRAINT IF EXISTS card_products_tone_check`,
+		`ALTER TABLE card_products ADD CONSTRAINT card_products_tone_check
+			CHECK (tone IN ` + sqlList(models.CardTones) + `)`,
+		`ALTER TABLE card_products DROP CONSTRAINT IF EXISTS card_products_orientation_check`,
+		`ALTER TABLE card_products ADD CONSTRAINT card_products_orientation_check
+			CHECK (orientation IN ` + sqlList(models.CardOrientations) + `)`,
+		`ALTER TABLE card_products DROP CONSTRAINT IF EXISTS card_products_fees_non_negative_check`,
+		`ALTER TABLE card_products ADD CONSTRAINT card_products_fees_non_negative_check
+			CHECK ((joining_fee IS NULL OR joining_fee >= 0)
+				AND (annual_fee IS NULL OR annual_fee >= 0)
+				AND (fee_waiver_spend IS NULL OR fee_waiver_spend >= 0))`,
+		// AutoMigrate adds both account columns from the model; the foreign key
+		// is made here so deleting a product clears the link instead of being
+		// blocked by GORM's NO ACTION (see migrations/0076).
+		`ALTER TABLE accounts
+			ADD COLUMN IF NOT EXISTS card_product_id VARCHAR(64),
+			ADD COLUMN IF NOT EXISTS card_network VARCHAR(16) NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_card_product_id
+			ON accounts (card_product_id) WHERE card_product_id IS NOT NULL`,
+		`ALTER TABLE accounts DROP CONSTRAINT IF EXISTS fk_accounts_card_product`,
+		`ALTER TABLE accounts ADD CONSTRAINT fk_accounts_card_product
+			FOREIGN KEY (card_product_id) REFERENCES card_products(id) ON DELETE SET NULL`,
+		`ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_card_product_check`,
+		`ALTER TABLE accounts ADD CONSTRAINT accounts_card_product_check
+			CHECK ((card_product_id IS NULL AND card_network = '') OR type = 'credit_card')`,
+		`ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_card_network_check`,
+		`ALTER TABLE accounts ADD CONSTRAINT accounts_card_network_check
+			CHECK (card_network IN ` + sqlList(append([]string{""}, models.CardNetworks...)) + `)`,
 		// See migrations/0064_create_events.sql. AutoMigrate adds
 		// entries.event_id; the table and the foreign key are created here, and
 		// the key is replaced rather than trusted, because a GORM-made one would

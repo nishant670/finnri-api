@@ -55,7 +55,16 @@ type Account struct {
 	// card. Both are credit_card accounts and share the limit, statement and
 	// due-date machinery; only the wording differs. Empty is a card.
 	CreditKind string `gorm:"type:varchar(16);not null;default:''" json:"credit_kind,omitempty"`
-	IsDefault  bool   `json:"is_default"`
+	// CardProductID is the exact card from the catalogue (card_products), set
+	// from Add card's product picker. Nil when the user's card is not listed or
+	// they have not said; the card then draws from its bank alone. Credit cards
+	// only. See migrations/0076_create_card_products.sql.
+	CardProductID *string             `gorm:"type:varchar(64);index" json:"card_product_id"`
+	CardProduct   *CardProductSummary `gorm:"-" json:"card_product,omitempty"`
+	// CardNetwork is printed on the card as plain text, never as a logo:
+	// visa, mastercard, rupay, amex or diners; empty when unknown.
+	CardNetwork string `gorm:"type:varchar(16);not null;default:''" json:"card_network"`
+	IsDefault   bool   `json:"is_default"`
 	// AutoCreated distinguishes a capture shortcut from an intentionally sparse
 	// account. The first explicit account edit clears it.
 	AutoCreated bool      `gorm:"not null;default:false" json:"auto_created"`

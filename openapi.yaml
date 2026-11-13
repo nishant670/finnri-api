@@ -1132,6 +1132,32 @@ paths:
                   $ref: "#/components/schemas/AccountProvider"
         "422":
           description: Invalid account type
+  /v1/card-products:
+    get:
+      summary: List real card products for Add card's picker
+      description: >
+        The card catalogue (docs/CREDIT_CARD_SYSTEM_PLAN_2026-11-13.md §5).
+        Each product's art is a sketch the app draws from `drawing`, `tone`
+        and `orientation`; no bank or network artwork. Hidden products are
+        left out. Fees are present only when taken from the issuer's terms.
+      parameters:
+        - in: query
+          name: issuer
+          required: false
+          schema:
+            type: string
+          description: A provider id (hdfc) or a name the provider list knows (HDFC Bank). Lists that bank's cards, most held first.
+      responses:
+        "200":
+          description: Card products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CardProduct"
+        "422":
+          description: Not a bank that issues credit cards
   /v1/accounts/{id}/statements/alert:
     parameters:
       - in: path
@@ -3950,6 +3976,17 @@ components:
           type: string
           enum: ["", card, pay_later]
           description: Credit cards only. pay_later for a pay-later line such as CRED flash.
+        card_product_id:
+          type: string
+          nullable: true
+          description: >-
+            Credit cards only. A card-products id, which must be the account's
+            bank; picking one names the bank when none is given and fills a blank
+            annual fee and waiver. Omit to leave it; "" clears it.
+        card_network:
+          type: string
+          enum: ["", visa, mastercard, rupay, amex, diners]
+          description: Credit cards only, shown as plain text. Omit to leave it.
         is_default:
           type: boolean
         auto_created:
@@ -4019,6 +4056,30 @@ components:
           type: string
           enum: ["", pay_later]
           description: Credit cards only. pay_later names the card as a pay-later line.
+        card_product_id:
+          type: string
+          nullable: true
+        card_product:
+          type: object
+          description: The linked product's name and art, so the card can be drawn.
+          properties:
+            id:
+              type: string
+            issuer_id:
+              type: string
+            name:
+              type: string
+            tone:
+              type: string
+              enum: [deep, solid, tint, pale]
+            drawing:
+              type: string
+            orientation:
+              type: string
+              enum: [landscape, portrait]
+        card_network:
+          type: string
+          enum: ["", visa, mastercard, rupay, amex, diners]
         is_default:
           type: boolean
         auto_created:
@@ -4044,6 +4105,55 @@ components:
           type: array
           items:
             type: string
+    CardProduct:
+      type: object
+      required: [id, issuer_id, name, tone, drawing, orientation, source_urls]
+      properties:
+        id:
+          type: string
+          example: hdfc-millennia
+        issuer_id:
+          type: string
+          description: The account provider id of the issuing bank.
+        name:
+          type: string
+          example: Millennia
+        tone:
+          type: string
+          enum: [deep, solid, tint, pale]
+        drawing:
+          type: string
+          description: Name of a sketch the app ships; an unknown one draws the plain card.
+        orientation:
+          type: string
+          enum: [landscape, portrait]
+        art_idea:
+          type: string
+        art_drawn_as:
+          type: string
+        art_reviewed:
+          type: boolean
+        joining_fee:
+          type: number
+          nullable: true
+        annual_fee:
+          type: number
+          nullable: true
+        fee_waiver_spend:
+          type: number
+          nullable: true
+        source_urls:
+          type: array
+          items:
+            type: string
+        last_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        sort_order:
+          type: integer
+        hidden:
+          type: boolean
     AccountWithSummary:
       allOf:
         - $ref: "#/components/schemas/Account"
@@ -4099,6 +4209,9 @@ components:
           description: >-
             Non-card accounts with an opening balance only — opening plus money in
             minus money out. Absent otherwise, because net flow is not a balance.
+        paid_in_full_streak:
+          type: integer
+          description: Credit cards. Bills paid in full in a row, newest first; an open bill not yet due is skipped.
         annual_fee:
           type: object
           description: >-
