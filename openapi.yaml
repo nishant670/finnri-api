@@ -487,6 +487,17 @@ paths:
         by Finnri. Always returns a capture draft (`stage: "draft"`) in the same
         shape as `/v1/parse`; `source_text` is a one-line summary of what was
         read. Charges the `transaction_parse_receipt` AI action.
+      parameters:
+        - in: header
+          name: X-Finnri-Batch
+          required: false
+          description: >-
+            Sent with every read of one "scan several bills" run (8–64 letters,
+            digits or hyphens). A batch's failed reads count once toward the
+            failure cooldown; a batch may make 5 charged reads and 10 reads in all.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9-]{8,64}$"
       requestBody:
         required: true
         content:
@@ -514,8 +525,12 @@ paths:
           description: Image too large
         "415":
           description: Unsupported image type
+        "400":
+          description: Malformed X-Finnri-Batch header (`invalid_batch_id`)
         "422":
-          description: No readable total on the image, or the draft could not be shaped
+          description: >-
+            No readable total on the image, the draft could not be shaped, or the
+            batch has read all its bills (`receipt_batch_full`)
   /v1/entries:
     post:
       summary: Create a transaction entry
