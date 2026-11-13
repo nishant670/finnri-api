@@ -51,11 +51,15 @@ func TestCardProductSeedIsTheLaunchCatalogue(t *testing.T) {
 			!slices.Contains(models.CardOrientations, product.Orientation) || !cardDrawingPattern.MatchString(product.Drawing) {
 			t.Fatalf("%s has incomplete art: %#v", product.ID, product)
 		}
+		// Every launch drawing was approved against its real card (13 Nov 2026).
+		if !product.ArtReviewed {
+			t.Fatalf("%s should start with its art reviewed", product.ID)
+		}
 		if product.AnnualFee != nil || product.JoiningFee != nil || product.FeeWaiverSpend != nil {
 			t.Fatalf("%s carries a fee with no source; fees come from the issuer's terms in the admin", product.ID)
 		}
 		// The migration file is the written record of the same rows.
-		if !strings.Contains(string(migration), "('"+product.ID+"', '"+product.IssuerID+"'") {
+		if !strings.Contains(string(migration), "('"+product.ID+"', '"+product.IssuerID+"'") || !strings.Contains(string(migration), "TRUE, "+strconv.Itoa(product.SortOrder)+")") {
 			t.Fatalf("migrations/0076 does not list %s", product.ID)
 		}
 	}

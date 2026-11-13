@@ -6,9 +6,10 @@
     "tone": "solid",
     "drawing": "dotgrid",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "Fine texture on blue",
-    "art_drawn_as": "a dot field with one sweep"
+    "art_drawn_as": "a dot field with one sweep",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "hdfc-regalia-gold",
@@ -17,9 +18,10 @@
     "tone": "deep",
     "drawing": "wedge",
     "orientation": "landscape",
-    "sort_order": 2,
     "art_idea": "Black with a gold diagonal",
-    "art_drawn_as": "a hatched wedge"
+    "art_drawn_as": "a hatched wedge",
+    "art_reviewed": true,
+    "sort_order": 2
   },
   {
     "id": "hdfc-moneyback-plus",
@@ -28,9 +30,10 @@
     "tone": "tint",
     "drawing": "crossarrows",
     "orientation": "landscape",
-    "sort_order": 3,
     "art_idea": "Two crossing arrows",
-    "art_drawn_as": "two pen chevrons"
+    "art_drawn_as": "two pen chevrons",
+    "art_reviewed": true,
+    "sort_order": 3
   },
   {
     "id": "hdfc-freedom",
@@ -39,9 +42,10 @@
     "tone": "solid",
     "drawing": "arrow",
     "orientation": "landscape",
-    "sort_order": 4,
     "art_idea": "An arrow pointing on",
-    "art_drawn_as": "one chevron with speed lines"
+    "art_drawn_as": "one chevron with speed lines",
+    "art_reviewed": true,
+    "sort_order": 4
   },
   {
     "id": "hdfc-swiggy",
@@ -50,9 +54,10 @@
     "tone": "solid",
     "drawing": "stripes",
     "orientation": "landscape",
-    "sort_order": 5,
     "art_idea": "Diagonal stripes",
-    "art_drawn_as": "our own hatching"
+    "art_drawn_as": "our own hatching",
+    "art_reviewed": true,
+    "sort_order": 5
   },
   {
     "id": "hdfc-infinia",
@@ -61,9 +66,10 @@
     "tone": "deep",
     "drawing": "shards",
     "orientation": "landscape",
-    "sort_order": 6,
     "art_idea": "Angular shards",
-    "art_drawn_as": "pen-drawn planes"
+    "art_drawn_as": "pen-drawn planes",
+    "art_reviewed": true,
+    "sort_order": 6
   },
   {
     "id": "hdfc-diners-club-black",
@@ -72,9 +78,10 @@
     "tone": "pale",
     "drawing": "globe",
     "orientation": "landscape",
-    "sort_order": 7,
     "art_idea": "A world map",
-    "art_drawn_as": "a wire globe"
+    "art_drawn_as": "a wire globe",
+    "art_reviewed": true,
+    "sort_order": 7
   },
   {
     "id": "hdfc-indianoil",
@@ -83,9 +90,10 @@
     "tone": "solid",
     "drawing": "drop",
     "orientation": "landscape",
-    "sort_order": 8,
     "art_idea": "Liquid fuel",
-    "art_drawn_as": "a drop and flow lines"
+    "art_drawn_as": "a drop and flow lines",
+    "art_reviewed": true,
+    "sort_order": 8
   },
   {
     "id": "hdfc-pixel-play",
@@ -94,9 +102,10 @@
     "tone": "tint",
     "drawing": "playdots",
     "orientation": "landscape",
-    "sort_order": 9,
     "art_idea": "A play arrow of particles",
-    "art_drawn_as": "a triangle of dots"
+    "art_drawn_as": "a triangle of dots",
+    "art_reviewed": true,
+    "sort_order": 9
   },
   {
     "id": "hdfc-tata-neu-infinity",
@@ -105,9 +114,10 @@
     "tone": "solid",
     "drawing": "coins",
     "orientation": "portrait",
-    "sort_order": 10,
     "art_idea": "A brand letter (logo)",
-    "art_drawn_as": "a coin stack instead"
+    "art_drawn_as": "a coin stack instead",
+    "art_reviewed": true,
+    "sort_order": 10
   },
   {
     "id": "sbi-simplyclick",
@@ -116,9 +126,10 @@
     "tone": "solid",
     "drawing": "tree",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "A tree of fine dots",
-    "art_drawn_as": "a branching pen tree"
+    "art_drawn_as": "a branching pen tree",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "sbi-simplysave",
@@ -127,9 +138,10 @@
     "tone": "deep",
     "drawing": "constellation",
     "orientation": "landscape",
-    "sort_order": 2,
     "art_idea": "Night lights",
-    "art_drawn_as": "a constellation"
+    "art_drawn_as": "a constellation",
+    "art_reviewed": true,
+    "sort_order": 2
   },
   {
     "id": "sbi-cashback",
@@ -138,9 +150,10 @@
     "tone": "solid",
     "drawing": "tick",
     "orientation": "portrait",
-    "sort_order": 3,
     "art_idea": "A big bold stroke",
-    "art_drawn_as": "a tick and coins"
+    "art_drawn_as": "a tick and coins",
+    "art_reviewed": true,
+    "sort_order": 3
   },
   {
     "id": "sbi-prime",
@@ -149,9 +162,10 @@
     "tone": "deep",
     "drawing": "burst",
     "orientation": "landscape",
-    "sort_order": 4,
     "art_idea": "A burst of light",
-    "art_drawn_as": "radiating pen rays"
+    "art_drawn_as": "radiating pen rays",
+    "art_reviewed": true,
+    "sort_order": 4
   },
   {
     "id": "sbi-elite",
@@ -160,9 +174,10 @@
     "tone": "deep",
     "drawing": "mandala",
     "orientation": "landscape",
-    "sort_order": 5,
     "art_idea": "Ornate filigree",
-    "art_drawn_as": "our own mandala"
+    "art_drawn_as": "our own mandala",
+    "art_reviewed": true,
+    "sort_order": 5
   },
   {
     "id": "sbi-bpcl",
@@ -171,9 +186,10 @@
     "tone": "deep",
     "drawing": "splash",
     "orientation": "landscape",
-    "sort_order": 6,
     "art_idea": "A liquid splash",
-    "art_drawn_as": "a pen swirl"
+    "art_drawn_as": "a pen swirl",
+    "art_reviewed": true,
+    "sort_order": 6
   },
   {
     "id": "sbi-bpcl-octane",
@@ -182,9 +198,10 @@
     "tone": "deep",
     "drawing": "octane",
     "orientation": "landscape",
-    "sort_order": 7,
     "art_idea": "The same splash",
-    "art_drawn_as": "the swirl plus speed lines"
+    "art_drawn_as": "the swirl plus speed lines",
+    "art_reviewed": true,
+    "sort_order": 7
   },
   {
     "id": "sbi-irctc",
@@ -193,9 +210,10 @@
     "tone": "deep",
     "drawing": "train",
     "orientation": "landscape",
-    "sort_order": 8,
     "art_idea": "A train by a skyline",
-    "art_drawn_as": "a line train and city"
+    "art_drawn_as": "a line train and city",
+    "art_reviewed": true,
+    "sort_order": 8
   },
   {
     "id": "sbi-pulse",
@@ -204,9 +222,10 @@
     "tone": "solid",
     "drawing": "pulse",
     "orientation": "landscape",
-    "sort_order": 9,
     "art_idea": "Pulse rings",
-    "art_drawn_as": "rings and a heartbeat"
+    "art_drawn_as": "rings and a heartbeat",
+    "art_reviewed": true,
+    "sort_order": 9
   },
   {
     "id": "icici-amazon-pay",
@@ -215,9 +234,10 @@
     "tone": "deep",
     "drawing": "parcel",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "A brand logo",
-    "art_drawn_as": "a parcel instead"
+    "art_drawn_as": "a parcel instead",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "icici-coral",
@@ -226,9 +246,10 @@
     "tone": "solid",
     "drawing": "sphere",
     "orientation": "landscape",
-    "sort_order": 2,
     "art_idea": "A glowing sphere",
-    "art_drawn_as": "a contoured planet"
+    "art_drawn_as": "a contoured planet",
+    "art_reviewed": true,
+    "sort_order": 2
   },
   {
     "id": "icici-rubyx",
@@ -237,9 +258,10 @@
     "tone": "deep",
     "drawing": "gem",
     "orientation": "landscape",
-    "sort_order": 3,
     "art_idea": "A ruby",
-    "art_drawn_as": "a line-cut gem"
+    "art_drawn_as": "a line-cut gem",
+    "art_reviewed": true,
+    "sort_order": 3
   },
   {
     "id": "icici-sapphiro",
@@ -248,9 +270,10 @@
     "tone": "solid",
     "drawing": "crystal",
     "orientation": "landscape",
-    "sort_order": 4,
     "art_idea": "A sapphire crystal",
-    "art_drawn_as": "a faceted prism"
+    "art_drawn_as": "a faceted prism",
+    "art_reviewed": true,
+    "sort_order": 4
   },
   {
     "id": "axis-flipkart",
@@ -259,9 +282,10 @@
     "tone": "deep",
     "drawing": "ribbons",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "Flowing ribbons",
-    "art_drawn_as": "two pen ribbons"
+    "art_drawn_as": "two pen ribbons",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "axis-ace",
@@ -270,9 +294,10 @@
     "tone": "deep",
     "drawing": "silk",
     "orientation": "landscape",
-    "sort_order": 2,
     "art_idea": "A silk wave",
-    "art_drawn_as": "a bundle of wave lines"
+    "art_drawn_as": "a bundle of wave lines",
+    "art_reviewed": true,
+    "sort_order": 2
   },
   {
     "id": "axis-my-zone",
@@ -281,9 +306,10 @@
     "tone": "deep",
     "drawing": "headphones",
     "orientation": "landscape",
-    "sort_order": 3,
     "art_idea": "Headphones",
-    "art_drawn_as": "line headphones"
+    "art_drawn_as": "line headphones",
+    "art_reviewed": true,
+    "sort_order": 3
   },
   {
     "id": "axis-atlas",
@@ -292,9 +318,10 @@
     "tone": "deep",
     "drawing": "globe+route",
     "orientation": "landscape",
-    "sort_order": 4,
     "art_idea": "A dotted globe",
-    "art_drawn_as": "a wire globe with a flight path"
+    "art_drawn_as": "a wire globe with a flight path",
+    "art_reviewed": true,
+    "sort_order": 4
   },
   {
     "id": "axis-magnus",
@@ -303,9 +330,10 @@
     "tone": "deep",
     "drawing": "feather",
     "orientation": "portrait",
-    "sort_order": 5,
     "art_idea": "A feather",
-    "art_drawn_as": "a pen feather"
+    "art_drawn_as": "a pen feather",
+    "art_reviewed": true,
+    "sort_order": 5
   },
   {
     "id": "axis-airtel",
@@ -314,9 +342,10 @@
     "tone": "deep",
     "drawing": "signal",
     "orientation": "landscape",
-    "sort_order": 6,
     "art_idea": "A brand mark (logo)",
-    "art_drawn_as": "a signal tower instead"
+    "art_drawn_as": "a signal tower instead",
+    "art_reviewed": true,
+    "sort_order": 6
   },
   {
     "id": "idfc-first-power-plus",
@@ -325,9 +354,10 @@
     "tone": "deep",
     "drawing": "car",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "A car outline",
-    "art_drawn_as": "a pen car"
+    "art_drawn_as": "a pen car",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "idfc-first-wealth",
@@ -336,9 +366,10 @@
     "tone": "deep",
     "drawing": "aurora",
     "orientation": "landscape",
-    "sort_order": 2,
     "art_idea": "Northern lights",
-    "art_drawn_as": "aurora strokes over hills"
+    "art_drawn_as": "aurora strokes over hills",
+    "art_reviewed": true,
+    "sort_order": 2
   },
   {
     "id": "au-lit",
@@ -347,9 +378,10 @@
     "tone": "pale",
     "drawing": "doodlering",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "A ring of doodles",
-    "art_drawn_as": "our own doodle ring"
+    "art_drawn_as": "our own doodle ring",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "au-zenith",
@@ -358,9 +390,10 @@
     "tone": "solid",
     "drawing": "fern",
     "orientation": "landscape",
-    "sort_order": 2,
     "art_idea": "Swirling fronds",
-    "art_drawn_as": "radiating pen fronds"
+    "art_drawn_as": "radiating pen fronds",
+    "art_reviewed": true,
+    "sort_order": 2
   },
   {
     "id": "amex-membership-rewards",
@@ -369,9 +402,10 @@
     "tone": "tint",
     "drawing": "laurel",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "A portrait mark (logo)",
-    "art_drawn_as": "a laurel wreath instead"
+    "art_drawn_as": "a laurel wreath instead",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "standard-chartered-smart",
@@ -380,9 +414,10 @@
     "tone": "pale",
     "drawing": "orbits",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "A brand swirl (logo)",
-    "art_drawn_as": "orbits instead"
+    "art_drawn_as": "orbits instead",
+    "art_reviewed": true,
+    "sort_order": 1
   },
   {
     "id": "indusind-cred",
@@ -391,8 +426,9 @@
     "tone": "pale",
     "drawing": "blocks",
     "orientation": "landscape",
-    "sort_order": 1,
     "art_idea": "Silver with a colour block",
-    "art_drawn_as": "stacked outline blocks"
+    "art_drawn_as": "stacked outline blocks",
+    "art_reviewed": true,
+    "sort_order": 1
   }
 ]
