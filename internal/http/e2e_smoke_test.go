@@ -218,6 +218,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.GET("/analytics/retention", server.getAdminRetention)
 	admin.GET("/analytics/engagement", server.getAdminEngagement)
 	admin.GET("/analytics/feature-adoption", server.getAdminFeatureAdoption)
+	admin.GET("/analytics/product-funnel", server.getAdminProductFunnel)
 	admin.GET("/audit-log", server.listAdminAuditLog)
 	admin.GET("/health", server.getAdminHealth)
 	admin.GET("/export/:resource", server.exportAdminCSV)
@@ -255,6 +256,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.POST("/subscriptions/:id/mark-paid", server.markSubscriptionPaid)
 	authorized.DELETE("/subscriptions/:id", server.deleteSubscription)
 	authorized.POST("/feedback", server.createFeedback)
+	authorized.POST("/analytics/events", server.recordProductEvents)
 	authorized.POST("/auth/logout", server.authLogout)
 	authorized.POST("/auth/sessions/revoke-all", server.authRevokeAllSessions)
 	authorized.POST("/entries", server.saveEntry)
@@ -367,6 +369,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.QuickPrompt{},
 		&models.Notification{},
 		&models.Feedback{},
+		&models.ProductEvent{},
 		&models.Budget{},
 		&models.BudgetAlert{},
 		&models.MonthlyReview{},

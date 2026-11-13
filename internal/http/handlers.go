@@ -197,6 +197,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/analytics/retention", s.getAdminRetention)
 		admin.GET("/analytics/engagement", s.getAdminEngagement)
 		admin.GET("/analytics/feature-adoption", s.getAdminFeatureAdoption)
+		admin.GET("/analytics/product-funnel", s.getAdminProductFunnel)
 		admin.GET("/audit-log", s.listAdminAuditLog)
 		admin.GET("/health", s.getAdminHealth)
 		admin.GET("/export/:resource", s.exportAdminCSV)
@@ -255,6 +256,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		// points at it, so this is the one route that can fill the volume.
 		authorized.POST("/upload", uploadRequestLimits(cfg), userRateLimit(cfg.UploadRateLimitRPS, cfg.UploadRateLimitBurst, "upload"), s.handleUpload)
 		authorized.POST("/feedback", s.createFeedback)
+		authorized.POST("/analytics/events", jsonRequestLimits(cfg), s.recordProductEvents)
 
 		// Billing and AI credit visibility
 		authorized.GET("/billing/status", s.getBillingStatus)
@@ -455,6 +457,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/emi-plans") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
 		strings.HasPrefix(path, "/v1/feedback") ||
+		// Usage events from the app's queue. "/v1/events" above is occasions.
+		strings.HasPrefix(path, "/v1/analytics") ||
 		strings.HasPrefix(path, "/v1/budgets") ||
 		strings.HasPrefix(path, "/v1/subscriptions") ||
 		// Not covered by the line above: "/v1/subscription-occurrences" does
@@ -1997,6 +2001,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.CardStatement{}, "card statements"},
 			{&models.MonthlyReview{}, "monthly reviews"},
 			{&models.Feedback{}, "feedback"},
+			{&models.ProductEvent{}, "product events"},
 			{&models.SubscriptionReminder{}, "subscription reminders"},
 			{&models.SubscriptionOccurrence{}, "subscription occurrences"},
 			{&models.Subscription{}, "subscriptions"},
