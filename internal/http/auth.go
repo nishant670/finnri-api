@@ -374,9 +374,93 @@ func recordFailedLoginAttempt(user *models.User, now time.Time) (int, *time.Time
 }
 
 // POST /v1/auth/guest
+// A guest secret is 32 random bytes from the client, hex or base64url.
+const (
+	minGuestSecretLength = 43
+	maxGuestSecretLength = 128
+)
+
+func validGuestSecret(secret string) bool {
+	if len(secret) < minGuestSecretLength || len(secret) > maxGuestSecretLength {
+		return false
+	}
+	for _, r := range secret {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func hashGuestSecret(secret string) string {
+	sum := sha256.Sum256([]byte("finnri-guest-secret:" + secret))
+	return hex.EncodeToString(sum[:])
+}
+
+var (
+	errGuestCredentialsInvalid = errors.New("guest_credentials_invalid")
+	errGuestSecretRequired     = errors.New("guest_secret_required")
+)
+
+// resolveGuest finds the guest this install is, or says there is none yet.
+//
+// The secret is the credential. The device id is only believed for a guest
+// that has no secret yet — one created by an app that predates them — and the
+// first request to arrive with a secret claims that guest, after which the
+// device id opens nothing. A guest that already has a secret is never opened
+// by a device id, with or without some other secret beside it.
+func (s *Server) resolveGuest(deviceID, secretHash string) (models.User, bool, error) {
+	var user models.User
+	if secretHash != "" {
+		if err := database.DB.Where("guest_secret_hash = ? AND is_guest = ?", secretHash, true).
+			Limit(1).Find(&user).Error; err != nil {
+			return models.User{}, false, err
+		}
+		if user.ID != 0 {
+			return user, true, nil
+		}
+	}
+	if deviceID == "" {
+		return models.User{}, false, nil
+	}
+	if err := database.DB.Where("device_id = ? AND is_guest = ?", deviceID, true).
+		Limit(1).Find(&user).Error; err != nil {
+		return models.User{}, false, err
+	}
+	if user.ID == 0 {
+		return models.User{}, false, nil
+	}
+	if user.GuestSecretHash != "" {
+		return models.User{}, false, errGuestCredentialsInvalid
+	}
+	if secretHash == "" {
+		// An older app. Allowed while the migration window is open.
+		if s.cfg != nil && s.cfg.GuestSecretRequired {
+			return models.User{}, false, errGuestSecretRequired
+		}
+		return user, true, nil
+	}
+	// Claim it. Guarded on the hash still being empty, so of two installs
+	// racing for one legacy guest exactly one wins.
+	claimed := database.DB.Model(&models.User{}).
+		Where("id = ? AND is_guest = ? AND guest_secret_hash = ?", user.ID, true, "").
+		UpdateColumn("guest_secret_hash", secretHash)
+	if claimed.Error != nil {
+		return models.User{}, false, claimed.Error
+	}
+	if claimed.RowsAffected == 0 {
+		return models.User{}, false, errGuestCredentialsInvalid
+	}
+	user.GuestSecretHash = secretHash
+	return user, true, nil
+}
+
 func (s *Server) authGuest(c *gin.Context) {
 	var input struct {
-		DeviceID string `json:"device_id"`
+		DeviceID    string `json:"device_id"`
+		GuestSecret string `json:"guest_secret"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil && err != io.EOF {
 		if requestBodyTooLarge(err) {
@@ -388,83 +472,56 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	deviceID := strings.TrimSpace(input.DeviceID)
-	var user models.User
-	if deviceID != "" {
-		if err := database.DB.
-			Where("device_id = ? AND is_guest = ?", deviceID, true).
-			Limit(1).
-			Find(&user).Error; err != nil {
-			c.JSON(500, gin.H{"error": "failed_lookup_guest"})
+	secret := strings.TrimSpace(input.GuestSecret)
+	secretHash := ""
+	if secret != "" {
+		if !validGuestSecret(secret) {
+			c.JSON(400, gin.H{"error": "invalid_guest_secret"})
 			return
 		}
-		if user.ID != 0 {
-			// Found existing guest session
-			if err := ensureDefaultCashAccount(user.ID); err != nil {
-				c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
-				return
-			}
-			if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, requestClientIP(c)); err != nil {
-				c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
-				return
-			}
-			user.HasPin = user.PinHash != ""
-			response, err := s.authResponse(&user)
-			if err != nil {
-				c.JSON(500, gin.H{"error": "failed_create_session"})
-				return
-			}
-			c.JSON(200, response)
-			return
-		}
-	}
-
-	var deviceIDPtr *string
-	if deviceID != "" {
-		deviceIDPtr = &deviceID
-	}
-
-	// Generate unique username
-	// In production, you might want a retry loop here to ensure uniqueness
-	username := "Guest_" + generateUUID()[:8]
-
-	user = models.User{
-		UUID:     generateUUID(),
-		IsGuest:  true,
-		DeviceID: deviceIDPtr,
-		Username: username,
-	}
-
-	if err := database.DB.Create(&user).Error; err != nil {
-		if deviceID != "" {
-			var existingGuest models.User
-			lookupErr := database.DB.
-				Where("device_id = ? AND is_guest = ?", deviceID, true).
-				Limit(1).
-				Find(&existingGuest).Error
-			if lookupErr == nil && existingGuest.ID != 0 {
-				if err := ensureDefaultCashAccount(existingGuest.ID); err != nil {
-					c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
-					return
-				}
-				if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, requestClientIP(c)); err != nil {
-					c.JSON(500, gin.H{"error": "failed_ensure_guest_credits"})
-					return
-				}
-				existingGuest.HasPin = existingGuest.PinHash != ""
-				response, err := s.authResponse(&existingGuest)
-				if err != nil {
-					c.JSON(500, gin.H{"error": "failed_create_session"})
-					return
-				}
-				c.JSON(200, response)
-				return
-			}
-		}
-		c.JSON(500, gin.H{"error": "failed_create_guest"})
+		secretHash = hashGuestSecret(secret)
+	} else if s.cfg != nil && s.cfg.GuestSecretRequired {
+		c.JSON(http.StatusUpgradeRequired, gin.H{"error": "guest_secret_required"})
 		return
 	}
+
+	user, found, err := s.resolveGuest(deviceID, secretHash)
+	if err == nil && !found {
+		var deviceIDPtr *string
+		if deviceID != "" {
+			deviceIDPtr = &deviceID
+		}
+		user = models.User{
+			UUID:            generateUUID(),
+			IsGuest:         true,
+			DeviceID:        deviceIDPtr,
+			GuestSecretHash: secretHash,
+			Username:        "Guest_" + generateUUID()[:8],
+		}
+		if createErr := database.DB.Create(&user).Error; createErr != nil {
+			// Two first requests from one install race on the unique device id
+			// and secret; the loser finds the row the winner just wrote.
+			user, found, err = s.resolveGuest(deviceID, secretHash)
+			if err == nil && !found {
+				c.JSON(500, gin.H{"error": "failed_create_guest"})
+				return
+			}
+		}
+	}
+	switch {
+	case errors.Is(err, errGuestCredentialsInvalid):
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "guest_credentials_invalid"})
+		return
+	case errors.Is(err, errGuestSecretRequired):
+		c.JSON(http.StatusUpgradeRequired, gin.H{"error": "guest_secret_required"})
+		return
+	case err != nil:
+		c.JSON(500, gin.H{"error": "failed_lookup_guest"})
+		return
+	}
+
 	if err := ensureDefaultCashAccount(user.ID); err != nil {
-		c.JSON(500, gin.H{"error": "failed_create_default_account"})
+		c.JSON(500, gin.H{"error": "failed_ensure_default_account"})
 		return
 	}
 	if _, _, err := billing.NewCreditService(database.DB).EnsureGuestTrialGrant(deviceID, requestClientIP(c)); err != nil {
@@ -480,6 +537,48 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 	c.JSON(200, response)
 }
+
+// guestMayBeUpgraded answers whether this request may turn the given guest
+// into an account.
+//
+// The upgrade used to trust a guest_uuid in the body: whoever knew a guest's
+// uuid could attach that guest's records to their own Google account. The
+// guest's own session is the proof. An app from before this change sends no
+// session with the upgrade, so that is still accepted until
+// AUTH_GUEST_SECRET_REQUIRED is turned on — but a session that is present and
+// belongs to somebody else is refused either way.
+//
+// The session is read before the transaction that does the upgrade, not inside
+// it, so this never asks for a second connection while one is held.
+type guestUpgradeProof struct {
+	presented bool
+	userID    uint
+}
+
+func readGuestUpgradeProof(c *gin.Context) guestUpgradeProof {
+	header := strings.TrimSpace(c.GetHeader("Authorization"))
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if header == "" || token == "" || token == header {
+		return guestUpgradeProof{}
+	}
+	proof := guestUpgradeProof{presented: true}
+	var session models.AuthSession
+	if err := database.DB.
+		Where("token_hash = ? AND revoked_at IS NULL AND expires_at > ?", hashSessionToken(token), time.Now().UTC()).
+		Limit(1).Find(&session).Error; err == nil {
+		proof.userID = session.UserID
+	}
+	return proof
+}
+
+func (s *Server) guestMayBeUpgraded(proof guestUpgradeProof, guest models.User) bool {
+	if !proof.presented {
+		return s.cfg == nil || !s.cfg.GuestSecretRequired
+	}
+	return proof.userID != 0 && proof.userID == guest.ID
+}
+
+var errGuestSessionRequired = errors.New("guest_session_required")
 
 func ensureDefaultCashAccount(userID uint) error {
 	return ensureDefaultCashAccountTx(database.DB, userID)
@@ -787,6 +886,7 @@ func (s *Server) authRegister(c *gin.Context) {
 	}
 
 	var user models.User
+	upgradeProof := readGuestUpgradeProof(c)
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		claim, err := consumeClaimTokenTx(tx, input.ClaimToken)
 		if err != nil {
@@ -822,6 +922,9 @@ func (s *Server) authRegister(c *gin.Context) {
 		guestUUID := strings.TrimSpace(input.GuestUUID)
 		if guestUUID != "" {
 			if err := tx.Where("uuid = ? AND is_guest = ?", guestUUID, true).First(&user).Error; err == nil {
+				if !s.guestMayBeUpgraded(upgradeProof, user) {
+					return errGuestSessionRequired
+				}
 				userFound = true
 			} else if err != gorm.ErrRecordNotFound {
 				return err
@@ -829,6 +932,9 @@ func (s *Server) authRegister(c *gin.Context) {
 		}
 		if !userFound && deviceID != "" {
 			if err := tx.Where("device_id = ? AND is_guest = ?", deviceID, true).First(&user).Error; err == nil {
+				if !s.guestMayBeUpgraded(upgradeProof, user) {
+					return errGuestSessionRequired
+				}
 				userFound = true
 			} else if err != gorm.ErrRecordNotFound {
 				return err
@@ -847,6 +953,7 @@ func (s *Server) authRegister(c *gin.Context) {
 				user.PinHash = hash
 			}
 			user.IsGuest = false
+			user.GuestSecretHash = ""
 			user.ConvertedAt = &convertedAt
 			user.BiometricsEnabled = input.BiometricsEnabled
 			user.Username = "User_" + generateUUID()[:8]
@@ -884,6 +991,10 @@ func (s *Server) authRegister(c *gin.Context) {
 		}
 		return nil
 	}); err != nil {
+		if errors.Is(err, errGuestSessionRequired) {
+			c.JSON(401, gin.H{"error": "guest_session_required"})
+			return
+		}
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			c.JSON(409, gin.H{"error": "user_already_exists"})
 			return
@@ -942,6 +1053,7 @@ func (s *Server) authGoogle(c *gin.Context) {
 		return
 	}
 
+	upgradeProof := readGuestUpgradeProof(c)
 	var user models.User
 	googleSubject := identity.Subject
 	email := identity.Email
@@ -1014,7 +1126,11 @@ func (s *Server) authGoogle(c *gin.Context) {
 
 		if strings.TrimSpace(input.GuestUUID) != "" {
 			if err := tx.Where("uuid = ? AND is_guest = ?", strings.TrimSpace(input.GuestUUID), true).First(&user).Error; err == nil {
+				if !s.guestMayBeUpgraded(upgradeProof, user) {
+					return errGuestSessionRequired
+				}
 				convertedAt := time.Now().UTC()
+				user.GuestSecretHash = ""
 				user.Email = &email
 				user.GoogleSubject = &googleSubject
 				user.IsGuest = false
@@ -1048,6 +1164,10 @@ func (s *Server) authGoogle(c *gin.Context) {
 		return tx.Create(&user).Error
 	})
 	if err != nil {
+		if errors.Is(err, errGuestSessionRequired) {
+			c.JSON(401, gin.H{"error": "guest_session_required"})
+			return
+		}
 		if err.Error() == "email_linked_to_different_google_account" {
 			c.JSON(409, gin.H{"error": "email_linked_to_different_google_account"})
 			return

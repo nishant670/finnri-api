@@ -18,11 +18,17 @@ type Config struct {
 	// AuthSessionMaxDays caps how long a session can be kept alive by use.
 	// Renewal slides the expiry forward; this is the wall it cannot pass.
 	AuthSessionMaxDays int
-	TZDefault          string
-	OpenAIKey          string
-	OpenAIBaseURL      string
-	OpenAILlmModel     string
-	OpenAIWhisper      string
+	// GuestSecretRequired ends the migration window for guest sign-in. While
+	// false, an app that predates guest secrets can still open a guest by
+	// device id alone (only one that has no secret yet) and can still upgrade a
+	// guest without presenting its session. Turn it on once those app versions
+	// are gone.
+	GuestSecretRequired bool
+	TZDefault           string
+	OpenAIKey           string
+	OpenAIBaseURL       string
+	OpenAILlmModel      string
+	OpenAIWhisper       string
 	// OpenAIVisionModel reads bill and receipt photos. It is separate from
 	// OpenAILlmModel because reading a photographed bill is the one job where
 	// the small text model falls short: gpt-4o-mini took the amount from an
@@ -212,6 +218,7 @@ func Load() *Config {
 		AuthBearer:                      getenv("AUTH_BEARER", ""),
 		AuthSessionTTLDays:              boundedInt("AUTH_SESSION_TTL_DAYS", 7, 1, 30),
 		AuthSessionMaxDays:              boundedInt("AUTH_SESSION_MAX_DAYS", 180, 7, 365),
+		GuestSecretRequired:             atob("AUTH_GUEST_SECRET_REQUIRED", false),
 		TZDefault:                       getenv("TZ_DEFAULT", "Asia/Kolkata"),
 		OpenAIKey:                       getenv("OPENAI_API_KEY", ""),
 		OpenAIBaseURL:                   getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
