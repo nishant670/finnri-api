@@ -371,6 +371,16 @@
       },
       "additionalProperties": false
     },
+    "event_name": {
+      "description": "The event the user asked to file this expense under: a saved event's name when one matched, else their own words.",
+      "type": ["string", "null"],
+      "maxLength": 60
+    },
+    "event_id": {
+      "description": "Set by the server: the user's event that event_name matched, or null.",
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
     "split_candidate": {
       "type": ["boolean", "null"]
     },
