@@ -34,7 +34,7 @@ func TestParseTextUsesConfiguredCostControls(t *testing.T) {
 		OpenAIMaxTokens: 600,
 	})
 
-	if _, _, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata"); err != nil {
+	if _, _, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata", KnownNames{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := requestBody["model"]; got != "gpt-4o-mini" {
@@ -64,7 +64,7 @@ func TestTranscribeUsesConfiguredModel(t *testing.T) {
 		OpenAIWhisper: "gpt-4o-mini-transcribe",
 	})
 
-	got, err := client.Transcribe(context.Background(), "recording.m4a", []byte("audio"))
+	got, err := client.Transcribe(context.Background(), "recording.m4a", []byte("audio"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestParseTextReturnsProviderTokenUsage(t *testing.T) {
 		OpenAILlmModel: "gpt-4o-mini",
 	})
 
-	content, usage, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata")
+	content, usage, err := client.ParseText(context.Background(), "coffee 200 via upi", "Asia/Kolkata", KnownNames{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +123,30 @@ func TestParseTextUsageIsUnreportedWhenProviderOmitsIt(t *testing.T) {
 		OpenAILlmModel: "gpt-4o-mini",
 	})
 
-	_, usage, err := client.ParseText(context.Background(), "coffee", "Asia/Kolkata")
+	_, usage, err := client.ParseText(context.Background(), "coffee", "Asia/Kolkata", KnownNames{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage.Reported() {
 		t.Fatalf("expected no reported usage, got %#v", usage)
+	}
+}
+
+func TestTranscribeSendsNameHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.FormValue("prompt"); got != "Names: Bubu Dudu Daily." {
+			t.Fatalf("prompt = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(&config.Config{OpenAIKey: "k", OpenAIBaseURL: server.URL, OpenAIWhisper: "gpt-4o-mini-transcribe"})
+	if _, err := client.Transcribe(context.Background(), "a.m4a", []byte("audio"), "Names: Bubu Dudu Daily."); err != nil {
+		t.Fatal(err)
 	}
 }
