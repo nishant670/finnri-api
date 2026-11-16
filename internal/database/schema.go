@@ -1841,5 +1841,17 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE card_emi_installments
 			ADD CONSTRAINT card_emi_installments_status_check
 			CHECK (status IN ('scheduled', 'billed', 'paid'))`,
+		// See migrations/0073_resolve_answered_autopay_notifications.sql.
+		// Confirm and Fix it used to mark an autopay notification read but not
+		// resolved, so answered ones stayed in Needs you. Idempotent.
+		`UPDATE notifications SET
+			resolved_at = COALESCE(o.confirmed_at, o.reverted_at, NOW()),
+			read_at = COALESCE(notifications.read_at, o.confirmed_at, o.reverted_at, NOW())
+			FROM subscription_occurrences o
+			WHERE notifications.resolved_at IS NULL
+				AND notifications.user_id = o.user_id
+				AND o.status IN ('confirmed', 'reverted')
+				AND (notifications.id = o.notification_id
+					OR notifications.action_url = '/subscription-occurrences/' || o.id)`,
 	}
 }

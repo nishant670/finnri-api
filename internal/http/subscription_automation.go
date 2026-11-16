@@ -176,6 +176,10 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 			Title:     recurringAutopayTitle(subscription.Kind),
 			Body:      fmt.Sprintf("Added %s for %s from %s. Confirm it or open it to make changes.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(*subscription)),
 			ActionURL: fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID),
+			// The charge and its day, so a stack of autopays can list each one
+			// with its figure instead of re-reading the sentence (P48).
+			Amount:  moneyPointer(subscription.Amount),
+			DueDate: datePointer(due),
 		}
 		if err := tx.Create(&notification).Error; err != nil {
 			return err
@@ -399,10 +403,13 @@ func (s *Server) updateSubscriptionOccurrenceStatus(c *gin.Context, status strin
 		if err := tx.Model(&occurrence).Updates(updates).Error; err != nil {
 			return err
 		}
-		if occurrence.NotificationID != nil {
-			return tx.Model(&models.Notification{}).Where("id = ? AND user_id = ?", *occurrence.NotificationID, userID).Update("read_at", now).Error
-		}
-		return nil
+		// Confirm and Fix it both answer the notification, so it is done, not
+		// just read. Marking it read alone left "Autopay transaction added" in
+		// Needs you with its buttons still on it (2026-11-11).
+		return tx.Model(&models.Notification{}).
+			Where("user_id = ? AND resolved_at IS NULL", userID).
+			Where("id = ? OR action_url = ?", occurrenceNotificationID(occurrence), fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID)).
+			Updates(map[string]any{"resolved_at": now, "read_at": gorm.Expr("COALESCE(read_at, ?)", now)}).Error
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_subscription_occurrence"})
 		return
@@ -414,6 +421,15 @@ func (s *Server) updateSubscriptionOccurrenceStatus(c *gin.Context, status strin
 		occurrence.RevertedAt = &now
 	}
 	c.JSON(http.StatusOK, occurrence)
+}
+
+// occurrenceNotificationID is 0 when the occurrence never recorded its
+// notification; no row has id 0, so the action_url match does the work then.
+func occurrenceNotificationID(occurrence models.SubscriptionOccurrence) uint {
+	if occurrence.NotificationID == nil {
+		return 0
+	}
+	return *occurrence.NotificationID
 }
 
 func (s *Server) confirmSubscriptionOccurrence(c *gin.Context) {
