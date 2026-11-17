@@ -437,7 +437,8 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS subscriptions_kind_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_kind_check
-			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill'))`,
+			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill', 'income'))`,
+		// 'income' from migrations/0078_recurring_income_kind.sql.
 		// See migrations/0066_add_wallet_balance_and_pay_later.sql.
 		`ALTER TABLE accounts
 			ADD COLUMN IF NOT EXISTS balance_tracked BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1841,5 +1842,17 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE card_emi_installments
 			ADD CONSTRAINT card_emi_installments_status_check
 			CHECK (status IN ('scheduled', 'billed', 'paid'))`,
+		// See migrations/0073_resolve_answered_autopay_notifications.sql.
+		// Confirm and Fix it used to mark an autopay notification read but not
+		// resolved, so answered ones stayed in Needs you. Idempotent.
+		`UPDATE notifications SET
+			resolved_at = COALESCE(o.confirmed_at, o.reverted_at, NOW()),
+			read_at = COALESCE(notifications.read_at, o.confirmed_at, o.reverted_at, NOW())
+			FROM subscription_occurrences o
+			WHERE notifications.resolved_at IS NULL
+				AND notifications.user_id = o.user_id
+				AND o.status IN ('confirmed', 'reverted')
+				AND (notifications.id = o.notification_id
+					OR notifications.action_url = '/subscription-occurrences/' || o.id)`,
 	}
 }

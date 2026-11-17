@@ -531,6 +531,16 @@ func (s *Server) handleParse(c *gin.Context) {
 		tz = s.cfg.TZDefault
 	}
 
+	// The user's events, groups and friends, so a spoken "Kanatal trip" or
+	// "Bubu Dudu Daily" can be spelled, matched and filled in.
+	var parseUserID uint
+	if value, ok := c.Get("user"); ok {
+		if user, ok := value.(*models.User); ok && user != nil {
+			parseUserID = user.ID
+		}
+	}
+	knownNames, knownEvents := loadKnownNames(database.DB, parseUserID)
+
 	var transcript string
 	var audioBytes []byte
 	var audioSize int64
@@ -576,7 +586,7 @@ func (s *Server) handleParse(c *gin.Context) {
 		}
 		usageEvent = &event
 
-		t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes)
+		t, err := s.parser.Transcribe(ctx, header.Filename, audioBytes, knownNames.TranscriptionHint())
 		if s.releaseReadIfClientCancelled(c, creditService, event.ID) {
 			return
 		}
@@ -648,7 +658,7 @@ func (s *Server) handleParse(c *gin.Context) {
 
 	contextQuestion := c.PostForm("context_question")
 	previousQuestion, hasPreviousQuestion := decodeQuestionContext(contextQuestion)
-	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz)
+	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz, knownNames)
 	if s.releaseReadIfClientCancelled(c, creditService, usageEvent.ID) {
 		return
 	}
@@ -727,6 +737,8 @@ func (s *Server) handleParse(c *gin.Context) {
 	}
 
 	normalizeParsedDraft(parsedObj, transcript)
+	dropUnstatedSubscription(parsedObj, transcript, knownNames)
+	resolveParsedEvent(parsedObj, knownEvents)
 	if !parsedDraftHasTransactionSignal(parsedObj) {
 		inputChars := utf8.RuneCountInString(transcript)
 		responseBytes := len(parsed)

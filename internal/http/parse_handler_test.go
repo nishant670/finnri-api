@@ -29,11 +29,11 @@ type fixtureParser struct {
 	usage         ai.Usage
 }
 
-func (p fixtureParser) Transcribe(context.Context, string, []byte) (string, error) {
+func (p fixtureParser) Transcribe(context.Context, string, []byte, string) (string, error) {
 	return p.transcript, p.transcribeErr
 }
 
-func (p fixtureParser) ParseText(context.Context, string, string) ([]byte, ai.Usage, error) {
+func (p fixtureParser) ParseText(context.Context, string, string, ai.KnownNames) ([]byte, ai.Usage, error) {
 	return p.result, p.usage, p.err
 }
 
@@ -123,7 +123,7 @@ func TestParseHandlerAcceptsSubscriptionAndSplitCandidates(t *testing.T) {
 		}`)},
 	}
 
-	form := url.Values{"hint_text": {"paid 2500 dinner split with Ria"}}
+	form := url.Values{"hint_text": {"paid 2500 dinner split with Ria, and my cloud plan renews monthly at 1500"}}
 	request := httptest.NewRequest("POST", "/v1/parse", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
@@ -708,11 +708,11 @@ type cancellingParser struct {
 	result []byte
 }
 
-func (p cancellingParser) Transcribe(context.Context, string, []byte) (string, error) {
+func (p cancellingParser) Transcribe(context.Context, string, []byte, string) (string, error) {
 	return "", nil
 }
 
-func (p cancellingParser) ParseText(ctx context.Context, _ string, _ string) ([]byte, ai.Usage, error) {
+func (p cancellingParser) ParseText(ctx context.Context, _ string, _ string, _ ai.KnownNames) ([]byte, ai.Usage, error) {
 	p.cancel()
 	return p.result, ai.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}, nil
 }

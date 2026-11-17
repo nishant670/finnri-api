@@ -25,8 +25,10 @@ type OpenAIClient struct {
 }
 
 type Parser interface {
-	Transcribe(ctx context.Context, filename string, audio []byte) (string, error)
-	ParseText(ctx context.Context, transcript, tz string) ([]byte, Usage, error)
+	// Transcribe turns audio into text. hint primes the transcriber with names
+	// it would otherwise misspell; empty means none.
+	Transcribe(ctx context.Context, filename string, audio []byte, hint string) (string, error)
+	ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error)
 }
 
 func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
@@ -37,7 +39,7 @@ func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
 	return &OpenAIClient{cfg: cfg, http: client}
 }
 
-func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []byte) (string, error) {
+func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []byte, hint string) (string, error) {
 	if c.cfg.OpenAIKey == "" {
 		return "", fmt.Errorf("OPENAI_API_KEY missing")
 	}
@@ -48,6 +50,9 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 		return "", err
 	}
 	_ = mw.WriteField("model", c.cfg.OpenAIWhisper)
+	if hint = strings.TrimSpace(hint); hint != "" {
+		_ = mw.WriteField("prompt", hint)
+	}
 	_ = mw.Close()
 
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.cfg.OpenAIBaseURL+"/audio/transcriptions", &buf)
@@ -73,7 +78,7 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 	return strings.TrimSpace(out.Text), nil
 }
 
-func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]byte, Usage, error) {
+func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
 	if c.cfg.OpenAIKey == "" {
 		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
 	}
@@ -94,7 +99,7 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 		"max_completion_tokens": c.cfg.OpenAIMaxTokens,
 		"messages": []map[string]string{
 			{"role": "system", "content": promptText},
-			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.\nText: %s", tz, nowStr, transcript)},
+			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.%s\nText: %s", tz, nowStr, known.contextLines(), transcript)},
 		},
 	}
 	b, _ := json.Marshal(body)
