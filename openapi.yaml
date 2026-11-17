@@ -1709,6 +1709,13 @@ paths:
                         type: integer
                       next_due:
                         type: object
+                      monthly_income:
+                        type: number
+                        description: Monthly equivalent of active recurring income. Never part of monthly_total or by_kind.
+                      income_active_count:
+                        type: integer
+                      next_income:
+                        type: object
                   items:
                     type: array
                     items:
@@ -4705,9 +4712,11 @@ components:
           description: Payments already taken, including the entry logged at set-up.
         kind:
           type: string
-          enum: [subscription, loan, investment, bill]
+          enum: [subscription, loan, investment, bill, income]
           description: >-
-            What the payment is. Optional: when omitted on create it is inferred
+            What the payment is. `income` (alias `salary`) is money coming in:
+            its payments are written as income entries and it is summed apart
+            from commitments; it cannot use payment_mode Credit Card. Optional: when omitted on create it is inferred
             (EMI tag or a fixed number of instalments → loan; Investment tag or
             purpose → investment; otherwise subscription), and on update the
             stored kind is kept.

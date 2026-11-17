@@ -430,6 +430,17 @@ func subscriptionReminderCopy(subscription models.Subscription, dueDate, kind st
 	noun := recurringNoun(subscription.Kind)
 	amount := rupeesForCopy(subscription.Amount)
 	now := time.Now()
+	if subscription.Kind == recurringKindIncome {
+		// Money coming in is expected, not due: the reminder asks whether it
+		// arrived rather than warning about a payment to make.
+		if kind == subscriptionReminderOverdueKind {
+			return name + " not marked received", fmt.Sprintf("%s of %s was expected on %s. Mark it received once it is in.", name, amount, dateForCopy(dueDate, now))
+		}
+		if kind == subscriptionReminderCancelKind {
+			return "Reminder", fmt.Sprintf("You asked to review %s today. It is next expected on %s for %s.", name, dateForCopy(subscription.NextDueDate, now), amount)
+		}
+		return name + " expected", fmt.Sprintf("%s of %s is expected on %s. Mark it received when it arrives.", name, amount, dateForCopy(dueDate, now))
+	}
 	if kind == subscriptionReminderOverdueKind {
 		return noun + " overdue", fmt.Sprintf("%s was due on %s for %s.", name, dateForCopy(dueDate, now), amount)
 	}

@@ -29,6 +29,10 @@ const (
 	recurringKindLoan         = "loan"
 	recurringKindInvestment   = "investment"
 	recurringKindBill         = "bill"
+	// recurringKindIncome is money that comes in on a schedule: a salary,
+	// rent received, a retainer. Same scheduling as the outflows; its
+	// payments are written as income and it is never counted as a commitment.
+	recurringKindIncome = "income"
 
 	maxRecurringRatePct = 60.0
 )
@@ -148,7 +152,13 @@ func (input subscriptionInput) validate() map[string]string {
 		fields["total_instalments"] = "must be between 0 and 600"
 	}
 	if input.Kind != nil && normalizeRecurringKind(*input.Kind) == "" {
-		fields["kind"] = "must be subscription, loan, investment, or bill"
+		fields["kind"] = "must be subscription, loan, investment, bill, or income"
+	}
+	if input.Kind != nil && normalizeRecurringKind(*input.Kind) == recurringKindIncome &&
+		normalizeSubscriptionPaymentMode(input.PaymentMode) == "Credit Card" {
+		// Money is not received onto a credit card in this app's ledger;
+		// the income form never offers it.
+		fields["payment_mode"] = "must not be Credit Card for income"
 	}
 	if input.LoanType != nil && strings.TrimSpace(*input.LoanType) != "" &&
 		!recurringLoanTypes[strings.ToLower(strings.TrimSpace(*input.LoanType))] {
@@ -236,7 +246,8 @@ func (input subscriptionInput) apply(subscription *models.Subscription) {
 	// Tag and purpose follow the kind when the client leaves them out, so the
 	// entries a loan or SIP writes are filed as EMI or Investment.
 	subscription.TransactionTag = strings.TrimSpace(input.TransactionTag)
-	if subscription.TransactionTag == "" {
+	if subscription.TransactionTag == "" || subscription.Kind == recurringKindIncome {
+		// Income carries no tags anywhere in the app.
 		subscription.TransactionTag = defaultRecurringTag(subscription.Kind)
 	}
 	subscription.PurposeType = strings.ToLower(strings.TrimSpace(input.PurposeType))
@@ -292,8 +303,10 @@ func (input subscriptionInput) applyRecurringDetails(subscription *models.Subscr
 
 func normalizeRecurringKind(value string) string {
 	switch kind := strings.ToLower(strings.TrimSpace(value)); kind {
-	case recurringKindSubscription, recurringKindLoan, recurringKindInvestment, recurringKindBill:
+	case recurringKindSubscription, recurringKindLoan, recurringKindInvestment, recurringKindBill, recurringKindIncome:
 		return kind
+	case "salary":
+		return recurringKindIncome
 	case "emi":
 		return recurringKindLoan
 	case "sip":
@@ -326,9 +339,21 @@ func defaultRecurringTag(kind string) string {
 		return "Investment"
 	case recurringKindBill:
 		return "General"
+	case recurringKindIncome:
+		// Never empty: GORM would store the column default, "Subscription".
+		// The entries income writes carry no tag either way.
+		return "General"
 	default:
 		return "Subscription"
 	}
+}
+
+// recurringEntryType is the transaction type one payment of a kind writes.
+func recurringEntryType(kind string) string {
+	if kind == recurringKindIncome {
+		return "income"
+	}
+	return "expense"
 }
 
 func normalizeSubscriptionPaymentMode(value string) string {
