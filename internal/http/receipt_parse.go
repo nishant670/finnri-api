@@ -77,13 +77,24 @@ func (s *Server) handleParseReceipt(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
 		return
 	}
+	batchID, batchOK := receiptBatchID(c)
+	if !batchOK {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_batch_id"})
+		return
+	}
 	if s.rejectIfAIAbuseBlocked(c, subject) || s.rejectIfAIFailureCooldown(c, subject) {
+		return
+	}
+	if rejectIfReceiptBatchFull(c, subject, batchID) {
 		return
 	}
 	creditService := billing.NewCreditService(database.DB)
 	usageEvent, allowance, reserveErr := creditService.ReserveCredits(subject, action.Code, parseIdempotencyHeader(c))
 	if reserveErr != nil {
 		writeCreditReservationError(c, allowance, reserveErr)
+		return
+	}
+	if !claimReceiptBatchSlot(c, creditService, subject, usageEvent.ID, batchID) {
 		return
 	}
 
