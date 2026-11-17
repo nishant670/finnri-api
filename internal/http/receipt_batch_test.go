@@ -140,3 +140,74 @@ func TestFailureCooldownCountsABatchOnce(t *testing.T) {
 		t.Fatalf("batch + single read should trip the cooldown: active=%v failures=%d", active, failures)
 	}
 }
+
+func TestReceiptBatchSlotIsRefusedWhenReadsArriveTogether(t *testing.T) {
+	ctx, response := newReceiptContext(t, receiptTestPNG)
+	user, _ := ctx.Get("user")
+	userID := user.(*models.User).ID
+	subject := billing.SubjectForUser(userID)
+	credits := billing.NewCreditService(database.DB)
+	before, err := credits.CheckAllowance(subject, ai.ActionTransactionParseReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Five reads of this batch already held (charged or in flight). This one
+	// passed the early check before they were tagged, as two reads sent at once
+	// would; reserving and tagging it must take it back.
+	seedBatchUsage(t, userID, "batch-race-00001", billing.UsageStatusSucceeded, 3)
+	seedBatchUsage(t, userID, "batch-race-00001", billing.UsageStatusReserved, 2)
+	event, _, err := credits.ReserveCredits(subject, ai.ActionTransactionParseReceipt, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if claimReceiptBatchSlot(ctx, credits, subject, event.ID, "batch-race-00001") {
+		t.Fatal("a sixth read in flight should be refused")
+	}
+	if response.Code != 422 || !strings.Contains(response.Body.String(), `"receipt_batch_full"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var stored models.AIUsageEvent
+	if err := database.DB.First(&stored, event.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != billing.UsageStatusCancelled {
+		t.Fatalf("refused read should be cancelled, got %q", stored.Status)
+	}
+	after, err := credits.CheckAllowance(subject, ai.ActionTransactionParseReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.AvailableCredits != before.AvailableCredits {
+		t.Fatalf("credits not returned: before %d, after %d", before.AvailableCredits, after.AvailableCredits)
+	}
+}
+
+func TestReceiptBatchFailureWeight(t *testing.T) {
+	for failures, want := range map[int64]int64{0: 0, 1: 1, 3: 1, 4: 2, 10: 4} {
+		if got := receiptBatchFailureWeight(failures); got != want {
+			t.Fatalf("weight(%d) = %d, want %d", failures, got, want)
+		}
+	}
+}
+
+func TestFailureCooldownWeighsABatchOfManyFailures(t *testing.T) {
+	ctx, _ := newReceiptContext(t, receiptTestPNG)
+	user, _ := ctx.Get("user")
+	userID := user.(*models.User).ID
+	cfg := &config.Config{
+		AIFailedParseCooldownThreshold: 4,
+		AIFailedParseCooldownWindowMin: 15,
+		AIFailedParseCooldownMinutes:   10,
+	}
+	// Ten failures under one batch id count as four, not one.
+	seedBatchUsage(t, userID, "batch-many-00001", billing.UsageStatusFailedAfterProvider, 10)
+	active, _, failures, err := activeAIFailureCooldown(billing.SubjectForUser(userID), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active || failures != 4 {
+		t.Fatalf("active=%v failures=%d", active, failures)
+	}
+}

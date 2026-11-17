@@ -94,7 +94,9 @@ func (s *Server) handleParseReceipt(c *gin.Context) {
 		writeCreditReservationError(c, allowance, reserveErr)
 		return
 	}
-	tagReceiptBatch(usageEvent.ID, batchID)
+	if !claimReceiptBatchSlot(c, creditService, subject, usageEvent.ID, batchID) {
+		return
+	}
 
 	tz := c.PostForm("tz")
 	if tz == "" {

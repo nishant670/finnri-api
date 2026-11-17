@@ -493,8 +493,10 @@ paths:
           required: false
           description: >-
             Sent with every read of one "scan several bills" run (8–64 letters,
-            digits or hyphens). A batch's failed reads count once toward the
-            failure cooldown; a batch may make 5 charged reads and 10 reads in all.
+            digits or hyphens). A batch's failed reads count a third (rounded up)
+            toward the failure cooldown; a batch may hold 5 charged or in-flight
+            reads and make 10 reads in all. A read over the cap is cancelled and
+            its credits returned.
           schema:
             type: string
             pattern: "^[A-Za-z0-9-]{8,64}$"
