@@ -174,7 +174,7 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 		notification := models.Notification{
 			UserID: subscription.UserID, Type: subscriptionAutopayNotificationType,
 			Title:     recurringAutopayTitle(subscription.Kind),
-			Body:      fmt.Sprintf("Added %s for %s from %s. Confirm it or open it to make changes.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(*subscription)),
+			Body:      recurringAutopayBody(*subscription),
 			ActionURL: fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID),
 			// The charge and its day, so a stack of autopays can list each one
 			// with its figure instead of re-reading the sentence (P48).
@@ -202,9 +202,16 @@ func createSubscriptionOccurrence(subscription *models.Subscription, dueDate tim
 // newSubscriptionEntry is the transaction one payment of a recurring item
 // writes, whether autopay added it or the user logged it.
 func newSubscriptionEntry(subscription models.Subscription, due string) models.Entry {
+	entryType := recurringEntryType(subscription.Kind)
 	tag := strings.TrimSpace(subscription.TransactionTag)
-	if tag == "" {
+	if tag == "" && entryType == "expense" {
 		tag = "Subscription"
+	}
+	tags := models.StringArray{tag}
+	if entryType == "income" {
+		// Income carries no tags anywhere in the app.
+		tag = ""
+		tags = models.StringArray{}
 	}
 	purpose := strings.TrimSpace(subscription.PurposeType)
 	if purpose == "" {
@@ -215,17 +222,17 @@ func newSubscriptionEntry(subscription models.Subscription, due string) models.E
 	// same resolver, otherwise a subscription filed under the old
 	// subscription-only vocabulary ("Cloud", "Membership") would put that
 	// value straight into the ledger and fragment the category rollups.
-	category, ok := categoryForSave(subscription.Category, "expense")
+	category, ok := categoryForSave(subscription.Category, entryType)
 	if !ok {
 		category = defaultCategory
 	}
 	idempotencyKey := fmt.Sprintf("subscription:%d:%s", subscription.ID, due)
 	return models.Entry{
 		UserID: subscription.UserID, AccountID: subscription.AccountID,
-		Title: subscription.Name, Type: "expense", Amount: subscription.Amount,
+		Title: subscription.Name, Type: entryType, Amount: subscription.Amount,
 		Currency: "INR", Source: models.EntrySourceRecurring, Mode: normalizedOccurrencePaymentMode(subscription),
 		Category: category, Merchant: subscription.Merchant, PurposeType: purpose, Tag: tag,
-		Tags: models.StringArray{tag}, Notes: subscription.Notes, Date: due,
+		Tags: tags, Notes: subscription.Notes, Date: due,
 		Time: "9:00 AM", IdempotencyKey: &idempotencyKey,
 	}
 }
@@ -448,8 +455,21 @@ func parsePositiveUint(value string) (uint, error) {
 	return uint(parsed), nil
 }
 
+// recurringAutopayBody is the notification line for a payment autopay wrote:
+// money in names where it landed, money out where it came from.
+func recurringAutopayBody(subscription models.Subscription) string {
+	if subscription.Kind == recurringKindIncome {
+		return fmt.Sprintf("Added %s of %s to %s. Confirm it arrived, or open it to change the amount.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(subscription))
+	}
+	return fmt.Sprintf("Added %s for %s from %s. Confirm it or open it to make changes.", subscription.Name, rupeesForCopy(subscription.Amount), occurrenceAccountLabel(subscription))
+}
+
 func sendOccurrencePush(occurrence models.SubscriptionOccurrence) {
-	sendUserPush(database.DB, occurrence.UserID, "Autopay transaction added", fmt.Sprintf("%s was added for %s. Confirm or review it in Finnri.", occurrence.Entry.Title, rupeesForCopy(occurrence.Entry.Amount)), map[string]any{
+	title := "Autopay transaction added"
+	if strings.EqualFold(occurrence.Entry.Type, "income") {
+		title = "Income added"
+	}
+	sendUserPush(database.DB, occurrence.UserID, title, fmt.Sprintf("%s was added for %s. Confirm or review it in Finnri.", occurrence.Entry.Title, rupeesForCopy(occurrence.Entry.Amount)), map[string]any{
 		"action_url": fmt.Sprintf("/subscription-occurrences/%d", occurrence.ID), "type": subscriptionAutopayNotificationType, "occurrence_id": occurrence.ID, "entry_id": occurrence.EntryID,
 	})
 }
