@@ -181,6 +181,12 @@ type recurringSummary struct {
 	ByKind       map[string]models.Money `json:"by_kind"`
 	ActiveCount  int                     `json:"active_count"`
 	NextDue      *recurringNextDue       `json:"next_due,omitempty"`
+	// Recurring income is summed apart and never enters the figures above,
+	// which are money going out. by_kind has no income key, so an older app
+	// that labels every key it gets is not handed one it cannot name.
+	MonthlyIncome     models.Money      `json:"monthly_income"`
+	IncomeActiveCount int               `json:"income_active_count"`
+	NextIncome        *recurringNextDue `json:"next_income,omitempty"`
 }
 
 type recurringOverview struct {
@@ -265,6 +271,14 @@ func summariseRecurring(items []subscriptionResponse, cardEMIs []recurringCardEM
 		if kind == "" {
 			kind = recurringKindSubscription
 		}
+		if kind == recurringKindIncome {
+			summary.IncomeActiveCount++
+			summary.MonthlyIncome += item.Schedule.MonthlyEquivalent
+			if item.NextDueDate != "" && (summary.NextIncome == nil || item.NextDueDate < summary.NextIncome.Date) {
+				summary.NextIncome = &recurringNextDue{Name: item.Name, Kind: kind, Amount: item.Amount, Date: item.NextDueDate}
+			}
+			continue
+		}
 		summary.ActiveCount++
 		summary.MonthlyTotal += item.Schedule.MonthlyEquivalent
 		summary.ByKind[kind] += item.Schedule.MonthlyEquivalent
@@ -288,6 +302,8 @@ func recurringNoun(kind string) string {
 		return "Investment"
 	case recurringKindBill:
 		return "Bill"
+	case recurringKindIncome:
+		return "Income"
 	default:
 		return "Subscription"
 	}
@@ -301,6 +317,8 @@ func recurringAutopayTitle(kind string) string {
 		return "Investment recorded"
 	case recurringKindBill:
 		return "Bill payment recorded"
+	case recurringKindIncome:
+		return "Income recorded"
 	default:
 		return "Autopay transaction added"
 	}

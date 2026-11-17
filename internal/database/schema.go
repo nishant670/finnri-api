@@ -437,7 +437,8 @@ func runtimeSchemaStatements() []string {
 		`ALTER TABLE subscriptions DROP CONSTRAINT IF EXISTS subscriptions_kind_check`,
 		`ALTER TABLE subscriptions
 			ADD CONSTRAINT subscriptions_kind_check
-			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill'))`,
+			CHECK (kind IN ('subscription', 'loan', 'investment', 'bill', 'income'))`,
+		// 'income' from migrations/0078_recurring_income_kind.sql.
 		// See migrations/0066_add_wallet_balance_and_pay_later.sql.
 		`ALTER TABLE accounts
 			ADD COLUMN IF NOT EXISTS balance_tracked BOOLEAN NOT NULL DEFAULT FALSE,
