@@ -141,8 +141,14 @@ func buildRevenueSnapshot(start, end time.Time) adminRevenueSnapshot {
 	if result.ActiveSubscribers > 0 {
 		result.ARPUMinor = result.MRRMinor / int64(result.ActiveSubscribers)
 	}
-	_, registered, _ := userCounts()
-	result.PaidConversion = ratio(float64(result.ActiveSubscribers), float64(registered))
+	// Conversion compares like with like: real customers paying over real
+	// registered customers. The money figures above still count every pass.
+	_, registered, _ := userCounts(false)
+	var realPaying int64
+	_ = realUserRows(database.DB.Model(&models.UserSubscription{}), "user_id", false).
+		Where("provider <> ? AND status = ? AND current_period_end > ?", giftPassProvider, "active", now).
+		Distinct("user_id").Count(&realPaying).Error
+	result.PaidConversion = ratio(float64(realPaying), float64(registered))
 	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("created_at >= ? AND created_at < ?", start, end).Count(&result.NewInWindow).Error
 	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("current_period_end >= ? AND current_period_end < ? AND status <> ?", start, end, "active").Count(&result.ChurnedInWindow).Error
 	_ = database.DB.Model(&models.UserSubscription{}).Where("provider <> ?", giftPassProvider).Where("status = ? AND current_period_end > ? AND current_period_end <= ?", "active", now, now.Add(7*24*time.Hour)).Count(&result.RenewalsDue7Days).Error

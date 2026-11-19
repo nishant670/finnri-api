@@ -95,7 +95,7 @@ func runMaintenanceOnce(cfg *config.Config) (maintenanceResult, error) {
 func rollupAdminDailyMetrics(day time.Time) error {
 	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, 1)
-	active := len(activeUserIDs(start, end))
+	active := len(activeUserIDs(start, end, false))
 	var events []models.AIUsageEvent
 	if err := database.DB.Where("started_at >= ? AND started_at < ?", start, end).Find(&events).Error; err != nil {
 		return err
