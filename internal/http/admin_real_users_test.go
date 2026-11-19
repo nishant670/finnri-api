@@ -55,8 +55,10 @@ func TestAdminCountsLeaveOutTestUsers(t *testing.T) {
 	if real.Users.Guests != 1 || all.Users.Guests != 2 || real.Users.Total != all.Users.Total-1 || real.Users.Test != 1 {
 		t.Fatalf("test guest should drop out of counts: real=%+v all=%+v", real.Users, all.Users)
 	}
-	if real.Engagement.ActiveInWindow != all.Engagement.ActiveInWindow-1 {
-		t.Fatalf("test guest's entry should not make anyone active: real=%d all=%d", real.Engagement.ActiveInWindow, all.Engagement.ActiveInWindow)
+	// The two admins only have console sessions, which are not app use; the
+	// robot's entry is the only activity, and it is a test account's.
+	if real.Engagement.ActiveInWindow != 0 || all.Engagement.ActiveInWindow != 1 {
+		t.Fatalf("only the robot's entry should count, and only with include_test: real=%d all=%d", real.Engagement.ActiveInWindow, all.Engagement.ActiveInWindow)
 	}
 
 	type list struct {
@@ -192,4 +194,31 @@ func TestAdminTrialsListsWhoToOfferCreditsTo(t *testing.T) {
 	}
 	performJSONRequest[map[string]any](t, router, http.MethodGet, "/v1/admin/trials?status=everyone", viewerToken, nil, http.StatusUnprocessableEntity)
 	performJSONRequest[map[string]any](t, router, http.MethodGet, "/v1/admin/trials?days=0", viewerToken, nil, http.StatusUnprocessableEntity)
+}
+
+func TestAdminPaidConversionCountsRealUsersOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, viewerToken := createAdminSessionForTest(t, models.AdminRoleViewer)
+	monthly := seedPurchasablePlan(t, "monthly", "monthly", 14900, 3600)
+	now := time.Now().UTC()
+	secondary := createRealUsersTestUser(t, "secondary", false, func(user *models.User) {
+		user.IsTest, user.TestReason = true, models.UserTestReasonInternal
+	})
+	payer := createRealUsersTestUser(t, "payer", false, nil)
+	createRealUsersTestUser(t, "browser", false, nil)
+	for _, id := range []uint{secondary.ID, payer.ID} {
+		if err := database.DB.Create(&models.UserSubscription{UserID: id, PlanID: monthly.ID, Status: "active", Provider: "razorpay", CurrentPeriodStart: now.Add(-24 * time.Hour), CurrentPeriodEnd: now.Add(10 * 24 * time.Hour)}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	revenue := performJSONRequest[struct {
+		ActiveSubscribers int     `json:"active_subscribers"`
+		PaidConversion    float64 `json:"paid_conversion_percent"`
+	}](t, router, http.MethodGet, "/v1/admin/revenue", viewerToken, nil, http.StatusOK)
+	// Real registered: the viewer admin, payer, browser. One of them pays.
+	if revenue.ActiveSubscribers != 2 || revenue.PaidConversion != 33.33 {
+		t.Fatalf("money counts both passes, conversion only the real payer: %+v", revenue)
+	}
 }

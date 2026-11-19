@@ -111,7 +111,9 @@ func activeUserIDs(start, end time.Time, includeTest bool) map[uint]struct{} {
 		ids[id] = struct{}{}
 	}
 	values = nil
-	_ = realUserRows(database.DB.Model(&models.AuthSession{}), "user_id", includeTest).Distinct("user_id").Where("created_at >= ? AND created_at < ?", start, end).Pluck("user_id", &values).Error
+	// Signing in to the admin console is not using the app, so admin sessions
+	// never make someone active.
+	_ = realUserRows(database.DB.Model(&models.AuthSession{}), "user_id", includeTest).Distinct("user_id").Where("kind <> ? AND created_at >= ? AND created_at < ?", adminSessionKind, start, end).Pluck("user_id", &values).Error
 	for _, id := range values {
 		ids[id] = struct{}{}
 	}
