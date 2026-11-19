@@ -168,6 +168,8 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/users/:id/credits", s.getAdminUserCredits)
 		admin.GET("/users/:id/activity", s.getAdminUserActivity)
 		admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), s.createUserCreditAdjustment)
+		admin.PATCH("/users/:id/test", requireAdminRole(models.AdminRoleSupport), s.updateAdminUserTest)
+		admin.GET("/trials", s.listAdminTrials)
 		admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), s.createAdminGiftPass)
 		admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), s.revokeAdminGiftPass)
 		admin.GET("/ai/metrics", s.getAIMetrics)
