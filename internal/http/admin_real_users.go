@@ -222,27 +222,26 @@ func timeOrZero(value *time.Time) time.Time {
 // A guest's grant is keyed by the hash of its device id, a signed-in user's by
 // user id; a guest who later signs in has the grant moved to the user.
 func buildTrialRows(now time.Time, days int, includeTest bool) ([]adminTrialRow, error) {
-	var users []models.User
-	if err := realUsersOnly(database.DB.Model(&models.User{}), includeTest).Find(&users).Error; err != nil {
-		return nil, err
-	}
-	if len(users) == 0 {
-		return []adminTrialRow{}, nil
-	}
-	ids := make([]uint, 0, len(users))
-	guestHashes := map[string]uint{}
-	for _, user := range users {
-		ids = append(ids, user.ID)
-		if user.IsGuest && user.DeviceID != nil && strings.TrimSpace(*user.DeviceID) != "" {
-			guestHashes[billing.SubjectForGuestDeviceID(*user.DeviceID).GuestDeviceIDHash] = user.ID
-		}
-	}
-
-	trials := map[uint]models.CreditGrant{}
+	// Only people who can appear in a list are read: everyone with a free
+	// trial, and anyone refused an AI read recently. Guests' trials are keyed
+	// by device hash, so guests are matched back by hashing their device ids.
 	var grants []models.CreditGrant
 	if err := database.DB.Where("source = ?", billing.GrantSourceFreeTrial).Find(&grants).Error; err != nil {
 		return nil, err
 	}
+	guestHashes := map[string]uint{}
+	var guests []struct {
+		ID       uint
+		DeviceID string
+	}
+	if err := database.DB.Model(&models.User{}).Select("id, device_id").
+		Where("is_guest = ? AND device_id IS NOT NULL AND device_id <> ''", true).Scan(&guests).Error; err != nil {
+		return nil, err
+	}
+	for _, guest := range guests {
+		guestHashes[billing.HashUsageKey(guest.DeviceID)] = guest.ID
+	}
+	trials := map[uint]models.CreditGrant{}
 	for _, grant := range grants {
 		owner := uint(0)
 		if grant.UserID != nil {
@@ -253,6 +252,37 @@ func buildTrialRows(now time.Time, days int, includeTest bool) ([]adminTrialRow,
 		if owner != 0 {
 			trials[owner] = grant
 		}
+	}
+	candidates := map[uint]struct{}{}
+	for id := range trials {
+		candidates[id] = struct{}{}
+	}
+	var limitedIDs []uint
+	if err := database.DB.Model(&models.AIUsageLimitEvent{}).Distinct("user_id").
+		Where("user_id IS NOT NULL AND created_at >= ?", now.Add(-trialCreditLimitWindow)).Pluck("user_id", &limitedIDs).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range limitedIDs {
+		candidates[id] = struct{}{}
+	}
+	candidateIDs := make([]uint, 0, len(candidates))
+	for id := range candidates {
+		candidateIDs = append(candidateIDs, id)
+	}
+	users := make([]models.User, 0, len(candidateIDs))
+	for _, chunk := range chunkIDs(candidateIDs) {
+		var found []models.User
+		if err := realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("id IN ?", chunk).Find(&found).Error; err != nil {
+			return nil, err
+		}
+		users = append(users, found...)
+	}
+	if len(users) == 0 {
+		return []adminTrialRow{}, nil
+	}
+	ids := make([]uint, 0, len(users))
+	for _, user := range users {
+		ids = append(ids, user.ID)
 	}
 
 	covered := map[uint]string{}
@@ -281,30 +311,58 @@ func buildTrialRows(now time.Time, days int, includeTest bool) ([]adminTrialRow,
 	}
 	countBy := func(model any, where string, args ...any) map[uint]int64 {
 		result := map[uint]int64{}
-		var rows []countRow
-		query := database.DB.Model(model).Select("user_id, COUNT(*) AS total").Where("user_id IN ?", ids)
-		if where != "" {
-			query = query.Where(where, args...)
-		}
-		_ = query.Group("user_id").Scan(&rows).Error
-		for _, row := range rows {
-			result[row.UserID] = row.Total
+		for _, chunk := range chunkIDs(ids) {
+			var rows []countRow
+			query := database.DB.Model(model).Select("user_id, COUNT(*) AS total").Where("user_id IN ?", chunk)
+			if where != "" {
+				query = query.Where(where, args...)
+			}
+			_ = query.Group("user_id").Scan(&rows).Error
+			for _, row := range rows {
+				result[row.UserID] = row.Total
+			}
 		}
 		return result
 	}
 	entries := countBy(&models.Entry{}, "")
 	aiReads := countBy(&models.AIUsageEvent{}, "status = ?", "succeeded")
+	// A guest's AI read can be logged by device hash only, with no user id.
+	guestOfHash := map[string]uint{}
+	for _, user := range users {
+		if user.IsGuest && user.DeviceID != nil && strings.TrimSpace(*user.DeviceID) != "" {
+			guestOfHash[billing.HashUsageKey(*user.DeviceID)] = user.ID
+		}
+	}
+	hashes := make([]string, 0, len(guestOfHash))
+	for hash := range guestOfHash {
+		hashes = append(hashes, hash)
+	}
+	for start := 0; start < len(hashes); start += 1000 {
+		end := min(start+1000, len(hashes))
+		var hashRows []struct {
+			GuestDeviceIDHash string
+			Total             int64
+		}
+		_ = database.DB.Model(&models.AIUsageEvent{}).Select("guest_device_id_hash, COUNT(*) AS total").
+			Where("user_id IS NULL AND status = ? AND guest_device_id_hash IN ?", "succeeded", hashes[start:end]).
+			Group("guest_device_id_hash").Scan(&hashRows).Error
+		for _, row := range hashRows {
+			aiReads[guestOfHash[row.GuestDeviceIDHash]] += row.Total
+		}
+	}
 	push := countBy(&models.PushDevice{}, "active = ?", true)
 	limitHits := countBy(&models.AIUsageLimitEvent{}, "created_at >= ?", now.Add(-trialCreditLimitWindow))
 	lastLimit := map[uint]time.Time{}
-	var limitRows []struct {
-		UserID uint
-		At     time.Time
-	}
-	_ = database.DB.Model(&models.AIUsageLimitEvent{}).Select("user_id, MAX(created_at) AS at").
-		Where("user_id IN ? AND created_at >= ?", ids, now.Add(-trialCreditLimitWindow)).Group("user_id").Scan(&limitRows).Error
-	for _, row := range limitRows {
-		lastLimit[row.UserID] = row.At
+	for _, chunk := range chunkIDs(ids) {
+		var limitRows []struct {
+			UserID uint
+			At     time.Time
+		}
+		_ = database.DB.Model(&models.AIUsageLimitEvent{}).Select("user_id, MAX(created_at) AS at").
+			Where("user_id IN ? AND created_at >= ?", chunk, now.Add(-trialCreditLimitWindow)).Group("user_id").Scan(&limitRows).Error
+		for _, row := range limitRows {
+			lastLimit[row.UserID] = row.At
+		}
 	}
 
 	rows := make([]adminTrialRow, 0, len(trials)+len(limitHits))
@@ -364,4 +422,114 @@ func buildTrialRows(now time.Time, days int, includeTest bool) ([]adminTrialRow,
 		}
 	}
 	return rows, nil
+}
+
+// AI usage split by who made the request. Totals always include everyone,
+// since robots and test accounts cost real money; the split says where it went.
+const (
+	aiSegmentRegistered = "registered"
+	aiSegmentGuest      = "guest"
+	aiSegmentTest       = "test"
+)
+
+type adminAISegment struct {
+	Events                 int64 `json:"events"`
+	CreditsUsed            int64 `json:"credits_used"`
+	EstimatedCostUSDMicros int64 `json:"estimated_cost_usd_micros"`
+}
+
+// aiUsageByUserType attributes each AI read in the window to a registered
+// customer, a guest, or a test account. A guest's read can carry only the
+// hash of its device id, so those are matched back to the guest row; a hash
+// that matches no guest is still a guest's.
+func aiUsageByUserType(start, end time.Time) (map[string]*adminAISegment, error) {
+	split := map[string]*adminAISegment{aiSegmentRegistered: {}, aiSegmentGuest: {}, aiSegmentTest: {}}
+	var rows []struct {
+		UserID            *uint
+		GuestDeviceIDHash string
+		Events            int64
+		Credits           int64
+		Cost              int64
+	}
+	if err := database.DB.Model(&models.AIUsageEvent{}).
+		Select("user_id, guest_device_id_hash, COUNT(*) AS events, COALESCE(SUM(final_credits), 0) AS credits, COALESCE(SUM(estimated_cost_usd_micros), 0) AS cost").
+		Where("started_at >= ? AND started_at < ?", start, end).
+		Group("user_id, guest_device_id_hash").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	userIDs := []uint{}
+	needGuestHashes := false
+	for _, row := range rows {
+		if row.UserID != nil {
+			userIDs = append(userIDs, *row.UserID)
+		} else if strings.TrimSpace(row.GuestDeviceIDHash) != "" {
+			needGuestHashes = true
+		}
+	}
+	type userKind struct {
+		ID      uint
+		IsGuest bool
+		IsTest  bool
+	}
+	kinds := map[uint]userKind{}
+	for _, chunk := range chunkIDs(userIDs) {
+		var found []userKind
+		if err := database.DB.Model(&models.User{}).Select("id, is_guest, is_test").Where("id IN ?", chunk).Scan(&found).Error; err != nil {
+			return nil, err
+		}
+		for _, kind := range found {
+			kinds[kind.ID] = kind
+		}
+	}
+	guestByHash := map[string]bool{} // hash -> is_test
+	if needGuestHashes {
+		var guests []struct {
+			DeviceID string
+			IsTest   bool
+		}
+		if err := database.DB.Model(&models.User{}).Select("device_id, is_test").
+			Where("is_guest = ? AND device_id IS NOT NULL AND device_id <> ''", true).Scan(&guests).Error; err != nil {
+			return nil, err
+		}
+		for _, guest := range guests {
+			guestByHash[billing.HashUsageKey(guest.DeviceID)] = guest.IsTest
+		}
+	}
+	for _, row := range rows {
+		segment := aiSegmentGuest
+		if row.UserID != nil {
+			if kind, ok := kinds[*row.UserID]; ok {
+				switch {
+				case kind.IsTest:
+					segment = aiSegmentTest
+				case !kind.IsGuest:
+					segment = aiSegmentRegistered
+				}
+			} else {
+				// The account was deleted; its usage was a signed-in customer's.
+				segment = aiSegmentRegistered
+			}
+		} else if guestByHash[row.GuestDeviceIDHash] {
+			segment = aiSegmentTest
+		}
+		split[segment].Events += row.Events
+		split[segment].CreditsUsed += row.Credits
+		split[segment].EstimatedCostUSDMicros += row.Cost
+	}
+	return split, nil
+}
+
+// chunkIDs splits an id list so IN (...) stays far below Postgres's 65,535
+// bind-parameter limit however many users there are.
+func chunkIDs(ids []uint) [][]uint {
+	const size = 1000
+	chunks := [][]uint{}
+	for start := 0; start < len(ids); start += size {
+		end := start + size
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunks = append(chunks, ids[start:end])
+	}
+	return chunks
 }

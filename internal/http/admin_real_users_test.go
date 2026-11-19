@@ -148,6 +148,10 @@ func TestAdminTrialsListsWhoToOfferCreditsTo(t *testing.T) {
 	})
 	trial(guest, 25*day, 5*day, 120)
 	guestID := guest.ID
+	deviceOnlyRead := models.AIUsageEvent{GuestDeviceIDHash: billing.HashUsageKey("guest-device"), RequestID: generateUUID(), ActionCode: "transaction_parse_text", InputKind: "text", Status: "succeeded", EstimatedCredits: 5, FinalCredits: 5, StartedAt: now.Add(-2 * time.Hour)}
+	if err := database.DB.Create(&deviceOnlyRead).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := database.DB.Create(&models.AIUsageLimitEvent{UserID: &guestID, ActionCode: "transaction_parse_receipt", Reason: "insufficient_ai_credits", CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +189,7 @@ func TestAdminTrialsListsWhoToOfferCreditsTo(t *testing.T) {
 		t.Fatalf("ended active: %v", got)
 	}
 	limited := performJSONRequest[trials](t, router, http.MethodGet, "/v1/admin/trials?status=credit_limit", viewerToken, nil, http.StatusOK)
-	if got := names(limited.Users); len(got) != 1 || got[0] != "guest" || limited.Users[0].CreditLimitHits != 1 {
+	if got := names(limited.Users); len(got) != 1 || got[0] != "guest" || limited.Users[0].CreditLimitHits != 1 || limited.Users[0].AIReads != 1 {
 		t.Fatalf("credit limit: %#v", limited.Users)
 	}
 	withTest := performJSONRequest[trials](t, router, http.MethodGet, "/v1/admin/trials?status=ending_soon&include_test=true", viewerToken, nil, http.StatusOK)
@@ -220,5 +224,118 @@ func TestAdminPaidConversionCountsRealUsersOnly(t *testing.T) {
 	// Real registered: the viewer admin, payer, browser. One of them pays.
 	if revenue.ActiveSubscribers != 2 || revenue.PaidConversion != 33.33 {
 		t.Fatalf("money counts both passes, conversion only the real payer: %+v", revenue)
+	}
+}
+
+func TestAdminAIUsageSplitsByUserTypeAndKeepsTotals(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, viewerToken := createAdminSessionForTest(t, models.AdminRoleViewer)
+	now := time.Now().UTC()
+
+	registered := createRealUsersTestUser(t, "registered", false, nil)
+	guest := createRealUsersTestUser(t, "guest", true, nil)
+	robotDevice := "robot-device"
+	createRealUsersTestUser(t, "robot", true, func(user *models.User) {
+		user.DeviceID = &robotDevice
+		user.IsTest, user.TestReason = true, models.UserTestReasonTestLab
+	})
+	event := func(userID *uint, hash string, credits int, cost int64) {
+		t.Helper()
+		row := models.AIUsageEvent{UserID: userID, GuestDeviceIDHash: hash, RequestID: generateUUID(), ActionCode: "transaction_parse_text", InputKind: "text", Status: "succeeded", EstimatedCredits: credits, FinalCredits: credits, EstimatedCostUSDMicros: cost, StartedAt: now.Add(-time.Hour)}
+		if err := database.DB.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	registeredID, guestID := registered.ID, guest.ID
+	event(&registeredID, "", 25, 1000)
+	event(&registeredID, "", 5, 200)
+	event(&guestID, "", 12, 300)
+	event(nil, billing.HashUsageKey("unknown-guest-device"), 5, 50)
+	event(nil, billing.HashUsageKey(robotDevice), 100, 4000)
+
+	type split struct {
+		Events                 int64 `json:"events"`
+		CreditsUsed            int64 `json:"credits_used"`
+		EstimatedCostUSDMicros int64 `json:"estimated_cost_usd_micros"`
+	}
+	type ai struct {
+		CreditsUsed            int64            `json:"credits_used"`
+		TotalCreditsCharged    int64            `json:"total_credits_charged"`
+		EstimatedCostUSDMicros int64            `json:"estimated_cost_usd_micros"`
+		ByUserType             map[string]split `json:"by_user_type"`
+	}
+	overview := performJSONRequest[struct {
+		AI ai `json:"ai"`
+	}](t, router, http.MethodGet, "/v1/admin/overview", viewerToken, nil, http.StatusOK)
+	want := map[string]split{
+		"registered": {Events: 2, CreditsUsed: 30, EstimatedCostUSDMicros: 1200},
+		"guest":      {Events: 2, CreditsUsed: 17, EstimatedCostUSDMicros: 350},
+		"test":       {Events: 1, CreditsUsed: 100, EstimatedCostUSDMicros: 4000},
+	}
+	for kind, expected := range want {
+		if overview.AI.ByUserType[kind] != expected {
+			t.Fatalf("%s = %+v, want %+v (all %+v)", kind, overview.AI.ByUserType[kind], expected, overview.AI.ByUserType)
+		}
+	}
+	if overview.AI.CreditsUsed != 147 || overview.AI.EstimatedCostUSDMicros != 5550 {
+		t.Fatalf("totals must still include test usage: %+v", overview.AI)
+	}
+	metrics := performJSONRequest[ai](t, router, http.MethodGet, "/v1/admin/ai/metrics", viewerToken, nil, http.StatusOK)
+	if metrics.TotalCreditsCharged != 147 || metrics.ByUserType["test"] != want["test"] {
+		t.Fatalf("AI metrics should carry totals and the split: %+v", metrics)
+	}
+}
+
+func TestRecountDailyActiveUsersRunsOnceAndKeepsAIColumns(t *testing.T) {
+	useSmokeDatabase(t)
+	if err := database.DB.Exec("CREATE TABLE IF NOT EXISTS schema_repairs (name TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)").Error; err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now().UTC().AddDate(0, 0, -3)
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+	real := createRealUsersTestUser(t, "real", false, nil)
+	robot := createRealUsersTestUser(t, "robot", true, func(user *models.User) {
+		user.IsTest, user.TestReason = true, models.UserTestReasonTestLab
+	})
+	for _, id := range []uint{real.ID, robot.ID} {
+		if err := database.DB.Create(&models.Entry{UserID: id, Type: "expense", Amount: 10, Title: "x", CreatedAt: start.Add(2 * time.Hour)}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Rolled up under the old definition: both counted, plus AI figures whose
+	// source events have since been purged.
+	if err := database.DB.Create(&models.AdminDailyMetric{MetricDate: start.Format("2006-01-02"), ActiveUsers: 2, AIEvents: 9, AICredits: 90}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := recountDailyActiveUsersOnce(); err != nil {
+		t.Fatal(err)
+	}
+	var row models.AdminDailyMetric
+	if err := database.DB.First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.ActiveUsers != 1 || row.AIEvents != 9 || row.AICredits != 90 {
+		t.Fatalf("only active_users should be recounted: %+v", row)
+	}
+	// A second run is a no-op even if the data changes.
+	if err := database.DB.Model(&models.AdminDailyMetric{}).Where("id = ?", row.ID).Update("active_users", 7).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := recountDailyActiveUsersOnce(); err != nil {
+		t.Fatal(err)
+	}
+	_ = database.DB.First(&row).Error
+	if row.ActiveUsers != 7 {
+		t.Fatalf("recount should run once: %+v", row)
+	}
+}
+
+func TestChunkIDsStaysUnderTheBindLimit(t *testing.T) {
+	ids := make([]uint, 2501)
+	chunks := chunkIDs(ids)
+	if len(chunks) != 3 || len(chunks[0]) != 1000 || len(chunks[2]) != 501 || len(chunkIDs(nil)) != 0 {
+		t.Fatalf("unexpected chunks: %d", len(chunks))
 	}
 }

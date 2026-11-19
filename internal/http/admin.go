@@ -27,7 +27,15 @@ func (s *Server) getAIMetrics(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_build_ai_metrics"})
 		return
 	}
-	c.JSON(http.StatusOK, metrics)
+	split, err := aiUsageByUserType(start, end)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_build_ai_metrics"})
+		return
+	}
+	c.JSON(http.StatusOK, struct {
+		billing.AIMetrics
+		ByUserType map[string]*adminAISegment `json:"by_user_type"`
+	}{metrics, split})
 }
 
 func (s *Server) createCreditAdjustment(c *gin.Context) {
