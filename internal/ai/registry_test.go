@@ -40,7 +40,7 @@ func TestDefaultActionRegistryDefinesCurrentParseActions(t *testing.T) {
 	if voice.DefaultCredits != 12 {
 		t.Fatalf("voice default credits = %d", voice.DefaultCredits)
 	}
-	if voice.InputLimits.MaxAudioSeconds != 15 {
+	if voice.InputLimits.MaxAudioSeconds != 30 {
 		t.Fatalf("voice max audio seconds = %d", voice.InputLimits.MaxAudioSeconds)
 	}
 	if len(voice.ProviderOperations) != 2 ||

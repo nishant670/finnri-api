@@ -533,6 +533,13 @@ func (s *Server) handleParse(c *gin.Context) {
 	if tz == "" {
 		tz = s.cfg.TZDefault
 	}
+	// multi=1: this app can show several transactions from one prompt (P103).
+	// Old apps never send it and get exactly the single draft they always did.
+	multi := c.PostForm("multi") == "1"
+	maxTranscriptChars := s.cfg.MaxTranscriptChars
+	if multi && s.cfg.MaxTranscriptCharsBatch > maxTranscriptChars {
+		maxTranscriptChars = s.cfg.MaxTranscriptCharsBatch
+	}
 
 	// The user's events, groups and friends, so a spoken "Kanatal trip" or
 	// "Bubu Dudu Daily" can be spelled, matched and filled in.
@@ -573,7 +580,7 @@ func (s *Server) handleParse(c *gin.Context) {
 			return
 		}
 		var tooLong bool
-		actionCode, tooLong = classifyVoiceParseAction(audioSize)
+		actionCode, tooLong = classifyVoiceParseAction(audioBytes)
 		if tooLong {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "audio_too_long_for_ai"})
 			return
@@ -636,7 +643,7 @@ func (s *Server) handleParse(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "no audio or hint_text provided"})
 		return
 	}
-	if s.cfg.MaxTranscriptChars > 0 && utf8.RuneCountInString(transcript) > s.cfg.MaxTranscriptChars {
+	if maxTranscriptChars > 0 && utf8.RuneCountInString(transcript) > maxTranscriptChars {
 		if usageEvent != nil {
 			_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
 				Status:    billing.UsageStatusFailedAfterProvider,
@@ -645,7 +652,7 @@ func (s *Server) handleParse(c *gin.Context) {
 		}
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{
 			"error":          "transcript_too_long",
-			"max_characters": s.cfg.MaxTranscriptChars,
+			"max_characters": maxTranscriptChars,
 		})
 		return
 	}
@@ -661,7 +668,16 @@ func (s *Server) handleParse(c *gin.Context) {
 
 	contextQuestion := c.PostForm("context_question")
 	previousQuestion, hasPreviousQuestion := decodeQuestionContext(contextQuestion)
-	parsed, parseUsage, err := s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz, knownNames)
+	// A follow-up question is never a list, so it keeps the single prompt.
+	batchParser, canBatch := s.parser.(ai.BatchParser)
+	readAsBatch := multi && canBatch && !hasPreviousQuestion
+	var parsed []byte
+	var parseUsage ai.Usage
+	if readAsBatch {
+		parsed, parseUsage, err = batchParser.ParseTextBatch(ctx, transcript, tz, knownNames)
+	} else {
+		parsed, parseUsage, err = s.parser.ParseText(ctx, followUpPrompt(transcript, contextQuestion), tz, knownNames)
+	}
 	if s.releaseReadIfClientCancelled(c, creditService, usageEvent.ID) {
 		return
 	}
@@ -700,6 +716,36 @@ func (s *Server) handleParse(c *gin.Context) {
 		})
 		c.JSON(500, gin.H{"error": "invalid_parse_response"})
 		return
+	}
+
+	if readAsBatch {
+		if items, isBatch := parsedBatchItems(parsedObj); isBatch {
+			if len(items) >= 2 {
+				overCap, _ := parsedObj["over_cap_text"].(string)
+				s.respondParsedBatch(c, batchParseRequest{
+					transcript:    transcript,
+					items:         items,
+					overCapText:   overCap,
+					knownNames:    knownNames,
+					knownEvents:   knownEvents,
+					creditService: creditService,
+					usageEvent:    usageEvent,
+					subject:       subject,
+					actionCode:    actionCode,
+					audioSize:     audioSize,
+					responseBytes: len(parsed),
+					reported:      parseUsage,
+				})
+				return
+			}
+			// A "batch" of one is a single draft: today's sheet (P103).
+			if len(items) == 1 {
+				parsedObj = items[0]
+				takeBatchExtras(parsedObj)
+			} else {
+				parsedObj = map[string]any{}
+			}
+		}
 	}
 
 	// The two directions split here, before any draft normalisation runs. A
@@ -745,8 +791,16 @@ func (s *Server) handleParse(c *gin.Context) {
 	if !parsedDraftHasTransactionSignal(parsedObj) {
 		inputChars := utf8.RuneCountInString(transcript)
 		responseBytes := len(parsed)
+		// An app that reads spoken days was promised that nothing understood
+		// costs nothing (P106). Older apps keep today's charge.
+		var finalCredits *int
+		if multi {
+			noCharge := 0
+			finalCredits = &noCharge
+		}
 		_, _ = creditService.FinalizeUsage(usageEvent.ID, billing.ProviderUsage{
 			Status:           billing.UsageStatusFailedAfterProvider,
+			FinalCredits:     finalCredits,
 			ErrorCode:        "non_transactional_prompt",
 			Provider:         "openai",
 			Model:            s.cfg.OpenAILlmModel,
@@ -757,11 +811,15 @@ func (s *Server) handleParse(c *gin.Context) {
 			ResponseBytes:    &responseBytes,
 			AudioBytes:       optionalInt64(audioSize),
 		})
-		c.JSON(422, gin.H{
+		body := gin.H{
 			"error":      "non_transactional_prompt",
 			"message":    "Please describe an expense, income, bill, subscription, split, or payment to add.",
 			"transcript": transcript,
-		})
+		}
+		if multi {
+			body["credits_charged"] = 0
+		}
+		c.JSON(422, body)
 		return
 	}
 	parsed, err = json.Marshal(parsedObj)
@@ -1034,17 +1092,6 @@ func parseCreditSubject(c *gin.Context) (billing.CreditSubject, bool) {
 		return billing.SubjectForGuestDeviceID(*user.DeviceID), true
 	}
 	return billing.SubjectForUser(user.ID), true
-}
-
-func classifyVoiceParseAction(audioBytes int64) (ai.ActionCode, bool) {
-	switch {
-	case audioBytes <= 512*1024:
-		return ai.ActionTransactionParseVoiceShort, false
-	case audioBytes <= 1536*1024:
-		return ai.ActionTransactionParseVoiceMedium, false
-	default:
-		return "", true
-	}
 }
 
 func parseIdempotencyHeader(c *gin.Context) string {
