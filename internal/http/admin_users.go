@@ -56,7 +56,9 @@ func (s *Server) getAdminOverview(c *gin.Context) {
 	activationRate := ratio(float64(activated), float64(registered))
 
 	revenue := buildRevenueSnapshot(start, end)
+	// AI totals count everyone: robots and test accounts still cost money.
 	ai, _ := billing.BuildAIMetrics(database.DB, start, end, s.aiAlertConfig())
+	aiSplit, _ := aiUsageByUserType(start, end)
 	var openFeedback int64
 	_ = database.DB.Model(&models.Feedback{}).Where("status IN ?", []string{"new", "triaged", "planned"}).Count(&openFeedback).Error
 
@@ -66,7 +68,7 @@ func (s *Server) getAdminOverview(c *gin.Context) {
 		"activation_rate": activationRate,
 		"engagement":      gin.H{"active_in_window": len(active), "dau": dau, "wau": wau, "mau": mau, "stickiness": ratio(float64(dau), float64(mau))},
 		"subscriptions":   gin.H{"active": revenue.ActiveSubscribers, "modelled_mrr_minor": revenue.MRRMinor, "basis": revenue.Basis},
-		"ai":              gin.H{"events": ai.TotalEvents, "credits_used": ai.TotalCreditsCharged, "estimated_cost_usd_micros": ai.EstimatedCostUSDMicros, "actual_cost_usd_micros": ai.ActualCostUSDMicros, "alerts": ai.Alerts},
+		"ai":              gin.H{"events": ai.TotalEvents, "credits_used": ai.TotalCreditsCharged, "estimated_cost_usd_micros": ai.EstimatedCostUSDMicros, "actual_cost_usd_micros": ai.ActualCostUSDMicros, "alerts": ai.Alerts, "by_user_type": aiSplit},
 		"open_feedback":   openFeedback,
 	})
 }
