@@ -459,7 +459,19 @@ func (s *Server) createUserCreditAdjustment(c *gin.Context) {
 		}
 		expires = &parsed
 	}
-	grant, created, err := billing.NewCreditService(database.DB).GrantManualAdjustment(billing.SubjectForUser(id), input.Credits, input.ReasonCode, parseIdempotencyHeader(c), expires)
+	var user models.User
+	if err := database.DB.First(&user, id).Error; err != nil {
+		c.JSON(404, gin.H{"error": "user_not_found"})
+		return
+	}
+	// A guest's credits live on its device; granted to the user id they would
+	// never show up in the guest's app.
+	subject, ok := creditSubjectForUser(user)
+	if !ok {
+		c.JSON(422, gin.H{"error": "guest_without_device", "message": "This guest has no device to hold credits."})
+		return
+	}
+	grant, created, err := billing.NewCreditService(database.DB).GrantManualAdjustment(subject, input.Credits, input.ReasonCode, parseIdempotencyHeader(c), expires)
 	if err != nil {
 		c.JSON(422, gin.H{"error": "failed_create_credit_adjustment", "message": err.Error()})
 		return
