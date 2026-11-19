@@ -19,6 +19,25 @@ import (
 //go:embed prompt.txt
 var promptText string
 
+// promptBatchText is appended to the system prompt when the app asks for a
+// batch (`multi=1`, P103): several payments in one text come back as
+// {"stage":"batch","items":[...]}. Old apps never send multi=1, so their prompt
+// and cost are exactly as before.
+//
+//go:embed prompt_batch.txt
+var promptBatchText string
+
+// MaxBatchItems is how many transactions one prompt may return (P116, the
+// user's call on 2026-11-20). The app holds the same number in
+// lib/voice-batch.ts (MAX_ITEMS_PER_PROMPT).
+const MaxBatchItems = 10
+
+// BatchParser is implemented by parsers that can read several transactions
+// from one text. The handler falls back to ParseText for one that can't.
+type BatchParser interface {
+	ParseTextBatch(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error)
+}
+
 type OpenAIClient struct {
 	cfg  *config.Config
 	http *http.Client
@@ -79,6 +98,20 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 }
 
 func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
+	return c.parseWithPrompt(ctx, promptText, c.cfg.OpenAIMaxTokens, transcript, tz, known)
+}
+
+// ParseTextBatch reads a text that may hold up to MaxBatchItems transactions.
+// Ten full drafts need far more room than one, so it has its own token budget.
+func (c *OpenAIClient) ParseTextBatch(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
+	maxTokens := c.cfg.OpenAIMaxTokensBatch
+	if maxTokens < c.cfg.OpenAIMaxTokens {
+		maxTokens = c.cfg.OpenAIMaxTokens
+	}
+	return c.parseWithPrompt(ctx, promptText+promptBatchText, maxTokens, transcript, tz, known)
+}
+
+func (c *OpenAIClient) parseWithPrompt(ctx context.Context, systemPrompt string, maxTokens int, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
 	if c.cfg.OpenAIKey == "" {
 		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
 	}
@@ -96,9 +129,9 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string, kno
 	body := map[string]any{
 		"model":                 c.cfg.OpenAILlmModel,
 		"response_format":       map[string]string{"type": "json_object"},
-		"max_completion_tokens": c.cfg.OpenAIMaxTokens,
+		"max_completion_tokens": maxTokens,
 		"messages": []map[string]string{
-			{"role": "system", "content": promptText},
+			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.%s\nText: %s", tz, nowStr, known.contextLines(), transcript)},
 		},
 	}

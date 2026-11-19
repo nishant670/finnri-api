@@ -566,14 +566,16 @@ func TestCheckAllowanceDeniesGuestForNonGuestAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowance, err := service.CheckAllowance(SubjectForGuestHash(grant.GuestDeviceIDHash), ai.ActionTransactionParseVoiceMedium)
+	// Longer voice reads opened to guests with spoken-day batches (P106), so
+	// statement import is the sign-in-only action this checks.
+	allowance, err := service.CheckAllowance(SubjectForGuestHash(grant.GuestDeviceIDHash), ai.ActionFutureAIStatementImport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if allowance.Allowed || allowance.Reason != AllowanceGuestNotAllowed {
 		t.Fatalf("expected guest-not-allowed denial, got %#v", allowance)
 	}
-	if allowance.RequiredCredits != 18 || allowance.DailyLimit != 0 || allowance.AvailableCredits != 0 {
+	if allowance.RequiredCredits != 100 || allowance.DailyLimit != 0 || allowance.AvailableCredits != 0 {
 		t.Fatalf("guest-not-allowed should stop before limit/balance lookups, got %#v", allowance)
 	}
 }
