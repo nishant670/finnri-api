@@ -148,6 +148,10 @@ func TestAdminTrialsListsWhoToOfferCreditsTo(t *testing.T) {
 	})
 	trial(guest, 25*day, 5*day, 120)
 	guestID := guest.ID
+	deviceOnlyRead := models.AIUsageEvent{GuestDeviceIDHash: billing.HashUsageKey("guest-device"), RequestID: generateUUID(), ActionCode: "transaction_parse_text", InputKind: "text", Status: "succeeded", EstimatedCredits: 5, FinalCredits: 5, StartedAt: now.Add(-2 * time.Hour)}
+	if err := database.DB.Create(&deviceOnlyRead).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := database.DB.Create(&models.AIUsageLimitEvent{UserID: &guestID, ActionCode: "transaction_parse_receipt", Reason: "insufficient_ai_credits", CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +189,7 @@ func TestAdminTrialsListsWhoToOfferCreditsTo(t *testing.T) {
 		t.Fatalf("ended active: %v", got)
 	}
 	limited := performJSONRequest[trials](t, router, http.MethodGet, "/v1/admin/trials?status=credit_limit", viewerToken, nil, http.StatusOK)
-	if got := names(limited.Users); len(got) != 1 || got[0] != "guest" || limited.Users[0].CreditLimitHits != 1 {
+	if got := names(limited.Users); len(got) != 1 || got[0] != "guest" || limited.Users[0].CreditLimitHits != 1 || limited.Users[0].AIReads != 1 {
 		t.Fatalf("credit limit: %#v", limited.Users)
 	}
 	withTest := performJSONRequest[trials](t, router, http.MethodGet, "/v1/admin/trials?status=ending_soon&include_test=true", viewerToken, nil, http.StatusOK)

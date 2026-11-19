@@ -326,6 +326,30 @@ func buildTrialRows(now time.Time, days int, includeTest bool) ([]adminTrialRow,
 	}
 	entries := countBy(&models.Entry{}, "")
 	aiReads := countBy(&models.AIUsageEvent{}, "status = ?", "succeeded")
+	// A guest's AI read can be logged by device hash only, with no user id.
+	guestOfHash := map[string]uint{}
+	for _, user := range users {
+		if user.IsGuest && user.DeviceID != nil && strings.TrimSpace(*user.DeviceID) != "" {
+			guestOfHash[billing.HashUsageKey(*user.DeviceID)] = user.ID
+		}
+	}
+	hashes := make([]string, 0, len(guestOfHash))
+	for hash := range guestOfHash {
+		hashes = append(hashes, hash)
+	}
+	for start := 0; start < len(hashes); start += 1000 {
+		end := min(start+1000, len(hashes))
+		var hashRows []struct {
+			GuestDeviceIDHash string
+			Total             int64
+		}
+		_ = database.DB.Model(&models.AIUsageEvent{}).Select("guest_device_id_hash, COUNT(*) AS total").
+			Where("user_id IS NULL AND status = ? AND guest_device_id_hash IN ?", "succeeded", hashes[start:end]).
+			Group("guest_device_id_hash").Scan(&hashRows).Error
+		for _, row := range hashRows {
+			aiReads[guestOfHash[row.GuestDeviceIDHash]] += row.Total
+		}
+	}
 	push := countBy(&models.PushDevice{}, "active = ?", true)
 	limitHits := countBy(&models.AIUsageLimitEvent{}, "created_at >= ?", now.Add(-trialCreditLimitWindow))
 	lastLimit := map[uint]time.Time{}
