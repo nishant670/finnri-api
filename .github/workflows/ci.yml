@@ -1,0 +1,41 @@
+name: CI
+
+# Runs on every pull request and on the two long-lived branches. Nothing here
+# deploys: Railway does that from the branch itself. This only answers "does it
+# build, vet and pass its tests" before a merge rather than after one.
+on:
+  pull_request:
+  push:
+    branches: [main, testing/receipts-and-statements]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Format
+        # insights_overview.go predates this check; take it off the list once
+        # it has been formatted in a change of its own.
+        run: |
+          unformatted=$(gofmt -l cmd internal | grep -v '^internal/http/insights_overview.go$' || true)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needs to be run on:"; echo "$unformatted"; exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      # The tests use an in-memory SQLite database, so no Postgres service.
+      - name: Test
+        run: go test ./...
