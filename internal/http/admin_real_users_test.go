@@ -146,7 +146,7 @@ func TestAdminTrialsListsWhoToOfferCreditsTo(t *testing.T) {
 	})
 	trial(guest, 25*day, 5*day, 120)
 	guestID := guest.ID
-	if err := database.DB.Create(&models.AIUsageLimitEvent{UserID: &guestID, ActionCode: "transaction_parse_receipt", Reason: "insufficient_credits", CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+	if err := database.DB.Create(&models.AIUsageLimitEvent{UserID: &guestID, ActionCode: "transaction_parse_receipt", Reason: "insufficient_ai_credits", CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
 
