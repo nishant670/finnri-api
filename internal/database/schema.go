@@ -58,6 +58,7 @@ func Migrate() error {
 		&models.Payment{},
 		&models.PaymentRefund{},
 		&models.PaymentWebhookEvent{},
+		&models.ProductEvent{},
 	); err != nil {
 		return err
 	}
