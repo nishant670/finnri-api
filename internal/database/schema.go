@@ -249,6 +249,11 @@ func runtimeSchemaStatements() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_guest_device_id
 			ON users (device_id)
 			WHERE device_id IS NOT NULL AND is_guest = TRUE`,
+		// See migrations/0074_add_guest_secret_hash.sql. AutoMigrate adds the
+		// column; one secret opens one guest, so the hash is unique where set.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_guest_secret_hash
+			ON users (guest_secret_hash)
+			WHERE guest_secret_hash <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_users_login_locked_until
 			ON users (login_locked_until)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_subject
