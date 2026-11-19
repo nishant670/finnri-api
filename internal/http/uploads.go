@@ -305,6 +305,12 @@ func safeUploadName(raw string) (string, bool) {
 // entry carries it, but a split group's photo is a property of the group and is
 // drawn by every member — so gating uploads on ownership alone turned every
 // group photo into a broken image, including for the member who chose it.
+//
+// Each check narrows in SQL to rows that mention this filename and then
+// compares exactly in Go. `name` has already passed safeUploadName — 32 hex
+// characters and a known extension — so it carries no LIKE wildcards. Before
+// this, every image request loaded all of a user's attachments, and every
+// group photo in the database, to find one.
 func userCanReadUpload(userID uint, name string) bool {
 	return userOwnsEntryUpload(userID, name) || userCanReadSplitBillReceipt(userID, name) || userCanReadSplitGroupPhoto(userID, name)
 }
@@ -312,7 +318,7 @@ func userCanReadUpload(userID uint, name string) bool {
 func userOwnsEntryUpload(userID uint, name string) bool {
 	var attachments []string
 	if err := database.DB.Model(&models.Entry{}).
-		Where("user_id = ? AND attachment <> ?", userID, "").
+		Where("user_id = ? AND attachment LIKE ?", userID, "%"+name+"%").
 		Pluck("attachment", &attachments).Error; err != nil && err != gorm.ErrRecordNotFound {
 		return false
 	}
@@ -330,7 +336,7 @@ func userOwnsEntryUpload(userID uint, name string) bool {
 func userCanReadSplitGroupPhoto(userID uint, name string) bool {
 	var groups []models.SplitGroup
 	if err := database.DB.
-		Where("photo_url <> ?", "").
+		Where("photo_url LIKE ?", "%"+name+"%").
 		Find(&groups).Error; err != nil && err != gorm.ErrRecordNotFound {
 		return false
 	}
@@ -353,7 +359,7 @@ func userCanReadSplitBillReceipt(userID uint, name string) bool {
 	if err != nil {
 		return false
 	}
-	query := database.DB.Model(&models.SplitBill{}).Where("attachment <> ?", "")
+	query := database.DB.Model(&models.SplitBill{}).Where("attachment LIKE ?", "%"+name+"%")
 	if len(groupIDs) > 0 {
 		query = query.Where("(user_id = ? AND group_id IS NULL) OR group_id IN ?", userID, groupIDs)
 	} else {

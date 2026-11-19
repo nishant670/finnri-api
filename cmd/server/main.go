@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"finnri/internal/config"
@@ -36,11 +41,46 @@ func main() {
 	httpserver.StartCardStatementAutomation(cfg)
 	httpserver.StartMonthlyReviewJob(cfg)
 	r := httpserver.NewServer(cfg)
-	log.Printf("listening on :%s", cfg.Port)
-	if err := r.Run(":" + cfg.Port); err != nil {
+	// No WriteTimeout: AI reads and uploads are bounded by their own
+	// per-request deadlines, and a blanket one would cut the slow ones short.
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	// A deploy sends SIGTERM to the old container. `r.Run` died with it, so
+	// whatever was in flight — an AI read that had already reserved credits, a
+	// receipt half written — was cut off mid-request. Now the listener closes
+	// first and requests already accepted get shutdownGrace to finish.
+	stop, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	failed := make(chan error, 1)
+	go func() {
+		log.Printf("listening on :%s", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			failed <- err
+		}
+	}()
+
+	select {
+	case err := <-failed:
 		log.Fatal(err)
+	case <-stop.Done():
+	}
+	log.Printf("shutdown signal received; finishing in-flight requests")
+	ctx, done := context.WithTimeout(context.Background(), shutdownGrace)
+	defer done()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("shutdown did not finish cleanly within %s: %v", shutdownGrace, err)
 	}
 }
+
+// shutdownGrace is how long accepted requests get to finish after SIGTERM. It
+// sits under the request timeout's default of 30 seconds and well inside the
+// window a platform allows before it kills the container.
+const shutdownGrace = 20 * time.Second
 
 func loadEnv() {
 	loadEnvFile(".env")
