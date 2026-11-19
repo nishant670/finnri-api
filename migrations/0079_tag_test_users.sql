@@ -20,7 +20,6 @@ FROM (VALUES
     (2, TIMESTAMPTZ '2026-08-15 22:50:05+00', 'internal'),
     (3, TIMESTAMPTZ '2026-08-16 06:02:47+00', 'internal'),
     (4, TIMESTAMPTZ '2026-08-16 22:16:08+00', 'internal'),
-    (5, TIMESTAMPTZ '2026-08-17 08:26:16+00', 'internal'),
     (6, TIMESTAMPTZ '2026-08-18 12:16:08+00', 'internal'),
     (8, TIMESTAMPTZ '2026-08-18 20:02:10+00', 'internal'),
     (9, TIMESTAMPTZ '2026-08-18 22:07:11+00', 'internal'),

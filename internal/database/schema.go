@@ -1874,8 +1874,9 @@ func runtimeSchemaStatements() []string {
 		// The one-time half: production's accounts from before the flag existed,
 		// found on 2026-11-19. test_lab rows are guests that appeared within 14
 		// hours of a production build upload and never returned past that day;
-		// internal rows are the owner's and family's accounts and guests from
-		// before the first Play build or from the owner's own reinstall bursts.
+		// internal rows are the owner's secondary accounts (the owner's main
+		// account stays real) and guests from before the first Play build or
+		// from the owner's own reinstall bursts.
 		// Each row matches on id AND its creation second, so on any database
 		// other than production (staging, a fresh one) nothing matches. Guarded
 		// so an admin who later un-flags an account is not overruled on deploy.
@@ -1889,7 +1890,6 @@ func runtimeSchemaStatements() []string {
 				(2, TIMESTAMPTZ '2026-08-15 22:50:05+00', 'internal'),
 				(3, TIMESTAMPTZ '2026-08-16 06:02:47+00', 'internal'),
 				(4, TIMESTAMPTZ '2026-08-16 22:16:08+00', 'internal'),
-				(5, TIMESTAMPTZ '2026-08-17 08:26:16+00', 'internal'),
 				(6, TIMESTAMPTZ '2026-08-18 12:16:08+00', 'internal'),
 				(8, TIMESTAMPTZ '2026-08-18 20:02:10+00', 'internal'),
 				(9, TIMESTAMPTZ '2026-08-18 22:07:11+00', 'internal'),
