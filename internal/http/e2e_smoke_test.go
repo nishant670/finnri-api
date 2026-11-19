@@ -183,6 +183,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.GET("/users/:id/activity", server.getAdminUserActivity)
 	admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), server.createUserCreditAdjustment)
 	admin.PATCH("/users/:id/test", requireAdminRole(models.AdminRoleSupport), server.updateAdminUserTest)
+	admin.POST("/gifts/bulk", requireAdminRole(models.AdminRoleSupport), server.createAdminBulkGift)
 	admin.GET("/trials", server.listAdminTrials)
 	admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), server.createAdminGiftPass)
 	admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), server.revokeAdminGiftPass)
