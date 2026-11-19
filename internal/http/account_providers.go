@@ -141,4 +141,5 @@ func hydrateAccountProvider(account *models.Account) {
 	if account.Identifier == "" {
 		account.Identifier = accountDisplayIdentifier(*account)
 	}
+	hydrateCardProduct(account)
 }

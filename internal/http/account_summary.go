@@ -61,6 +61,9 @@ type accountSummary struct {
 
 	// Credit cards with at least one priced statement. The bill to pay.
 	CurrentStatement *currentStatementSummary `json:"current_statement,omitempty"`
+	// Credit cards: bills paid in full in a row, newest first. Zero when the
+	// last bill was not, or there is no bill yet.
+	PaidInFullStreak int `json:"paid_in_full_streak,omitempty"`
 
 	// Credit cards with an annual fee and a fee month. How this card year's
 	// spend stands against the waiver. See card_annual_fee.go.
@@ -207,6 +210,7 @@ func summariseAccount(account models.Account, totals accountLedgerTotals, statem
 			current := summariseCurrentStatement(*statement.Latest, today)
 			summary.CurrentStatement = &current
 		}
+		summary.PaidInFullStreak = paidInFullStreak(statement.History, today)
 		return summary
 	}
 
