@@ -501,7 +501,18 @@ func TestTheLastOwnerCannotBeRemoved(t *testing.T) {
 func TestActivationFunnelStepsCountTheRightUsers(t *testing.T) {
 	useSmokeDatabase(t)
 	router := smokeRouter(t)
-	_, ownerToken := createAdminSessionForTest(t, models.AdminRoleOwner)
+	owner, ownerToken := createAdminSessionForTest(t, models.AdminRoleOwner)
+	// The admin asking is a user too, created a moment ago and so inside the
+	// default thirty-day cohort. This passed only on a machine east of UTC:
+	// SQLite compares timestamps as text, and a local "07:27+05:30" sorted
+	// after the UTC window end "01:57", which dropped the owner by accident. On
+	// a UTC machine — CI — the owner counted and the cohort was six. Put them
+	// outside the window on purpose, so the five seeded below are the cohort
+	// wherever this runs.
+	if err := database.DB.Model(&models.User{}).Where("id = ?", owner.ID).
+		UpdateColumn("created_at", time.Now().UTC().Add(-90*24*time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	signup := time.Now().UTC().Add(-20 * 24 * time.Hour)
 	newUser := func(name string) models.User {
