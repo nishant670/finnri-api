@@ -29,10 +29,13 @@ type User struct {
 	// only changes what the admin console counts; the account works as usual.
 	IsTest       bool       `gorm:"not null;default:false;index" json:"-"`
 	TestReason   string     `gorm:"type:varchar(16);not null;default:''" json:"-"`
-	TestMarkedAt *time.Time `json:"-"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	HasPin       bool       `gorm:"-" json:"has_pin"`
+	TestMarkedAt *time.Time `json:"-"` // when the flag was last set or cleared
+	// SignupPlatform is where the account was made: android, ios or web.
+	// Empty for accounts made before it was recorded (2026-11).
+	SignupPlatform string    `gorm:"type:varchar(16);not null;default:''" json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	HasPin         bool      `gorm:"-" json:"has_pin"`
 }
 
 func (user *User) BeforeSave(_ *gorm.DB) error {
