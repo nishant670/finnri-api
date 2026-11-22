@@ -203,9 +203,28 @@ func activeAIFailureCooldown(subject billing.CreditSubject, cfg *config.Config) 
 	} else {
 		query = query.Where("guest_device_id_hash = ?", strings.TrimSpace(subject.GuestDeviceIDHash))
 	}
-	var failures int64
-	if err := query.Count(&failures).Error; err != nil {
+	// A multi-bill scan's failed reads count at a third (P95): three blurry
+	// photos in one run are one bad attempt, not three. Reads made on their own
+	// still count one each. See receiptBatchFailureWeight and the batch cap in
+	// receipt_batch.go.
+	var single int64
+	if err := query.Session(&gorm.Session{}).Where("batch_id = ''").Count(&single).Error; err != nil {
 		return false, time.Time{}, 0, err
+	}
+	var perBatch []struct {
+		BatchID  string
+		Failures int64
+	}
+	if err := query.Session(&gorm.Session{}).
+		Where("batch_id <> ''").
+		Select("batch_id, COUNT(*) AS failures").
+		Group("batch_id").
+		Scan(&perBatch).Error; err != nil {
+		return false, time.Time{}, 0, err
+	}
+	failures := single
+	for _, batch := range perBatch {
+		failures += receiptBatchFailureWeight(batch.Failures)
 	}
 	if failures < int64(cfg.AIFailedParseCooldownThreshold) {
 		return false, time.Time{}, failures, nil

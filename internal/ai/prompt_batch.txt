@@ -1,0 +1,26 @@
+
+
+MANY TRANSACTIONS IN ONE TEXT (this section applies to this request only).
+
+People often say their whole day in one go: "in the morning breakfast 180 on UPI, then auto 60, lunch 450 on my HDFC card, evening samosa 40 cash, at night Swiggy 380 and Rahul sent back 500". When the text reports MORE THAN ONE payment, return a batch instead of a single capture:
+
+{"stage":"batch","intent":"capture","items":[<capture>, <capture>, ...]}  (add "over_cap_text" only when past 10)
+
+- Each item is an object in the CAPTURE SCHEMA above (lean, see below), plus two extra keys:
+  - "time_slot": "morning" | "afternoon" | "evening" | "night" | null — the part of the day the item happened in. Breakfast and "subah" mean morning; lunch and "dopahar" mean afternoon; snacks, tea-time and "shaam" mean evening; dinner and "raat" mean night. An item with no cue of its own takes the slot of the item before it. null when the text gives no time of day at all.
+  - "mode_carried": true when the item's "mode" (or account) was not said for this item but carried over from an earlier one; false otherwise.
+- "time" stays null unless a clock time was said for that item ("at 4", "around 7:30 pm"). Never invent a time from a slot; the app sets slot times itself.
+- "source_text" of each item is the exact words of the text that describe that item, copied verbatim (no paraphrase), so the app can highlight them.
+- ONE ITEM PER PAYMENT, never one per word. "Lunch with the team 450, I paid" is one item. "Chai and samosa 40" is one item (one amount). "Pizza 400 and coke 60 at Dominos" is two items.
+- SAID ONCE, CARRIES FORWARD. A payment mode, card or account, a date ("yesterday", "on Sunday") or an event said for one item applies to every LATER item until another one is said. It never applies to items said BEFORE it, except when the text says it covers everything ("all on UPI", "sab cash mein", "everything on my card"), which applies to every item. An item before the first stated mode gets "mode": null with needs_confirmation.mode=true.
+- CORRECTIONS. "Lunch 400, no wait, 450" is ONE item for 450. "Remove the auto" or "not the auto" drops that item. Never return both the wrong and the corrected item.
+- Income in the middle of a list ("got 500 back from Rahul", "salary came") is an income item in its place in the list. A carried payment mode never applies to income: income keeps its own mode, or null with needs_confirmation.mode=true, and a card is never an income mode.
+- Repeats are real. "Auto 60 to office and auto 60 back" is two items.
+- Keep the items in the order they were said.
+- AT MOST 10 ITEMS. If the text reports more than 10 payments, return the first 10 and copy the words of the rest, verbatim, into "over_cap_text".
+- KEEP EACH ITEM LEAN — ten items must come back fast. In an item, leave out every key whose value would be null, false, "", [] or {}: the server fills them in. Always include "type", "title", "amount", "category", "source_text", "time_slot" and "mode_carried", plus "mode", "date" and "account_hint" when known. Put a field in "confidence" only when it is below 0.9 and in "needs_confirmation" only when true; leave "clarifications" out unless something truly needs asking. "note" stays out.
+
+When the text reports exactly ONE payment, or asks a question, ignore this section and return the single object exactly as above.
+
+Batch example, "morning breakfast at CCD 180 on UPI then auto 60, lunch with team 450 on HDFC card, and Rahul sent back 500" (Today is 2026-11-18):
+{"stage":"batch","intent":"capture","items":[{"type":"expense","title":"Breakfast","amount":180,"mode":"UPI","category":"Food & Drinks","merchant":"CCD","purpose_type":"normal_spend","time_slot":"morning","mode_carried":false,"source_text":"breakfast at CCD 180 on UPI"},{"type":"expense","title":"Auto","amount":60,"mode":"UPI","category":"Transport","purpose_type":"normal_spend","time_slot":"morning","mode_carried":true,"source_text":"auto 60"},{"type":"expense","title":"Lunch with team","amount":450,"mode":"Credit Card","account_hint":"HDFC","category":"Food & Drinks","purpose_type":"normal_spend","time_slot":"afternoon","mode_carried":false,"source_text":"lunch with team 450 on HDFC card"},{"type":"income","title":"From Rahul","amount":500,"category":"Other","time_slot":"afternoon","mode_carried":false,"source_text":"Rahul sent back 500","needs_confirmation":{"mode":true},"clarifications":["How did Rahul send the 500?"]}]}

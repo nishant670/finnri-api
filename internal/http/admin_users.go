@@ -31,6 +31,8 @@ type adminUserListItem struct {
 	EntriesCount            int64      `json:"entries_count"`
 	AICreditsUsed           int        `json:"ai_credits_used"`
 	LifetimeAICostUSDMicros int64      `json:"lifetime_ai_cost_usd_micros"`
+	IsTest                  bool       `json:"is_test"`
+	TestReason              string     `json:"test_reason,omitempty"`
 }
 
 func (s *Server) getAdminOverview(c *gin.Context) {
@@ -40,44 +42,49 @@ func (s *Server) getAdminOverview(c *gin.Context) {
 	}
 	window := end.Sub(start)
 	previousStart := start.Add(-window)
+	includeTest := adminIncludeTest(c)
 
-	total, registered, guests := userCounts()
-	newUsers := countUsersCreated(start, end)
-	previousNew := countUsersCreated(previousStart, start)
-	active := activeUserIDs(start, end)
-	dau := len(activeUserIDs(end.Add(-24*time.Hour), end))
-	wau := len(activeUserIDs(end.Add(-7*24*time.Hour), end))
-	mau := len(activeUserIDs(end.Add(-30*24*time.Hour), end))
+	total, registered, guests := userCounts(includeTest)
+	newUsers := countUsersCreated(start, end, includeTest)
+	previousNew := countUsersCreated(previousStart, start, includeTest)
+	active := activeUserIDs(start, end, includeTest)
+	dau := len(activeUserIDs(end.Add(-24*time.Hour), end, includeTest))
+	wau := len(activeUserIDs(end.Add(-7*24*time.Hour), end, includeTest))
+	mau := len(activeUserIDs(end.Add(-30*24*time.Hour), end, includeTest))
 	activated := int64(0)
-	_ = database.DB.Model(&models.User{}).Where("is_guest = ? AND EXISTS (SELECT 1 FROM entries WHERE entries.user_id = users.id)", false).Count(&activated).Error
+	_ = realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("is_guest = ? AND EXISTS (SELECT 1 FROM entries WHERE entries.user_id = users.id)", false).Count(&activated).Error
 	activationRate := ratio(float64(activated), float64(registered))
 
 	revenue := buildRevenueSnapshot(start, end)
+	// AI totals count everyone: robots and test accounts still cost money.
 	ai, _ := billing.BuildAIMetrics(database.DB, start, end, s.aiAlertConfig())
+	aiSplit, _ := aiUsageByUserType(start, end)
 	var openFeedback int64
 	_ = database.DB.Model(&models.Feedback{}).Where("status IN ?", []string{"new", "triaged", "planned"}).Count(&openFeedback).Error
 
 	c.JSON(http.StatusOK, gin.H{
 		"window":          gin.H{"start": start, "end": end},
-		"users":           gin.H{"total": total, "registered": registered, "guests": guests, "new": newUsers, "new_delta_percent": percentDelta(float64(newUsers), float64(previousNew))},
+		"users":           gin.H{"total": total, "registered": registered, "guests": guests, "new": newUsers, "new_delta_percent": percentDelta(float64(newUsers), float64(previousNew)), "test": countTestUsers(), "include_test": includeTest},
 		"activation_rate": activationRate,
 		"engagement":      gin.H{"active_in_window": len(active), "dau": dau, "wau": wau, "mau": mau, "stickiness": ratio(float64(dau), float64(mau))},
 		"subscriptions":   gin.H{"active": revenue.ActiveSubscribers, "modelled_mrr_minor": revenue.MRRMinor, "basis": revenue.Basis},
-		"ai":              gin.H{"events": ai.TotalEvents, "credits_used": ai.TotalCreditsCharged, "estimated_cost_usd_micros": ai.EstimatedCostUSDMicros, "actual_cost_usd_micros": ai.ActualCostUSDMicros, "alerts": ai.Alerts},
+		"ai":              gin.H{"events": ai.TotalEvents, "credits_used": ai.TotalCreditsCharged, "estimated_cost_usd_micros": ai.EstimatedCostUSDMicros, "actual_cost_usd_micros": ai.ActualCostUSDMicros, "alerts": ai.Alerts, "by_user_type": aiSplit},
 		"open_feedback":   openFeedback,
 	})
 }
 
-func userCounts() (total, registered, guests int64) {
-	_ = database.DB.Model(&models.User{}).Count(&total).Error
-	_ = database.DB.Model(&models.User{}).Where("is_guest = ?", false).Count(&registered).Error
+// userCounts counts real customers unless includeTest also asks for test
+// accounts.
+func userCounts(includeTest bool) (total, registered, guests int64) {
+	_ = realUsersOnly(database.DB.Model(&models.User{}), includeTest).Count(&total).Error
+	_ = realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("is_guest = ?", false).Count(&registered).Error
 	guests = total - registered
 	return
 }
 
-func countUsersCreated(start, end time.Time) int64 {
+func countUsersCreated(start, end time.Time, includeTest bool) int64 {
 	var count int64
-	_ = database.DB.Model(&models.User{}).Where("created_at >= ? AND created_at < ?", start, end).Count(&count).Error
+	_ = realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("created_at >= ? AND created_at < ?", start, end).Count(&count).Error
 	return count
 }
 
@@ -98,20 +105,22 @@ func percentDelta(current, previous float64) float64 {
 	return math.Round(((current-previous)/previous)*1000) / 10
 }
 
-func activeUserIDs(start, end time.Time) map[uint]struct{} {
+func activeUserIDs(start, end time.Time, includeTest bool) map[uint]struct{} {
 	ids := map[uint]struct{}{}
 	var values []uint
-	_ = database.DB.Model(&models.Entry{}).Distinct("user_id").Where("created_at >= ? AND created_at < ?", start, end).Pluck("user_id", &values).Error
+	_ = realUserRows(database.DB.Model(&models.Entry{}), "user_id", includeTest).Distinct("user_id").Where("created_at >= ? AND created_at < ?", start, end).Pluck("user_id", &values).Error
 	for _, id := range values {
 		ids[id] = struct{}{}
 	}
 	values = nil
-	_ = database.DB.Model(&models.AuthSession{}).Distinct("user_id").Where("created_at >= ? AND created_at < ?", start, end).Pluck("user_id", &values).Error
+	// Signing in to the admin console is not using the app, so admin sessions
+	// never make someone active.
+	_ = realUserRows(database.DB.Model(&models.AuthSession{}), "user_id", includeTest).Distinct("user_id").Where("kind <> ? AND created_at >= ? AND created_at < ?", adminSessionKind, start, end).Pluck("user_id", &values).Error
 	for _, id := range values {
 		ids[id] = struct{}{}
 	}
 	values = nil
-	_ = database.DB.Model(&models.AIUsageEvent{}).Distinct("user_id").Where("user_id IS NOT NULL AND started_at >= ? AND started_at < ?", start, end).Pluck("user_id", &values).Error
+	_ = realUserRows(database.DB.Model(&models.AIUsageEvent{}), "user_id", includeTest).Distinct("user_id").Where("user_id IS NOT NULL AND started_at >= ? AND started_at < ?", start, end).Pluck("user_id", &values).Error
 	for _, id := range values {
 		ids[id] = struct{}{}
 	}
@@ -121,7 +130,15 @@ func activeUserIDs(start, end time.Time) map[uint]struct{} {
 func (s *Server) listAdminUsers(c *gin.Context) {
 	page, pageSize := parseBillingPagination(c.Query("page"), c.Query("page_size"))
 	query := database.DB.Model(&models.User{})
-	if q := strings.TrimSpace(c.Query("q")); q != "" {
+	// A search by name, email or id finds the account even when it is a test
+	// one, so an admin can look it up and un-flag it.
+	q := strings.TrimSpace(c.Query("q"))
+	if c.Query("type") == "test" {
+		query = query.Where("is_test = ?", true)
+	} else if q == "" {
+		query = realUsersOnly(query, adminIncludeTest(c))
+	}
+	if q != "" {
 		like := "%" + strings.ToLower(q) + "%"
 		if id, err := strconv.ParseUint(q, 10, 64); err == nil {
 			query = query.Where("id = ? OR LOWER(username) LIKE ? OR LOWER(COALESCE(email, '')) LIKE ? OR LOWER(COALESCE(phone, '')) LIKE ?", id, like, like, like)
@@ -252,6 +269,8 @@ func adminUserSummaries(users []models.User) []adminUserListItem {
 			EntriesCount:            entries[user.ID],
 			AICreditsUsed:           int(aiCredits[user.ID]),
 			LifetimeAICostUSDMicros: aiCost[user.ID],
+			IsTest:                  user.IsTest,
+			TestReason:              user.TestReason,
 		})
 	}
 	return items
@@ -279,7 +298,7 @@ func (s *Server) getAdminUser(c *gin.Context) {
 	}
 	summary := adminUserSummary(user)
 	admin := currentAdmin(c)
-	identity := gin.H{"id": user.ID, "uuid": user.UUID, "username": user.Username, "is_guest": user.IsGuest, "created_at": user.CreatedAt, "last_active_at": user.LastActiveAt, "converted_at": user.ConvertedAt, "email": summary.Email, "phone": summary.Phone}
+	identity := gin.H{"id": user.ID, "uuid": user.UUID, "username": user.Username, "is_guest": user.IsGuest, "created_at": user.CreatedAt, "last_active_at": user.LastActiveAt, "converted_at": user.ConvertedAt, "email": summary.Email, "phone": summary.Phone, "is_test": user.IsTest, "test_reason": user.TestReason, "test_marked_at": user.TestMarkedAt}
 	if admin != nil && adminRoleRank(admin.Role) >= adminRoleRank(models.AdminRoleSupport) {
 		identity["email"] = user.Email
 		identity["phone"] = user.Phone
@@ -440,7 +459,19 @@ func (s *Server) createUserCreditAdjustment(c *gin.Context) {
 		}
 		expires = &parsed
 	}
-	grant, created, err := billing.NewCreditService(database.DB).GrantManualAdjustment(billing.SubjectForUser(id), input.Credits, input.ReasonCode, parseIdempotencyHeader(c), expires)
+	var user models.User
+	if err := database.DB.First(&user, id).Error; err != nil {
+		c.JSON(404, gin.H{"error": "user_not_found"})
+		return
+	}
+	// A guest's credits live on its device; granted to the user id they would
+	// never show up in the guest's app.
+	subject, ok := creditSubjectForUser(user)
+	if !ok {
+		c.JSON(422, gin.H{"error": "guest_without_device", "message": "This guest has no device to hold credits."})
+		return
+	}
+	grant, created, err := billing.NewCreditService(database.DB).GrantManualAdjustment(subject, input.Credits, input.ReasonCode, parseIdempotencyHeader(c), expires)
 	if err != nil {
 		c.JSON(422, gin.H{"error": "failed_create_credit_adjustment", "message": err.Error()})
 		return

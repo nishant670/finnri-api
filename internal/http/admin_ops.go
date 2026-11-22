@@ -68,7 +68,7 @@ func (s *Server) exportAdminCSV(c *gin.Context) {
 	defer writer.Flush()
 	switch resource {
 	case "users":
-		_ = writer.Write([]string{"id", "username", "email_masked", "phone_masked", "is_guest", "created_at", "last_active_at"})
+		_ = writer.Write([]string{"id", "username", "email_masked", "phone_masked", "is_guest", "created_at", "last_active_at", "is_test", "test_reason"})
 		var rows []models.User
 		if database.DB.Order("id ASC").Limit(10000).Find(&rows).Error != nil {
 			c.JSON(500, gin.H{"error": "failed_export_users"})
@@ -79,7 +79,7 @@ func (s *Server) exportAdminCSV(c *gin.Context) {
 			if row.LastActiveAt != nil {
 				last = row.LastActiveAt.UTC().Format(time.RFC3339)
 			}
-			_ = writer.Write([]string{strconv.Itoa(int(row.ID)), row.Username, maskEmail(ptrString(row.Email)), maskPhone(ptrString(row.Phone)), strconv.FormatBool(row.IsGuest), row.CreatedAt.UTC().Format(time.RFC3339), last})
+			_ = writer.Write([]string{strconv.Itoa(int(row.ID)), row.Username, maskEmail(ptrString(row.Email)), maskPhone(ptrString(row.Phone)), strconv.FormatBool(row.IsGuest), row.CreatedAt.UTC().Format(time.RFC3339), last, strconv.FormatBool(row.IsTest), row.TestReason})
 		}
 	case "subscriptions":
 		_ = writer.Write([]string{"id", "user_id", "plan", "status", "period_start", "period_end", "cancel_at_period_end"})

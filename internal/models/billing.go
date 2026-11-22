@@ -106,6 +106,9 @@ type AIUsageEvent struct {
 	ResponseBytes          *int   `json:"response_bytes,omitempty"`
 	ErrorCode              string `gorm:"type:varchar(80);index;not null;default:''" json:"error_code,omitempty"`
 	Intent                 string `gorm:"type:varchar(16);not null;default:''" json:"intent,omitempty"`
+	// BatchID ties together the bill reads of one "scan several bills" run
+	// (P95, migration 0077). Empty for every read made on its own.
+	BatchID string `gorm:"type:varchar(64);not null;default:''" json:"batch_id,omitempty"`
 	// EntryID is the entry saved from this read's draft, when there is one (P57).
 	EntryID           *uint      `gorm:"index" json:"entry_id,omitempty"`
 	StartedAt         time.Time  `gorm:"index;not null" json:"started_at"`

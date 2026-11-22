@@ -102,68 +102,13 @@ func (s *Server) createAdminGiftPass(c *gin.Context) {
 	if key == "" {
 		key = generateUUID()
 	}
-	periodIDs := make([]string, input.Periods)
-	for index := range periodIDs {
-		periodIDs[index] = fmt.Sprintf("gift:%s:%d", key, index+1)
-	}
-
-	now := time.Now().UTC()
-	var subscriptions []models.UserSubscription
-	created := false
-	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("user_id = ? AND provider = ? AND provider_subscription_id IN ?", user.ID, giftPassProvider, periodIDs).
-			Order("current_period_start ASC").
-			Find(&subscriptions).Error; err != nil {
-			return err
-		}
-		if len(subscriptions) > 0 {
-			return nil
-		}
-
-		start, err := nextPassPeriodStart(tx, user.ID, now)
-		if err != nil {
-			return err
-		}
-		for _, periodID := range periodIDs {
-			subscription := models.UserSubscription{
-				UserID:                 user.ID,
-				PlanID:                 plan.ID,
-				Status:                 "active",
-				CurrentPeriodStart:     start,
-				CurrentPeriodEnd:       start.Add(period),
-				Provider:               giftPassProvider,
-				ProviderSubscriptionID: periodID,
-				CancelAtPeriodEnd:      true,
-			}
-			if err := tx.Create(&subscription).Error; err != nil {
-				return err
-			}
-			subscriptions = append(subscriptions, subscription)
-			start = subscription.CurrentPeriodEnd
-		}
-		created = true
-		return nil
-	})
-	if err != nil {
+	subscriptions, created, err := giftPassTo(user, plan, period, input.Periods, key, nil)
+	if errors.Is(err, errGiftPassCredits) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_grant_gift_pass_credits"})
+		return
+	} else if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_gift_pass"})
 		return
-	}
-
-	// Credits are granted after the rows commit, as on a purchase. The grants
-	// are idempotent per period, so a replay re-runs this to finish whatever a
-	// failed first attempt left undone.
-	service := billing.NewCreditService(database.DB)
-	for index := range subscriptions {
-		subscriptions[index].Plan = plan
-		if err := grantCreditsForSubscription(service, subscriptions[index], plan, now); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_grant_gift_pass_credits"})
-			return
-		}
-	}
-
-	// Only a new gift is announced; a replayed request already was.
-	if created {
-		notifyGiftedPass(user.ID, plan, subscriptions, now)
 	}
 
 	subscriptionIDs := make([]uint, 0, len(subscriptions))
@@ -303,11 +248,14 @@ const giftPassActionURL = "/billing"
 // pass is simply active the next time they look, or, if it is queued behind
 // one they already have, nothing visible changes for days. A failure here
 // is logged rather than returned — the gift itself has already been given.
-func notifyGiftedPass(userID uint, plan models.Plan, periods []models.UserSubscription, now time.Time) {
+func notifyGiftedPass(userID uint, plan models.Plan, periods []models.UserSubscription, now time.Time, message *giftMessage) {
 	if len(periods) == 0 {
 		return
 	}
 	title, body := giftPassNotificationCopy(plan, periods, now)
+	if message != nil {
+		title, body = message.Title, message.Body
+	}
 	if err := createNotification(userID, giftPassNotificationType, title, body, giftPassActionURL); err != nil {
 		log.Printf("[WARN] gift pass notification failed user=%d: %v", userID, err)
 	}
@@ -337,4 +285,82 @@ func giftPassNotificationCopy(plan models.Plan, periods []models.UserSubscriptio
 			kind, start.In(location).Format("2 Jan"), until, perks)
 	}
 	return title, fmt.Sprintf("A %s is yours until %s: %s.", kind, until, perks)
+}
+
+var errGiftPassCredits = errors.New("gift pass credits not granted")
+
+// giftMessage replaces the default gift notification, for a gift with an
+// occasion behind it ("Happy Diwali — a free week on us").
+type giftMessage struct {
+	Title string
+	Body  string
+}
+
+// giftPassTo gives a registered user periods of a plan for free, queued behind
+// any pass they have, grants the plan's credits and tells them. key makes it
+// idempotent: the same key never gifts twice, and a replay finishes whatever a
+// failed first attempt left undone. created is false on a replay.
+func giftPassTo(user models.User, plan models.Plan, period time.Duration, periods int, key string, message *giftMessage) ([]models.UserSubscription, bool, error) {
+	periodIDs := make([]string, periods)
+	for index := range periodIDs {
+		periodIDs[index] = fmt.Sprintf("gift:%s:%d", key, index+1)
+	}
+
+	now := time.Now().UTC()
+	var subscriptions []models.UserSubscription
+	created := false
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND provider = ? AND provider_subscription_id IN ?", user.ID, giftPassProvider, periodIDs).
+			Order("current_period_start ASC").
+			Find(&subscriptions).Error; err != nil {
+			return err
+		}
+		if len(subscriptions) > 0 {
+			return nil
+		}
+
+		start, err := nextPassPeriodStart(tx, user.ID, now)
+		if err != nil {
+			return err
+		}
+		for _, periodID := range periodIDs {
+			subscription := models.UserSubscription{
+				UserID:                 user.ID,
+				PlanID:                 plan.ID,
+				Status:                 "active",
+				CurrentPeriodStart:     start,
+				CurrentPeriodEnd:       start.Add(period),
+				Provider:               giftPassProvider,
+				ProviderSubscriptionID: periodID,
+				CancelAtPeriodEnd:      true,
+			}
+			if err := tx.Create(&subscription).Error; err != nil {
+				return err
+			}
+			subscriptions = append(subscriptions, subscription)
+			start = subscription.CurrentPeriodEnd
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Credits are granted after the rows commit, as on a purchase. The grants
+	// are idempotent per period, so a replay re-runs this to finish whatever a
+	// failed first attempt left undone.
+	service := billing.NewCreditService(database.DB)
+	for index := range subscriptions {
+		subscriptions[index].Plan = plan
+		if err := grantCreditsForSubscription(service, subscriptions[index], plan, now); err != nil {
+			return subscriptions, created, fmt.Errorf("%w: %v", errGiftPassCredits, err)
+		}
+	}
+
+	// Only a new gift is announced; a replayed request already was.
+	if created {
+		notifyGiftedPass(user.ID, plan, subscriptions, now, message)
+	}
+	return subscriptions, created, nil
 }
