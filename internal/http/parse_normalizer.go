@@ -21,7 +21,7 @@ var allowedParseRootFields = map[string]bool{
 	"refundable_amount": true, "refund_expected_on": true, "refund_received": true,
 	"emi_tenure_months": true, "emi_rate_pct": true, "balance_after": true,
 	"confidence": true, "needs_confirmation": true, "missing_fields": true,
-	"clarifications": true, "mode_source": true,
+	"clarifications": true, "mode_source": true, "event_name": true, "event_id": true,
 }
 
 var allowedConfidenceFields = map[string]bool{
@@ -80,6 +80,7 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	normalizeCardNetwork(entry)
 	normalizeType(entry)
 	normalizeIncomeMode(entry)
+	normalizeEventName(entry)
 	normalizePurposeAndTags(entry)
 	normalizeInvestmentType(entry, needsConfirmation, missingSet)
 	// Investment normalisation can change an AI-produced income into an
@@ -110,6 +111,7 @@ func normalizeParsedDraft(entry map[string]any, transcript string) {
 	}
 	normalizeConfidence(entry["confidence"].(map[string]any))
 	entry["clarifications"] = normalizeClarifications(entry["clarifications"])
+	dropUnaskedAccountQuestion(entry, needsConfirmation)
 
 	normalizeSubscriptionDraft(entry)
 	normalizeSplitDraft(entry)

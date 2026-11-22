@@ -398,6 +398,16 @@ func (s *Server) authGuest(c *gin.Context) {
 		DeviceID: deviceIDPtr,
 		Username: username,
 	}
+	// Where the guest was made, and whether it was one of Google Play's
+	// pre-launch test devices, which tap "Continue as guest" on every upload.
+	client := clientInfoFromRequest(c)
+	if client.Platform != clientPlatformUnknown {
+		user.SignupPlatform = client.Platform
+	}
+	if client.IsTestDevice {
+		markedAt := time.Now().UTC()
+		user.IsTest, user.TestReason, user.TestMarkedAt = true, models.UserTestReasonTestLab, &markedAt
+	}
 
 	if err := database.DB.Create(&user).Error; err != nil {
 		if deviceID != "" {

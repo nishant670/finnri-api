@@ -29,14 +29,23 @@ type Config struct {
 	// reasoning model (gpt-5 or o-series); the default model ignores it.
 	OpenAIVisionReasoningEffort string
 	OpenAIMaxTokens             int
-	OpenAIStatementMaxTokens    int
-	ReqTimeoutSec               int
-	RateLimitRPS                float64
-	RateLimitBurst              int
-	MaxJSONKB                   int64
-	MaxUploadMB                 int64
-	MaxTranscriptChars          int
-	AIParseDisabled             bool
+	// OpenAIMaxTokensBatch is the output budget for a multi=1 parse: up to
+	// ten full drafts (P103, P116) need about 2,500 tokens.
+	OpenAIMaxTokensBatch     int
+	OpenAIStatementMaxTokens int
+	ReqTimeoutSec            int
+	// ReqTimeoutSecBatch replaces ReqTimeoutSec for a multi=1 parse: ten
+	// drafts take the model far longer to write than one (P103).
+	ReqTimeoutSecBatch int
+	RateLimitRPS       float64
+	RateLimitBurst     int
+	MaxJSONKB          int64
+	MaxUploadMB        int64
+	MaxTranscriptChars int
+	// MaxTranscriptCharsBatch replaces MaxTranscriptChars for multi=1
+	// requests: a spoken day of ten items runs to 800–1,500 characters.
+	MaxTranscriptCharsBatch int
+	AIParseDisabled         bool
 	// LaunchOfferStartsAt switches the launch offer on. Unset means no offer:
 	// the API is shared with builds already in testing, so the offer starts
 	// when someone sets this, never merely because the code was deployed.
@@ -209,13 +218,16 @@ func Load() *Config {
 		OpenAIVisionModel:               getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini"),
 		OpenAIVisionReasoningEffort:     getenv("OPENAI_VISION_REASONING_EFFORT", "low"),
 		OpenAIMaxTokens:                 atoi("OPENAI_MAX_OUTPUT_TOKENS", 600),
+		OpenAIMaxTokensBatch:            atoi("OPENAI_MAX_OUTPUT_TOKENS_BATCH", 4000),
 		OpenAIStatementMaxTokens:        atoi("OPENAI_STATEMENT_MAX_OUTPUT_TOKENS", 4000),
 		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),
+		ReqTimeoutSecBatch:              atoi("REQUEST_TIMEOUT_SECONDS_BATCH", 75),
 		RateLimitRPS:                    atof("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:                  atoi("RATE_LIMIT_BURST", 10),
 		MaxJSONKB:                       int64(atoi("MAX_JSON_KB", 64)),
 		MaxUploadMB:                     int64(atoi("MAX_UPLOAD_MB", 15)),
 		MaxTranscriptChars:              atoi("MAX_TRANSCRIPT_CHARS", 1000),
+		MaxTranscriptCharsBatch:         atoi("MAX_TRANSCRIPT_CHARS_BATCH", 3000),
 		AIParseDisabled:                 atob("AI_PARSE_DISABLED", false),
 		LaunchOfferStartsAt:             getenv("LAUNCH_OFFER_STARTS_AT", ""),
 		AIUnpaidMaxVoiceBytes:           int64(atoi("AI_UNPAID_MAX_VOICE_BYTES", 512*1024)),

@@ -24,9 +24,18 @@ type User struct {
 	LoginLockedUntil    *time.Time `gorm:"index" json:"-"`
 	ConvertedAt         *time.Time `gorm:"index" json:"converted_at,omitempty"`
 	LastActiveAt        *time.Time `gorm:"index" json:"last_active_at,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
-	HasPin              bool       `gorm:"-" json:"has_pin"`
+	// IsTest marks an account that is not a real customer: Google Play's
+	// pre-launch robots, the team's own accounts, or one an admin flagged. It
+	// only changes what the admin console counts; the account works as usual.
+	IsTest       bool       `gorm:"not null;default:false;index" json:"-"`
+	TestReason   string     `gorm:"type:varchar(16);not null;default:''" json:"-"`
+	TestMarkedAt *time.Time `json:"-"` // when the flag was last set or cleared
+	// SignupPlatform is where the account was made: android, ios or web.
+	// Empty for accounts made before it was recorded (2026-11).
+	SignupPlatform string    `gorm:"type:varchar(16);not null;default:''" json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	HasPin         bool      `gorm:"-" json:"has_pin"`
 }
 
 func (user *User) BeforeSave(_ *gorm.DB) error {
@@ -37,3 +46,13 @@ func (user *User) BeforeSave(_ *gorm.DB) error {
 	}
 	return nil
 }
+
+// Why an account is left out of the admin console's real-user numbers.
+const (
+	UserTestReasonTestLab  = "test_lab" // Google Play pre-launch report devices
+	UserTestReasonInternal = "internal" // the team, family, and their own testing
+	UserTestReasonManual   = "manual"   // flagged by an admin for another reason
+)
+
+// UserTestReasons is the allowed list; schema.go builds its CHECK from it.
+var UserTestReasons = []string{UserTestReasonTestLab, UserTestReasonInternal, UserTestReasonManual}
