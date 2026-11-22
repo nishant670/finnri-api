@@ -88,21 +88,23 @@ func DefaultActionRegistry() ActionRegistry {
 			ProviderOperations: []ProviderOperation{ProviderOperationTranscription, ProviderOperationLLM},
 			InputLimits: ActionInputLimits{
 				MaxTranscriptChars: 1000,
-				MaxAudioSeconds:    15,
+				MaxAudioSeconds:    30,
 			},
 			Implemented: true,
 		},
 		{
-			Code:               ActionTransactionParseVoiceMedium,
-			Label:              "Medium voice AI transaction parse",
-			InputKind:          InputKindVoice,
-			GuestAllowed:       false,
+			Code:      ActionTransactionParseVoiceMedium,
+			Label:     "Medium voice AI transaction parse",
+			InputKind: InputKindVoice,
+			// Open to guests since spoken-day batches (P106, 2026-11-20): a
+			// whole day runs past 30 s, and guests should be able to try it.
+			GuestAllowed:       true,
 			DefaultCredits:     18,
 			MaxCredits:         30,
 			ProviderOperations: []ProviderOperation{ProviderOperationTranscription, ProviderOperationLLM},
 			InputLimits: ActionInputLimits{
 				MaxTranscriptChars: 1000,
-				MaxAudioSeconds:    30,
+				MaxAudioSeconds:    120,
 			},
 			Implemented: true,
 		},
