@@ -33,6 +33,12 @@ type adminUserListItem struct {
 	LifetimeAICostUSDMicros int64      `json:"lifetime_ai_cost_usd_micros"`
 	IsTest                  bool       `json:"is_test"`
 	TestReason              string     `json:"test_reason,omitempty"`
+	// The app or browser they used most recently.
+	Platform       string `json:"platform,omitempty"`
+	Device         string `json:"device,omitempty"`
+	FormFactor     string `json:"form_factor,omitempty"`
+	AppVersion     string `json:"app_version,omitempty"`
+	SignupPlatform string `json:"signup_platform,omitempty"`
 }
 
 func (s *Server) getAdminOverview(c *gin.Context) {
@@ -152,6 +158,9 @@ func (s *Server) listAdminUsers(c *gin.Context) {
 	case "registered":
 		query = query.Where("is_guest = ?", false)
 	}
+	if platform := oneOf(c.Query("platform"), clientPlatformAndroid, clientPlatformIOS, clientPlatformWeb); platform != "" {
+		query = query.Where("EXISTS (SELECT 1 FROM user_clients uc WHERE uc.user_id = users.id AND uc.platform = ?)", platform)
+	}
 	if c.Query("activated") == "true" {
 		query = query.Where("EXISTS (SELECT 1 FROM entries WHERE entries.user_id = users.id)")
 	}
@@ -254,8 +263,15 @@ func adminUserSummaries(users []models.User) []adminUserListItem {
 		aiCost[row.UserID] = row.Cost
 	}
 
+	clients := latestClients(ids)
 	for _, user := range users {
+		client := clients[user.ID]
 		items = append(items, adminUserListItem{
+			Platform:                client.Platform,
+			Device:                  client.Device,
+			FormFactor:              client.FormFactor,
+			AppVersion:              client.AppVersion,
+			SignupPlatform:          user.SignupPlatform,
 			ID:                      user.ID,
 			Username:                user.Username,
 			Email:                   maskEmail(ptrString(user.Email)),
@@ -333,7 +349,9 @@ func (s *Server) getAdminUser(c *gin.Context) {
 	var recentAICost int64
 	_ = database.DB.Model(&models.AIUsageEvent{}).Where("user_id = ? AND started_at >= ?", id, time.Now().UTC().Add(-30*24*time.Hour)).Select("COALESCE(SUM(COALESCE(actual_cost_usd_micros, estimated_cost_usd_micros)),0)").Scan(&recentAICost).Error
 	aiCostMinorINR := int64(math.Round(float64(recentAICost) / 1_000_000 * s.cfg.USDINRRate * 100))
-	c.JSON(200, gin.H{"user": identity, "summary": summary, "counts": counts, "feature_adoption": features, "subscription": subscription, "subscriptions": subscriptions, "credits": credits, "recent_feedback": feedback, "active_abuse_blocks": blocks, "lifetime_quote_requests": quotes, "economics": gin.H{"basis": "modelled_from_plan_prices", "monthly_plan_value_minor": monthlyRevenue, "ai_cost_30d_usd_micros": recentAICost, "ai_cost_30d_minor_inr": aiCostMinorINR, "gross_margin_30d_minor": monthlyRevenue - aiCostMinorINR}})
+	var clients []models.UserClient
+	_ = database.DB.Where("user_id = ?", id).Order("last_seen_at DESC").Limit(20).Find(&clients).Error
+	c.JSON(200, gin.H{"clients": clients, "user": identity, "summary": summary, "counts": counts, "feature_adoption": features, "subscription": subscription, "subscriptions": subscriptions, "credits": credits, "recent_feedback": feedback, "active_abuse_blocks": blocks, "lifetime_quote_requests": quotes, "economics": gin.H{"basis": "modelled_from_plan_prices", "monthly_plan_value_minor": monthlyRevenue, "ai_cost_30d_usd_micros": recentAICost, "ai_cost_30d_minor_inr": aiCostMinorINR, "gross_margin_30d_minor": monthlyRevenue - aiCostMinorINR}})
 }
 
 func adminFeatureFlags(userID uint) gin.H {

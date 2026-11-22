@@ -170,6 +170,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), s.createUserCreditAdjustment)
 		admin.PATCH("/users/:id/test", requireAdminRole(models.AdminRoleSupport), s.updateAdminUserTest)
 		admin.GET("/trials", s.listAdminTrials)
+		admin.GET("/audience", s.getAdminAudience)
 		admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), s.createAdminGiftPass)
 		admin.POST("/gifts/bulk", requireAdminRole(models.AdminRoleSupport), s.createAdminBulkGift)
 		admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), s.revokeAdminGiftPass)
@@ -2068,6 +2069,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.Subscription{}, "subscriptions"},
 			{&models.RecurringCandidateDecision{}, "recurring candidate decisions"},
 			{&models.PushDevice{}, "push devices"},
+			{&models.UserClient{}, "user clients"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},

@@ -69,6 +69,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			_ = database.DB.Model(&models.User{}).Where("id = ?", user.ID).UpdateColumn("last_active_at", now).Error
 			user.LastActiveAt = &now
 		}
+		recordUserClient(c, &user)
 
 		c.Next()
 	}
