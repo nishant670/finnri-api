@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"finnri/internal/config"
 	"finnri/internal/database"
@@ -149,5 +150,29 @@ func TestGuestUpgradeWithoutASessionFollowsTheMigrationSwitch(t *testing.T) {
 	upgraded := performJSONRequest[AuthResponse](t, lenient, http.MethodPost, "/v1/auth/google", "", upgrade, http.StatusOK)
 	if upgraded.User == nil || upgraded.User.ID != guest.User.ID {
 		t.Fatalf("expected the older app's upgrade to succeed while the window is open, got %#v", upgraded.User)
+	}
+}
+
+func TestGuestUpgradeWithAnExpiredSessionFollowsTheMigrationSwitch(t *testing.T) {
+	useSmokeDatabase(t)
+	stubGoogleVerifier(t, googleIdentity{Subject: "google-sub-expired-upgrade", Email: "expired-upgrade@example.com", EmailVerified: true})
+
+	strict := smokeRouter(t, func(_ *Server, cfg *config.Config) { cfg.GuestSecretRequired = true })
+	guest := performJSONRequest[AuthResponse](t, strict, http.MethodPost, "/v1/auth/guest", "",
+		map[string]string{"device_id": "expired-upgrade-device", "guest_secret": testGuestSecret}, http.StatusOK)
+	if err := database.DB.Model(&models.AuthSession{}).Where("user_id = ?", guest.User.ID).
+		Update("expires_at", time.Now().UTC().Add(-time.Hour)).Error; err != nil {
+		t.Fatalf("expire session: %v", err)
+	}
+	upgrade := map[string]string{"id_token": "valid-google-token", "guest_uuid": guest.User.UUID}
+
+	// Required: an expired session is no proof.
+	performJSONRequest[map[string]any](t, strict, http.MethodPost, "/v1/auth/google", guest.Token, upgrade, http.StatusUnauthorized)
+
+	// Window open: the same request upgrades, as it would with no token at all.
+	lenient := smokeRouter(t)
+	upgraded := performJSONRequest[AuthResponse](t, lenient, http.MethodPost, "/v1/auth/google", guest.Token, upgrade, http.StatusOK)
+	if upgraded.User == nil || upgraded.User.ID != guest.User.ID {
+		t.Fatalf("expected an expired guest session to upgrade while the window is open, got %#v", upgraded.User)
 	}
 }

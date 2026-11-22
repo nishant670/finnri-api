@@ -166,7 +166,13 @@ func (s *Server) getAdminProductFunnel(c *gin.Context) {
 		}
 	}
 
-	window := database.DB.Model(&models.ProductEvent{}).Where("occurred_at >= ? AND occurred_at < ?", start, end)
+	// Like every other admin count, robots and the team's own accounts are left
+	// out unless the request asks for them: Play's pre-launch devices open the
+	// app on every upload and would fill the top of the funnel.
+	window := realUserRows(
+		database.DB.Model(&models.ProductEvent{}).Where("occurred_at >= ? AND occurred_at < ?", start, end),
+		"product_events.user_id", adminIncludeTest(c),
+	)
 
 	var totals []struct {
 		Name   string

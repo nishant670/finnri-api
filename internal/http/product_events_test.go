@@ -158,3 +158,43 @@ func TestOldProductEventsArePurged(t *testing.T) {
 		t.Fatalf("removed=%d err=%v, want 1", removed, err)
 	}
 }
+
+func TestProductFunnelLeavesOutTestUsers(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, ownerToken := createAdminSessionForTest(t, models.AdminRoleOwner)
+	_, real := createBillingTestUserSession(t)
+	robot, robotToken := createBillingTestUserSession(t)
+	if err := database.DB.Model(&models.User{}).Where("id = ?", robot.ID).
+		Updates(map[string]any{"is_test": true, "test_reason": models.UserTestReasonTestLab}).Error; err != nil {
+		t.Fatalf("flag robot: %v", err)
+	}
+
+	postProductEvents(t, router, real, []productEventInput{{Name: "app_opened"}}, http.StatusOK)
+	postProductEvents(t, router, robotToken, []productEventInput{{Name: "app_opened"}, {Name: "app_opened"}}, http.StatusOK)
+
+	type funnelBody struct {
+		People int64 `json:"people"`
+		Steps  []struct {
+			Name   string `json:"name"`
+			Events int64  `json:"events"`
+		} `json:"steps"`
+	}
+	opened := func(body funnelBody) int64 {
+		for _, step := range body.Steps {
+			if step.Name == "app_opened" {
+				return step.Events
+			}
+		}
+		return -1
+	}
+
+	realOnly := performJSONRequest[funnelBody](t, router, http.MethodGet, "/v1/admin/analytics/product-funnel", ownerToken, nil, http.StatusOK)
+	if realOnly.People != 1 || opened(realOnly) != 1 {
+		t.Fatalf("real-only funnel: people=%d app_opened=%d, want 1 and 1", realOnly.People, opened(realOnly))
+	}
+	everyone := performJSONRequest[funnelBody](t, router, http.MethodGet, "/v1/admin/analytics/product-funnel?include_test=true", ownerToken, nil, http.StatusOK)
+	if everyone.People != 2 || opened(everyone) != 3 {
+		t.Fatalf("include_test funnel: people=%d app_opened=%d, want 2 and 3", everyone.People, opened(everyone))
+	}
+}

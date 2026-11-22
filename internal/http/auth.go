@@ -582,10 +582,14 @@ func readGuestUpgradeProof(c *gin.Context) guestUpgradeProof {
 }
 
 func (s *Server) guestMayBeUpgraded(proof guestUpgradeProof, guest models.User) bool {
-	if !proof.presented {
+	// A token that opens no live session proves nothing either way: the
+	// guest's own session may simply have expired, and the web sends whatever
+	// token it last stored. It is treated like no token, so it is accepted
+	// exactly while sending none is.
+	if !proof.presented || proof.userID == 0 {
 		return s.cfg == nil || !s.cfg.GuestSecretRequired
 	}
-	return proof.userID != 0 && proof.userID == guest.ID
+	return proof.userID == guest.ID
 }
 
 var errGuestSessionRequired = errors.New("guest_session_required")
