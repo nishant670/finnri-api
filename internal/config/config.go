@@ -34,11 +34,14 @@ type Config struct {
 	OpenAIMaxTokensBatch     int
 	OpenAIStatementMaxTokens int
 	ReqTimeoutSec            int
-	RateLimitRPS             float64
-	RateLimitBurst           int
-	MaxJSONKB                int64
-	MaxUploadMB              int64
-	MaxTranscriptChars       int
+	// ReqTimeoutSecBatch replaces ReqTimeoutSec for a multi=1 parse: ten
+	// drafts take the model far longer to write than one (P103).
+	ReqTimeoutSecBatch int
+	RateLimitRPS       float64
+	RateLimitBurst     int
+	MaxJSONKB          int64
+	MaxUploadMB        int64
+	MaxTranscriptChars int
 	// MaxTranscriptCharsBatch replaces MaxTranscriptChars for multi=1
 	// requests: a spoken day of ten items runs to 800–1,500 characters.
 	MaxTranscriptCharsBatch int
@@ -218,6 +221,7 @@ func Load() *Config {
 		OpenAIMaxTokensBatch:            atoi("OPENAI_MAX_OUTPUT_TOKENS_BATCH", 4000),
 		OpenAIStatementMaxTokens:        atoi("OPENAI_STATEMENT_MAX_OUTPUT_TOKENS", 4000),
 		ReqTimeoutSec:                   atoi("REQUEST_TIMEOUT_SECONDS", 30),
+		ReqTimeoutSecBatch:              atoi("REQUEST_TIMEOUT_SECONDS_BATCH", 75),
 		RateLimitRPS:                    atof("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:                  atoi("RATE_LIMIT_BURST", 10),
 		MaxJSONKB:                       int64(atoi("MAX_JSON_KB", 64)),

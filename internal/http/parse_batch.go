@@ -31,6 +31,26 @@ failed and costs nothing.
 
 var batchTimeSlots = map[string]bool{"morning": true, "afternoon": true, "evening": true, "night": true}
 
+// batchItemNullKeys are the capture keys a batch item may leave out to save
+// output tokens (the prompt asks it to). They are put back as null, so each
+// item reaches the app in exactly the shape of a single draft.
+var batchItemNullKeys = []string{
+	"type", "title", "time", "amount", "currency", "mode", "card_network", "account_hint",
+	"category", "merchant", "tag", "purpose_type", "note", "date", "recurring_candidate",
+	"subscription_candidate", "event_name", "split_candidate", "split_candidate_details",
+}
+
+func fillBatchItemDefaults(item map[string]any) {
+	for _, key := range batchItemNullKeys {
+		if _, present := item[key]; !present {
+			item[key] = nil
+		}
+	}
+	if _, present := item["tags"]; !present {
+		item["tags"] = []any{}
+	}
+}
+
 // parsedBatchItems returns the items of a batch answer, or false for a single
 // draft or a question.
 func parsedBatchItems(parsed map[string]any) ([]map[string]any, bool) {
@@ -87,6 +107,7 @@ type batchParseRequest struct {
 // the item is not a readable transaction and is dropped.
 func (s *Server) readBatchItem(item map[string]any, transcript string, req batchParseRequest) bool {
 	slot, carried := takeBatchExtras(item)
+	fillBatchItemDefaults(item)
 	source, _ := item["source_text"].(string)
 	source = strings.TrimSpace(source)
 	if source == "" {

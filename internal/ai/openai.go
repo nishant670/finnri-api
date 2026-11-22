@@ -41,6 +41,8 @@ type BatchParser interface {
 type OpenAIClient struct {
 	cfg  *config.Config
 	http *http.Client
+	// batchHTTP carries multi=1 reads, which may run past the usual timeout.
+	batchHTTP *http.Client
 }
 
 type Parser interface {
@@ -55,7 +57,11 @@ func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
 	if cfg.ReqTimeoutSec > 0 {
 		client.Timeout = time.Duration(cfg.ReqTimeoutSec) * time.Second
 	}
-	return &OpenAIClient{cfg: cfg, http: client}
+	batchClient := &http.Client{Timeout: client.Timeout}
+	if cfg.ReqTimeoutSecBatch > 0 {
+		batchClient.Timeout = time.Duration(cfg.ReqTimeoutSecBatch) * time.Second
+	}
+	return &OpenAIClient{cfg: cfg, http: client, batchHTTP: batchClient}
 }
 
 func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []byte, hint string) (string, error) {
@@ -98,7 +104,7 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 }
 
 func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
-	return c.parseWithPrompt(ctx, promptText, c.cfg.OpenAIMaxTokens, transcript, tz, known)
+	return c.parseWithPrompt(ctx, c.http, promptText, c.cfg.OpenAIMaxTokens, transcript, tz, known)
 }
 
 // ParseTextBatch reads a text that may hold up to MaxBatchItems transactions.
@@ -108,10 +114,14 @@ func (c *OpenAIClient) ParseTextBatch(ctx context.Context, transcript, tz string
 	if maxTokens < c.cfg.OpenAIMaxTokens {
 		maxTokens = c.cfg.OpenAIMaxTokens
 	}
-	return c.parseWithPrompt(ctx, promptText+promptBatchText, maxTokens, transcript, tz, known)
+	httpClient := c.batchHTTP
+	if httpClient == nil {
+		httpClient = c.http
+	}
+	return c.parseWithPrompt(ctx, httpClient, promptText+promptBatchText, maxTokens, transcript, tz, known)
 }
 
-func (c *OpenAIClient) parseWithPrompt(ctx context.Context, systemPrompt string, maxTokens int, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
+func (c *OpenAIClient) parseWithPrompt(ctx context.Context, httpClient *http.Client, systemPrompt string, maxTokens int, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
 	if c.cfg.OpenAIKey == "" {
 		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
 	}
@@ -140,7 +150,7 @@ func (c *OpenAIClient) parseWithPrompt(ctx context.Context, systemPrompt string,
 	req.Header.Set("Authorization", "Bearer "+c.cfg.OpenAIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, Usage{}, err
 	}

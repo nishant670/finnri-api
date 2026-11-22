@@ -536,6 +536,12 @@ func (s *Server) handleParse(c *gin.Context) {
 	// multi=1: this app can show several transactions from one prompt (P103).
 	// Old apps never send it and get exactly the single draft they always did.
 	multi := c.PostForm("multi") == "1"
+	if multi && s.cfg.ReqTimeoutSecBatch > s.cfg.ReqTimeoutSec {
+		// Ten drafts take the model longer to write than one (P103).
+		var cancelBatch context.CancelFunc
+		ctx, cancelBatch = context.WithTimeout(c.Request.Context(), timepkg.Duration(s.cfg.ReqTimeoutSecBatch)*timepkg.Second)
+		defer cancelBatch()
+	}
 	maxTranscriptChars := s.cfg.MaxTranscriptChars
 	if multi && s.cfg.MaxTranscriptCharsBatch > maxTranscriptChars {
 		maxTranscriptChars = s.cfg.MaxTranscriptCharsBatch

@@ -116,6 +116,13 @@ func TestParseBatchReturnsItemsChargedOnce(t *testing.T) {
 	if second["stage"] != "draft" {
 		t.Fatalf("item was not normalised as a draft: %v", second)
 	}
+	// The prompt asks for lean items; each still reaches the app with every
+	// key a single draft has.
+	for _, key := range []string{"merchant", "account_hint", "split_candidate_details", "subscription_candidate", "tags", "needs_confirmation", "clarifications"} {
+		if _, present := second[key]; !present {
+			t.Fatalf("lean item is missing %q after the server filled it: %v", key, second)
+		}
+	}
 	third := items[2].(map[string]any)
 	if third["time_slot"] != nil {
 		t.Fatalf("unknown slot should be null, got %v", third["time_slot"])
