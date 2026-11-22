@@ -344,3 +344,36 @@ func TestPaidInFullStreakCountsBillsPaidInARow(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountsListCarriesEachCardsProduct(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	_, token := createBillingTestUserSession(t)
+	seedCardCatalogue(t)
+
+	for _, body := range []map[string]any{
+		{"type": "credit_card", "name": "Millennia", "provider_id": "hdfc", "last4": "1111", "card_product_id": "hdfc-millennia"},
+		{"type": "credit_card", "name": "Flipkart", "provider_id": "axis", "last4": "2222", "card_product_id": "axis-flipkart"},
+		{"type": "credit_card", "name": "Unlisted", "provider_id": "hdfc", "last4": "3333"},
+	} {
+		performJSONRequest[models.Account](t, router, http.MethodPost, "/v1/accounts", token, body, http.StatusCreated)
+	}
+
+	listed := performJSONRequest[[]struct {
+		Name        string                     `json:"name"`
+		CardProduct *models.CardProductSummary `json:"card_product"`
+	}](t, router, http.MethodGet, "/v1/accounts", token, nil, http.StatusOK)
+
+	drawings := map[string]string{}
+	for _, account := range listed {
+		if account.CardProduct != nil {
+			drawings[account.Name] = account.CardProduct.Drawing
+		} else {
+			drawings[account.Name] = ""
+		}
+	}
+	if drawings["Millennia"] != "dotgrid" || drawings["Flipkart"] != "ribbons" || drawings["Unlisted"] != "" {
+		t.Fatalf("each card should carry its own product's drawing, got %v", drawings)
+	}
+}

@@ -2313,9 +2313,7 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	for index := range accounts {
-		hydrateAccountProvider(&accounts[index])
-	}
+	hydrateAccountProviders(accounts)
 
 	// Each account arrives with what its transactions prove, not just what the
 	// user typed into it once. See account_summary.go for the rules.

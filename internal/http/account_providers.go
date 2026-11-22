@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"finnri/internal/database"
 	"finnri/internal/models"
 )
 
@@ -129,6 +130,42 @@ func providerSupportsType(provider accountProvider, accountType string) bool {
 }
 
 func hydrateAccountProvider(account *models.Account) {
+	hydrateAccountProviderDetails(account)
+	hydrateCardProduct(account)
+}
+
+// hydrateAccountProviders is hydrateAccountProvider for a whole list, with the
+// card products loaded in one query rather than one per card.
+func hydrateAccountProviders(accounts []models.Account) {
+	ids := []string{}
+	for index := range accounts {
+		hydrateAccountProviderDetails(&accounts[index])
+		accounts[index].CardProduct = nil
+		if id := accounts[index].CardProductID; id != nil && *id != "" {
+			ids = append(ids, *id)
+		}
+	}
+	if len(ids) == 0 || database.DB == nil {
+		return
+	}
+	var products []models.CardProduct
+	if err := database.DB.Where("id IN ?", ids).Find(&products).Error; err != nil {
+		return
+	}
+	byID := make(map[string]models.CardProductSummary, len(products))
+	for _, product := range products {
+		byID[product.ID] = product.Summary()
+	}
+	for index := range accounts {
+		if id := accounts[index].CardProductID; id != nil {
+			if summary, ok := byID[*id]; ok {
+				accounts[index].CardProduct = &summary
+			}
+		}
+	}
+}
+
+func hydrateAccountProviderDetails(account *models.Account) {
 	if account.ProviderID == "" {
 		if provider, ok := matchAccountProvider(account.Provider); ok && providerSupportsType(provider, normalizeAccountType(account.Type)) {
 			account.ProviderID = provider.ID
@@ -141,5 +178,4 @@ func hydrateAccountProvider(account *models.Account) {
 	if account.Identifier == "" {
 		account.Identifier = accountDisplayIdentifier(*account)
 	}
-	hydrateCardProduct(account)
 }
