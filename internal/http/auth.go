@@ -498,6 +498,16 @@ func (s *Server) authGuest(c *gin.Context) {
 			GuestSecretHash: secretHash,
 			Username:        "Guest_" + generateUUID()[:8],
 		}
+		// Where the guest was made, and whether it was one of Google Play's
+		// pre-launch test devices, which tap "Continue as guest" on every upload.
+		client := clientInfoFromRequest(c)
+		if client.Platform != clientPlatformUnknown {
+			user.SignupPlatform = client.Platform
+		}
+		if client.IsTestDevice {
+			markedAt := time.Now().UTC()
+			user.IsTest, user.TestReason, user.TestMarkedAt = true, models.UserTestReasonTestLab, &markedAt
+		}
 		if createErr := database.DB.Create(&user).Error; createErr != nil {
 			// Two first requests from one install race on the unique device id
 			// and secret; the loser finds the row the winner just wrote.

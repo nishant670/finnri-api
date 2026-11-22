@@ -19,14 +19,37 @@ import (
 //go:embed prompt.txt
 var promptText string
 
+// promptBatchText is appended to the system prompt when the app asks for a
+// batch (`multi=1`, P103): several payments in one text come back as
+// {"stage":"batch","items":[...]}. Old apps never send multi=1, so their prompt
+// and cost are exactly as before.
+//
+//go:embed prompt_batch.txt
+var promptBatchText string
+
+// MaxBatchItems is how many transactions one prompt may return (P116, the
+// user's call on 2026-11-20). The app holds the same number in
+// lib/voice-batch.ts (MAX_ITEMS_PER_PROMPT).
+const MaxBatchItems = 10
+
+// BatchParser is implemented by parsers that can read several transactions
+// from one text. The handler falls back to ParseText for one that can't.
+type BatchParser interface {
+	ParseTextBatch(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error)
+}
+
 type OpenAIClient struct {
 	cfg  *config.Config
 	http *http.Client
+	// batchHTTP carries multi=1 reads, which may run past the usual timeout.
+	batchHTTP *http.Client
 }
 
 type Parser interface {
-	Transcribe(ctx context.Context, filename string, audio []byte) (string, error)
-	ParseText(ctx context.Context, transcript, tz string) ([]byte, Usage, error)
+	// Transcribe turns audio into text. hint primes the transcriber with names
+	// it would otherwise misspell; empty means none.
+	Transcribe(ctx context.Context, filename string, audio []byte, hint string) (string, error)
+	ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error)
 }
 
 func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
@@ -34,10 +57,14 @@ func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
 	if cfg.ReqTimeoutSec > 0 {
 		client.Timeout = time.Duration(cfg.ReqTimeoutSec) * time.Second
 	}
-	return &OpenAIClient{cfg: cfg, http: client}
+	batchClient := &http.Client{Timeout: client.Timeout}
+	if cfg.ReqTimeoutSecBatch > 0 {
+		batchClient.Timeout = time.Duration(cfg.ReqTimeoutSecBatch) * time.Second
+	}
+	return &OpenAIClient{cfg: cfg, http: client, batchHTTP: batchClient}
 }
 
-func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []byte) (string, error) {
+func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []byte, hint string) (string, error) {
 	if c.cfg.OpenAIKey == "" {
 		return "", fmt.Errorf("OPENAI_API_KEY missing")
 	}
@@ -48,6 +75,9 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 		return "", err
 	}
 	_ = mw.WriteField("model", c.cfg.OpenAIWhisper)
+	if hint = strings.TrimSpace(hint); hint != "" {
+		_ = mw.WriteField("prompt", hint)
+	}
 	_ = mw.Close()
 
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.cfg.OpenAIBaseURL+"/audio/transcriptions", &buf)
@@ -73,7 +103,25 @@ func (c *OpenAIClient) Transcribe(ctx context.Context, filename string, audio []
 	return strings.TrimSpace(out.Text), nil
 }
 
-func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]byte, Usage, error) {
+func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
+	return c.parseWithPrompt(ctx, c.http, promptText, c.cfg.OpenAIMaxTokens, transcript, tz, known)
+}
+
+// ParseTextBatch reads a text that may hold up to MaxBatchItems transactions.
+// Ten full drafts need far more room than one, so it has its own token budget.
+func (c *OpenAIClient) ParseTextBatch(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
+	maxTokens := c.cfg.OpenAIMaxTokensBatch
+	if maxTokens < c.cfg.OpenAIMaxTokens {
+		maxTokens = c.cfg.OpenAIMaxTokens
+	}
+	httpClient := c.batchHTTP
+	if httpClient == nil {
+		httpClient = c.http
+	}
+	return c.parseWithPrompt(ctx, httpClient, promptText+promptBatchText, maxTokens, transcript, tz, known)
+}
+
+func (c *OpenAIClient) parseWithPrompt(ctx context.Context, httpClient *http.Client, systemPrompt string, maxTokens int, transcript, tz string, known KnownNames) ([]byte, Usage, error) {
 	if c.cfg.OpenAIKey == "" {
 		return nil, Usage{}, fmt.Errorf("OPENAI_API_KEY missing")
 	}
@@ -91,10 +139,10 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 	body := map[string]any{
 		"model":                 c.cfg.OpenAILlmModel,
 		"response_format":       map[string]string{"type": "json_object"},
-		"max_completion_tokens": c.cfg.OpenAIMaxTokens,
+		"max_completion_tokens": maxTokens,
 		"messages": []map[string]string{
-			{"role": "system", "content": promptText},
-			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.\nText: %s", tz, nowStr, transcript)},
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.%s\nText: %s", tz, nowStr, known.contextLines(), transcript)},
 		},
 	}
 	b, _ := json.Marshal(body)
@@ -102,7 +150,7 @@ func (c *OpenAIClient) ParseText(ctx context.Context, transcript, tz string) ([]
 	req.Header.Set("Authorization", "Bearer "+c.cfg.OpenAIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, Usage{}, err
 	}

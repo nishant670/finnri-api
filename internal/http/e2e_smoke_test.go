@@ -182,6 +182,10 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.GET("/users/:id/credits", server.getAdminUserCredits)
 	admin.GET("/users/:id/activity", server.getAdminUserActivity)
 	admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), server.createUserCreditAdjustment)
+	admin.PATCH("/users/:id/test", requireAdminRole(models.AdminRoleSupport), server.updateAdminUserTest)
+	admin.POST("/gifts/bulk", requireAdminRole(models.AdminRoleSupport), server.createAdminBulkGift)
+	admin.GET("/trials", server.listAdminTrials)
+	admin.GET("/audience", server.getAdminAudience)
 	admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), server.createAdminGiftPass)
 	admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), server.revokeAdminGiftPass)
 	admin.GET("/ai/metrics", server.getAIMetrics)
@@ -353,6 +357,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.AdminUser{},
 		&models.AdminAuditLog{},
 		&models.AdminDailyMetric{},
+		&models.UserClient{},
 		&models.Plan{},
 		&models.UserSubscription{},
 		&models.CreditGrant{},

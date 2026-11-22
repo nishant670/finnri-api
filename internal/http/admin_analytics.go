@@ -24,7 +24,7 @@ func (s *Server) getAdminSignups(c *gin.Context) {
 		return
 	}
 	var users []models.User
-	if err := database.DB.Where("created_at >= ? AND created_at < ?", start, end).Order("created_at ASC").Find(&users).Error; err != nil {
+	if err := realUsersOnly(database.DB.Model(&models.User{}), adminIncludeTest(c)).Where("created_at >= ? AND created_at < ?", start, end).Order("created_at ASC").Find(&users).Error; err != nil {
 		c.JSON(500, gin.H{"error": "failed_load_signups"})
 		return
 	}
@@ -84,7 +84,7 @@ func (s *Server) getAdminActivation(c *gin.Context) {
 		}
 	}
 	var users []models.User
-	if database.DB.Where("created_at >= ? AND created_at < ?", start, end).Find(&users).Error != nil {
+	if realUsersOnly(database.DB.Model(&models.User{}), adminIncludeTest(c)).Where("created_at >= ? AND created_at < ?", start, end).Find(&users).Error != nil {
 		c.JSON(500, gin.H{"error": "failed_load_activation"})
 		return
 	}
@@ -191,8 +191,9 @@ func (s *Server) getAdminRetention(c *gin.Context) {
 	}
 	now := time.Now().UTC()
 	firstCohort := startOfWeek(now).AddDate(0, 0, -7*(weeks-1))
+	includeTest := adminIncludeTest(c)
 	var users []models.User
-	if database.DB.Where("created_at >= ? AND is_guest = ?", firstCohort, false).Find(&users).Error != nil {
+	if realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("created_at >= ? AND is_guest = ?", firstCohort, false).Find(&users).Error != nil {
 		c.JSON(500, gin.H{"error": "failed_load_retention"})
 		return
 	}
@@ -222,7 +223,7 @@ func (s *Server) getAdminRetention(c *gin.Context) {
 		if cached, ok := weeklyActive[key]; ok {
 			return cached
 		}
-		active := activeUserIDs(weekStart, weekStart.AddDate(0, 0, 7))
+		active := activeUserIDs(weekStart, weekStart.AddDate(0, 0, 7), includeTest)
 		weeklyActive[key] = active
 		return active
 	}
@@ -262,10 +263,11 @@ func (s *Server) getAdminEngagement(c *gin.Context) {
 	// Read each day's active set once, then roll the 7- and 30-day windows up from
 	// those daily sets. This was three widening scans per day in the window.
 	firstDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+	includeTest := adminIncludeTest(c)
 	daily := map[string]map[uint]struct{}{}
 	dayKey := func(day time.Time) string { return day.Format("2006-01-02") }
 	for day := firstDay.AddDate(0, 0, -29); day.Before(end); day = day.AddDate(0, 0, 1) {
-		daily[dayKey(day)] = activeUserIDs(day, day.AddDate(0, 0, 1))
+		daily[dayKey(day)] = activeUserIDs(day, day.AddDate(0, 0, 1), includeTest)
 	}
 	uniqueOver := func(endExclusive time.Time, days int) int {
 		union := map[uint]struct{}{}
@@ -288,18 +290,19 @@ func (s *Server) getAdminEngagement(c *gin.Context) {
 }
 
 func (s *Server) getAdminFeatureAdoption(c *gin.Context) {
-	_, registered, _ := userCounts()
+	includeTest := adminIncludeTest(c)
+	_, registered, _ := userCounts(includeTest)
 	features := []gin.H{}
 	for code, table := range map[string]string{"budgets": "budgets", "subscriptions": "subscriptions", "split_bills": "split_bills", "card_statements": "card_statements", "monthly_reviews": "monthly_reviews"} {
 		var users int64
-		_ = database.DB.Table(table).Joins("JOIN users ON users.id = "+table+".user_id AND users.is_guest = ?", false).Distinct(table + ".user_id").Count(&users).Error
+		_ = realUsersOnly(database.DB.Table(table).Joins("JOIN users ON users.id = "+table+".user_id AND users.is_guest = ?", false), includeTest).Distinct(table + ".user_id").Count(&users).Error
 		features = append(features, gin.H{"code": code, "users": users, "percent": ratio(float64(users), float64(registered))})
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i]["code"].(string) < features[j]["code"].(string) })
 	var converted int64
-	_ = database.DB.Model(&models.User{}).Where("converted_at IS NOT NULL").Count(&converted).Error
+	_ = realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("converted_at IS NOT NULL").Count(&converted).Error
 	var guests int64
-	_ = database.DB.Model(&models.User{}).Where("is_guest = ?", true).Count(&guests).Error
+	_ = realUsersOnly(database.DB.Model(&models.User{}), includeTest).Where("is_guest = ?", true).Count(&guests).Error
 	c.JSON(200, gin.H{"registered_users": registered, "features": features, "guest_conversion": gin.H{"converted": converted, "guest_rows_remaining": guests, "percent": ratio(float64(converted), float64(converted+guests))}})
 }
 

@@ -497,6 +497,19 @@ paths:
         by Finnri. Always returns a capture draft (`stage: "draft"`) in the same
         shape as `/v1/parse`; `source_text` is a one-line summary of what was
         read. Charges the `transaction_parse_receipt` AI action.
+      parameters:
+        - in: header
+          name: X-Finnri-Batch
+          required: false
+          description: >-
+            Sent with every read of one "scan several bills" run (8–64 letters,
+            digits or hyphens). A batch's failed reads count a third (rounded up)
+            toward the failure cooldown; a batch may hold 5 charged or in-flight
+            reads and make 10 reads in all. A read over the cap is cancelled and
+            its credits returned.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9-]{8,64}$"
       requestBody:
         required: true
         content:
@@ -524,8 +537,12 @@ paths:
           description: Image too large
         "415":
           description: Unsupported image type
+        "400":
+          description: Malformed X-Finnri-Batch header (`invalid_batch_id`)
         "422":
-          description: No readable total on the image, or the draft could not be shaped
+          description: >-
+            No readable total on the image, the draft could not be shaped, or the
+            batch has read all its bills (`receipt_batch_full`)
   /v1/entries:
     post:
       summary: Create a transaction entry
@@ -1703,6 +1720,13 @@ paths:
                       active_count:
                         type: integer
                       next_due:
+                        type: object
+                      monthly_income:
+                        type: number
+                        description: Monthly equivalent of active recurring income. Never part of monthly_total or by_kind.
+                      income_active_count:
+                        type: integer
+                      next_income:
                         type: object
                   items:
                     type: array
@@ -4700,9 +4724,11 @@ components:
           description: Payments already taken, including the entry logged at set-up.
         kind:
           type: string
-          enum: [subscription, loan, investment, bill]
+          enum: [subscription, loan, investment, bill, income]
           description: >-
-            What the payment is. Optional: when omitted on create it is inferred
+            What the payment is. `income` (alias `salary`) is money coming in:
+            its payments are written as income entries and it is summed apart
+            from commitments; it cannot use payment_mode Credit Card. Optional: when omitted on create it is inferred
             (EMI tag or a fixed number of instalments → loan; Investment tag or
             purpose → investment; otherwise subscription), and on update the
             stored kind is kept.

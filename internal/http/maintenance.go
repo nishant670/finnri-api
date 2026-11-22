@@ -92,13 +92,16 @@ func runMaintenanceOnce(cfg *config.Config) (maintenanceResult, error) {
 	if err := rollupAdminDailyMetrics(time.Now().UTC().AddDate(0, 0, -1)); err != nil {
 		return maintenanceResult{}, fmt.Errorf("roll up admin metrics: %w", err)
 	}
+	if err := recountDailyActiveUsersOnce(); err != nil {
+		return maintenanceResult{}, fmt.Errorf("recount daily active users: %w", err)
+	}
 	return maintenanceResult{ExpiredCreditGrants: expired, AnonymousGuestRetention: retention}, nil
 }
 
 func rollupAdminDailyMetrics(day time.Time) error {
 	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, 1)
-	active := len(activeUserIDs(start, end))
+	active := len(activeUserIDs(start, end, false))
 	var events []models.AIUsageEvent
 	if err := database.DB.Where("started_at >= ? AND started_at < ?", start, end).Find(&events).Error; err != nil {
 		return err
@@ -117,4 +120,39 @@ func rollupAdminDailyMetrics(day time.Time) error {
 		row.AICostUSDMicros += cost
 	}
 	return database.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "metric_date"}}, DoUpdates: clause.AssignmentColumns([]string{"active_users", "ai_events", "ai_credits", "ai_cost_usd_micros", "successful_ai_events", "updated_at"})}).Create(&row).Error
+}
+
+// Daily active users were first rolled up counting test accounts and admin
+// console sign-ins. Recount every stored day once under today's definition so
+// the series doesn't drop on the day the definition changed. Only
+// active_users is rewritten: the AI columns must keep their original values,
+// because old anonymous guest AI events have since been purged.
+const recountDailyActiveUsersRepair = "admin_daily_metrics_real_active_users"
+
+func recountDailyActiveUsersOnce() error {
+	if !database.DB.Migrator().HasTable("schema_repairs") {
+		return nil
+	}
+	var done int64
+	if err := database.DB.Table("schema_repairs").Where("name = ?", recountDailyActiveUsersRepair).Count(&done).Error; err != nil {
+		return err
+	}
+	if done > 0 {
+		return nil
+	}
+	var rows []models.AdminDailyMetric
+	if err := database.DB.Select("id, metric_date").Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		day, err := time.Parse("2006-01-02", models.CalendarDay(row.MetricDate))
+		if err != nil {
+			return fmt.Errorf("metric date %q: %w", row.MetricDate, err)
+		}
+		active := len(activeUserIDs(day, day.AddDate(0, 0, 1), false))
+		if err := database.DB.Model(&models.AdminDailyMetric{}).Where("id = ?", row.ID).Update("active_users", active).Error; err != nil {
+			return err
+		}
+	}
+	return database.DB.Exec("INSERT INTO schema_repairs (name) VALUES (?) ON CONFLICT DO NOTHING", recountDailyActiveUsersRepair).Error
 }
