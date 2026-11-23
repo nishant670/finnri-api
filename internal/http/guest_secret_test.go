@@ -176,3 +176,36 @@ func TestGuestUpgradeWithAnExpiredSessionFollowsTheMigrationSwitch(t *testing.T)
 		t.Fatalf("expected an expired guest session to upgrade while the window is open, got %#v", upgraded.User)
 	}
 }
+
+// 2026-11-23: on Finnri Preview, signing out of Google and tapping "Start for
+// free" said "Could not continue as guest right now". Staging answered 401:
+// that build predates guest secrets, and the phone's device id was held by a
+// guest that has one. An app that sends its secret, as every build since the
+// 13 Nov batch does, gets a new guest after signing out.
+func TestStartForFreeAfterSigningOutOfGoogle(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	stubGoogleVerifier(t, googleIdentity{Subject: "google-sub-signout", Email: "signout@example.com", EmailVerified: true})
+	guestIn := func(body map[string]string, status int) AuthResponse {
+		return performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/guest", "", body, status)
+	}
+
+	// The guest on this phone becomes the Google account, then signs out.
+	app := map[string]string{"device_id": "signout-device", "guest_secret": testGuestSecret}
+	guest := guestIn(app, http.StatusOK)
+	account := performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/google", guest.Token,
+		map[string]string{"id_token": "valid-google-token", "guest_uuid": guest.User.UUID, "device_id": "signout-device"}, http.StatusOK)
+	performJSONRequest[map[string]any](t, router, http.MethodPost, "/v1/auth/logout", account.Token, nil, http.StatusOK)
+
+	again := guestIn(app, http.StatusOK)
+	if again.User == nil || !again.User.IsGuest || again.User.ID == account.User.ID {
+		t.Fatalf("start for free must give a new guest, got %#v", again.User)
+	}
+	if repeat := guestIn(app, http.StatusOK); repeat.User.ID != again.User.ID {
+		t.Fatal("the same install must reach that new guest again")
+	}
+
+	// A build from before guest secrets cannot open that guest by device id
+	// alone, and is told so rather than handed it.
+	guestIn(map[string]string{"device_id": "signout-device"}, http.StatusUnauthorized)
+}

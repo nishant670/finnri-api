@@ -1,8 +1,10 @@
 package http
 
 import (
+	"math"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const defaultParseMode = "Cash"
@@ -421,6 +423,7 @@ func normalizeSplitDraft(entry map[string]any) {
 	pruneKeys(candidate, allowedSplitCandidateFields)
 	normalizeOptionalString(candidate, "group_name")
 	participants := normalizeSplitParticipants(candidate["participants"])
+	clearSharesThatLeaveTheUserOut(participants, entry["amount"])
 	candidate["participants"] = participants
 	candidate["missing_fields"] = filterAliasedList(candidate["missing_fields"], splitMissingFieldAliases)
 
@@ -440,6 +443,47 @@ func normalizeSplitDraft(entry map[string]any) {
 	// to split with — leaving it there would have the sheet ask about a group
 	// the user already named.
 	candidate["missing_fields"] = removeAnyString(candidate["missing_fields"], "friend_or_group")
+}
+
+// clearSharesThatLeaveTheUserOut drops shares that divide the whole bill
+// among the friends alone.
+//
+// "Dinner 2400 by UPI split with Aarav and Priya" came back as ₹1,200 each:
+// the model divided by the two names it heard and forgot the person speaking,
+// so the review sheet showed "Your share ₹0" (2026-11-23). Two or more friends
+// on equal shares that add up to the whole bill is that mistake; a real
+// "they owe me all of it" is rare and is one edit away on the sheet. Clearing
+// the shares, rather than recomputing them here, hands the split back to the
+// app, which already divides an unshared split by friends + you.
+func clearSharesThatLeaveTheUserOut(participants []any, amountValue any) {
+	amount, ok := coerceParseAmount(amountValue)
+	if !ok || len(participants) < 2 {
+		return
+	}
+	var first, sum float64
+	for index, row := range participants {
+		participant, _ := row.(map[string]any)
+		if participant == nil || participant["direction"] != "friend_owes_user" {
+			return
+		}
+		share, ok := participant["share_amount"].(float64)
+		if !ok {
+			return
+		}
+		if index == 0 {
+			first = share
+		} else if math.Abs(share-first) > 0.01 {
+			return
+		}
+		sum += share
+	}
+	// Within a rupee, so a total that does not divide evenly still counts.
+	if math.Abs(sum-amount) > 1 {
+		return
+	}
+	for _, row := range participants {
+		row.(map[string]any)["share_amount"] = nil
+	}
 }
 
 func normalizeParseAliases(entry map[string]any) {
@@ -528,15 +572,56 @@ func normalizeCategory(
 		entry["category"] = fallback
 		missingSet["category"] = true
 		needsConfirmation["category"] = true
-		return
-	}
-	if normalized, ok := canonicalCategoryForType(raw, entryType); ok {
+	} else if normalized, ok := canonicalCategoryForType(raw, entryType); ok {
 		entry["category"] = normalized
-		return
+	} else {
+		entry["category"] = fallback
+		missingSet["category"] = true
+		needsConfirmation["category"] = true
 	}
-	entry["category"] = fallback
-	missingSet["category"] = true
-	needsConfirmation["category"] = true
+	// Misc, whether the model chose it, left the field empty or named
+	// something unknown, gives way to a word that says plainly what it was.
+	if entry["category"] == defaultParseCategory && !strings.EqualFold(entryType, "income") {
+		if inferred, ok := unmistakableExpenseCategory(entry); ok {
+			entry["category"] = inferred
+			delete(needsConfirmation, "category")
+			delete(missingSet, "category")
+		}
+	}
+}
+
+// unmistakableCategoryWords are words that name what was bought so plainly
+// that filing it under Misc is a mistake, not caution. "Petrol 1500 on Rewards
+// Credit Card" came back as Misc (2026-11-23) while the prompt says fuel is
+// Transport. Only whole words count, and only when the draft would otherwise
+// be Misc: any other category the model chose is never second-guessed here.
+var unmistakableCategoryWords = map[string]string{
+	"petrol":    "Transport",
+	"diesel":    "Transport",
+	"fuel":      "Transport",
+	"cng":       "Transport",
+	"toll":      "Transport",
+	"parking":   "Transport",
+	"medicine":  "Health",
+	"medicines": "Health",
+	"pharmacy":  "Health",
+	"chemist":   "Health",
+}
+
+func unmistakableExpenseCategory(entry map[string]any) (string, bool) {
+	// Not source_text: in a batch an item without its own falls back to
+	// the whole utterance, which can mention petrol for a different item.
+	for _, field := range []string{"title", "merchant"} {
+		text, _ := entry[field].(string)
+		for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+			return !unicode.IsLetter(r)
+		}) {
+			if category, ok := unmistakableCategoryWords[word]; ok {
+				return category, true
+			}
+		}
+	}
+	return "", false
 }
 
 func normalizePurposeAndTags(entry map[string]any) {

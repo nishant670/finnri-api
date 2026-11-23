@@ -106,6 +106,11 @@ func customCategoriesFor(db *gorm.DB, userID uint) (CustomCategoriesResponse, er
 	seen := map[string]bool{}
 	for _, row := range rows {
 		seen[row.Type+"\x00"+row.NameKey] = true
+		// A name that has since become built in ("Health", 2026-11-23) is
+		// already in the picker; listing the saved copy too shows it twice.
+		if _, builtIn := canonicalCategoryForType(row.Name, row.Type); builtIn {
+			continue
+		}
 		if !row.Removed {
 			lists[row.Type] = append(lists[row.Type], row.Name)
 		}
