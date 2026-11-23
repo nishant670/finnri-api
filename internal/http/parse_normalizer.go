@@ -596,12 +596,16 @@ func normalizeCategory(
 // Transport. Only whole words count, and only when the model fell back to
 // Misc: a category it actually chose is never second-guessed here.
 var unmistakableCategoryWords = map[string]string{
-	"petrol":  "Transport",
-	"diesel":  "Transport",
-	"fuel":    "Transport",
-	"cng":     "Transport",
-	"toll":    "Transport",
-	"parking": "Transport",
+	"petrol":    "Transport",
+	"diesel":    "Transport",
+	"fuel":      "Transport",
+	"cng":       "Transport",
+	"toll":      "Transport",
+	"parking":   "Transport",
+	"medicine":  "Health",
+	"medicines": "Health",
+	"pharmacy":  "Health",
+	"chemist":   "Health",
 }
 
 func unmistakableExpenseCategory(entry map[string]any) (string, bool) {

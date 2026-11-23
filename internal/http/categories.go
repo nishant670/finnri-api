@@ -31,6 +31,7 @@ var canonicalCategories = []string{
 	"Shopping",
 	"Bills",
 	"Entertainment",
+	"Health",
 	"Family/Gifts",
 	"Misc",
 }
@@ -140,6 +141,19 @@ var categoryAliases = map[string]string{
 	"cloud":        "Bills",
 	"membership":   "Bills",
 	"learning":     "Bills",
+
+	// Health — added 2026-11-23, when "Medicines 460" had nowhere to go but
+	// Misc. Medicines, the chemist, doctors and hospitals.
+	"healthcare":  "Health",
+	"health care": "Health",
+	"medical":     "Health",
+	"medicine":    "Health",
+	"medicines":   "Health",
+	"pharmacy":    "Health",
+	"chemist":     "Health",
+	"doctor":      "Health",
+	"hospital":    "Health",
+	"clinic":      "Health",
 
 	// Family/Gifts.
 	"family": "Family/Gifts",

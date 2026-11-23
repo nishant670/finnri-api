@@ -3846,7 +3846,7 @@ components:
           description: Canonical category names, in picker order.
           items:
             type: string
-          example: ["Food & Drinks", "Transport", "Travel", "Shopping", "Bills", "Entertainment", "Family/Gifts", "Misc"]
+          example: ["Food & Drinks", "Transport", "Travel", "Shopping", "Bills", "Entertainment", "Health", "Family/Gifts", "Misc"]
         default:
           type: string
           description: >-

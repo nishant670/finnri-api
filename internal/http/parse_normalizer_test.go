@@ -371,7 +371,7 @@ func TestNormalizeSplitDraftClearsSharesThatLeaveTheUserOut(t *testing.T) {
 	}
 }
 
-func TestNormalizeCategoryFilesPlainFuelUnderTransport(t *testing.T) {
+func TestNormalizeCategoryFilesPlainFuelAndMedicinesInPlace(t *testing.T) {
 	cases := []struct {
 		name, entryType, category, title, merchant string
 		want                                       string
@@ -382,7 +382,9 @@ func TestNormalizeCategoryFilesPlainFuelUnderTransport(t *testing.T) {
 		{"fuel station merchant", "expense", "Misc", "Card swipe", "HP Fuel Station", "Transport", false},
 		{"a chosen category is kept", "expense", "Shopping", "Petrol can", "", "Shopping", false},
 		{"word inside another word does not count", "expense", "Misc", "Petroleum jelly", "", "Misc", true},
-		{"nothing to go on stays Misc", "expense", "Misc", "Medicines", "", "Misc", true},
+		// 2026-11-23: "Medicines 460" came back as Misc.
+		{"medicines left in Misc", "expense", "Misc", "Medicines", "", "Health", false},
+		{"nothing to go on stays Misc", "expense", "Misc", "Stationery", "", "Misc", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
