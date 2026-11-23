@@ -385,6 +385,9 @@ func TestNormalizeCategoryFilesPlainFuelAndMedicinesInPlace(t *testing.T) {
 		// 2026-11-23: "Medicines 460" came back as Misc.
 		{"medicines left in Misc", "expense", "Misc", "Medicines", "", "Health", false},
 		{"nothing to go on stays Misc", "expense", "Misc", "Stationery", "", "Misc", true},
+		{"no category from the model", "expense", "", "Petrol", "", "Transport", false},
+		{"a category the model made up", "expense", "Vehicle", "Diesel", "", "Transport", false},
+		{"income is never moved", "income", "Other", "Fuel allowance", "", "Other", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -393,7 +396,7 @@ func TestNormalizeCategoryFilesPlainFuelAndMedicinesInPlace(t *testing.T) {
 				"type": tc.entryType, "mode": "Credit Card", "category": tc.category,
 				"date": "2026-11-23",
 			}
-			if tc.category == "Misc" {
+			if tc.category == "Misc" || tc.category == "Other" {
 				entry["needs_confirmation"] = map[string]any{"category": true}
 			}
 			normalizeParsedDraft(entry, tc.title)

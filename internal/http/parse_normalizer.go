@@ -572,29 +572,29 @@ func normalizeCategory(
 		entry["category"] = fallback
 		missingSet["category"] = true
 		needsConfirmation["category"] = true
-		return
-	}
-	if normalized, ok := canonicalCategoryForType(raw, entryType); ok {
+	} else if normalized, ok := canonicalCategoryForType(raw, entryType); ok {
 		entry["category"] = normalized
-		if normalized == defaultParseCategory && !strings.EqualFold(entryType, "income") {
-			if inferred, ok := unmistakableExpenseCategory(entry); ok {
-				entry["category"] = inferred
-				delete(needsConfirmation, "category")
-				delete(missingSet, "category")
-			}
-		}
-		return
+	} else {
+		entry["category"] = fallback
+		missingSet["category"] = true
+		needsConfirmation["category"] = true
 	}
-	entry["category"] = fallback
-	missingSet["category"] = true
-	needsConfirmation["category"] = true
+	// Misc, whether the model chose it, left the field empty or named
+	// something unknown, gives way to a word that says plainly what it was.
+	if entry["category"] == defaultParseCategory && !strings.EqualFold(entryType, "income") {
+		if inferred, ok := unmistakableExpenseCategory(entry); ok {
+			entry["category"] = inferred
+			delete(needsConfirmation, "category")
+			delete(missingSet, "category")
+		}
+	}
 }
 
 // unmistakableCategoryWords are words that name what was bought so plainly
 // that filing it under Misc is a mistake, not caution. "Petrol 1500 on Rewards
 // Credit Card" came back as Misc (2026-11-23) while the prompt says fuel is
-// Transport. Only whole words count, and only when the model fell back to
-// Misc: a category it actually chose is never second-guessed here.
+// Transport. Only whole words count, and only when the draft would otherwise
+// be Misc: any other category the model chose is never second-guessed here.
 var unmistakableCategoryWords = map[string]string{
 	"petrol":    "Transport",
 	"diesel":    "Transport",
