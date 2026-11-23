@@ -321,3 +321,87 @@ func TestNormalizeParsedDraftSaysWhetherTheModeWasRead(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeSplitDraftClearsSharesThatLeaveTheUserOut(t *testing.T) {
+	participants := func(shares ...any) []any {
+		rows := make([]any, 0, len(shares))
+		for index, share := range shares {
+			rows = append(rows, map[string]any{
+				"friend_name":  []string{"Aarav", "Priya", "Kabir"}[index],
+				"share_amount": share,
+				"direction":    "friend_owes_user",
+			})
+		}
+		return rows
+	}
+	cases := []struct {
+		name         string
+		amount       any
+		participants []any
+		want         []any
+	}{
+		// 2026-11-23: "Dinner 2400 by UPI split with Aarav and Priya".
+		{"two friends halve the whole bill", float64(2400), participants(1200.0, 1200.0), []any{nil, nil}},
+		{"uneven total within a rupee", float64(1000), participants(333.33, 333.33, 333.33), []any{nil, nil, nil}},
+		{"shares that count the user stay", float64(2400), participants(800.0, 800.0), []any{800.0, 800.0}},
+		{"unequal shares stay", float64(2400), participants(1400.0, 1000.0), []any{1400.0, 1000.0}},
+		{"one friend owing everything stays", float64(500), participants(500.0), []any{500.0}},
+		{"no amount to compare", nil, participants(1200.0, 1200.0), []any{1200.0, 1200.0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := map[string]any{
+				"title": "Dinner", "amount": tc.amount, "type": "expense", "mode": "UPI",
+				"category": "Food & Drinks", "date": "2026-11-23",
+				"split_candidate": true,
+				"split_candidate_details": map[string]any{
+					"participants": tc.participants, "missing_fields": []any{},
+				},
+			}
+			normalizeParsedDraft(entry, "Dinner split")
+			rows := entry["split_candidate_details"].(map[string]any)["participants"].([]any)
+			got := make([]any, 0, len(rows))
+			for _, row := range rows {
+				got = append(got, row.(map[string]any)["share_amount"])
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("shares = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeCategoryFilesPlainFuelUnderTransport(t *testing.T) {
+	cases := []struct {
+		name, entryType, category, title, merchant string
+		want                                       string
+		wantAsked                                  bool
+	}{
+		// 2026-11-23: "Petrol 1500 on Rewards Credit Card" came back as Misc.
+		{"petrol left in Misc", "expense", "Misc", "Petrol", "", "Transport", false},
+		{"fuel station merchant", "expense", "Misc", "Card swipe", "HP Fuel Station", "Transport", false},
+		{"a chosen category is kept", "expense", "Shopping", "Petrol can", "", "Shopping", false},
+		{"word inside another word does not count", "expense", "Misc", "Petroleum jelly", "", "Misc", true},
+		{"nothing to go on stays Misc", "expense", "Misc", "Medicines", "", "Misc", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := map[string]any{
+				"title": tc.title, "merchant": tc.merchant, "amount": float64(1500),
+				"type": tc.entryType, "mode": "Credit Card", "category": tc.category,
+				"date": "2026-11-23",
+			}
+			if tc.category == "Misc" {
+				entry["needs_confirmation"] = map[string]any{"category": true}
+			}
+			normalizeParsedDraft(entry, tc.title)
+			if entry["category"] != tc.want {
+				t.Fatalf("category = %#v, want %q", entry["category"], tc.want)
+			}
+			asked := entry["needs_confirmation"].(map[string]any)["category"] == true
+			if asked != tc.wantAsked {
+				t.Fatalf("needs_confirmation.category = %v, want %v", asked, tc.wantAsked)
+			}
+		})
+	}
+}

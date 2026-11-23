@@ -37,9 +37,10 @@ func TestGuestSecretOpensTheGuestAndIsStoredHashed(t *testing.T) {
 		t.Fatalf("the secret must be stored as its hash, got %q", stored.GuestSecretHash)
 	}
 
-	// The device id alone, or with somebody else's secret, opens nothing.
-	signIn(map[string]string{"device_id": "secret-guest-device"}, http.StatusUnauthorized)
-	signIn(map[string]string{"device_id": "secret-guest-device", "guest_secret": otherTestGuestSecret}, http.StatusUnauthorized)
+	// The device id alone, or with somebody else's secret, opens nothing: it
+	// gets a fresh, empty guest of its own.
+	expectFreshGuest(t, signIn(map[string]string{"device_id": "secret-guest-device"}, http.StatusOK), first)
+	expectFreshGuest(t, signIn(map[string]string{"device_id": "secret-guest-device", "guest_secret": otherTestGuestSecret}, http.StatusOK), first)
 
 	// The secret is what counts, even if the device id sent with it changes.
 	moved := signIn(map[string]string{"device_id": "another-device-entirely", "guest_secret": testGuestSecret}, http.StatusOK)
@@ -69,8 +70,57 @@ func TestLegacyGuestIsClaimedByItsFirstSecret(t *testing.T) {
 	}
 
 	// From here the device id is no longer a way in.
-	signIn(map[string]string{"device_id": "legacy-guest-device"}, http.StatusUnauthorized)
-	signIn(map[string]string{"device_id": "legacy-guest-device", "guest_secret": otherTestGuestSecret}, http.StatusUnauthorized)
+	expectFreshGuest(t, signIn(map[string]string{"device_id": "legacy-guest-device"}, http.StatusOK), legacy)
+	expectFreshGuest(t, signIn(map[string]string{"device_id": "legacy-guest-device", "guest_secret": otherTestGuestSecret}, http.StatusOK), legacy)
+}
+
+// expectFreshGuest checks that a guest sign-in that could not open the
+// device's guest started a new, empty one instead of handing that guest over.
+func expectFreshGuest(t *testing.T, got, shut AuthResponse) {
+	t.Helper()
+	if got.User == nil || !got.User.IsGuest || got.User.ID == shut.User.ID {
+		t.Fatalf("expected a fresh guest, not guest %d: %#v", shut.User.ID, got.User)
+	}
+	var stored models.User
+	if err := database.DB.First(&stored, got.User.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.DeviceID != nil {
+		t.Fatalf("the fresh guest must not take the device id its owner holds: %q", *stored.DeviceID)
+	}
+}
+
+// 2026-11-23: on Finnri Preview, signing out of Google and tapping "Start for
+// free" said "Could not continue as guest right now" (a 401 on staging). Every
+// way back to a guest after signing out must work, from old and new apps.
+func TestStartForFreeAfterSigningOutOfGoogle(t *testing.T) {
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	stubGoogleVerifier(t, googleIdentity{Subject: "google-sub-signout", Email: "signout@example.com", EmailVerified: true})
+	guestIn := func(body map[string]string) AuthResponse {
+		return performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/guest", "", body, http.StatusOK)
+	}
+	googleIn := func(token string, body map[string]string) AuthResponse {
+		return performJSONRequest[AuthResponse](t, router, http.MethodPost, "/v1/auth/google", token, body, http.StatusOK)
+	}
+
+	// The guest on this phone becomes the Google account, then signs out.
+	newApp := map[string]string{"device_id": "signout-device", "guest_secret": testGuestSecret}
+	guest := guestIn(newApp)
+	account := googleIn(guest.Token, map[string]string{"id_token": "valid-google-token", "guest_uuid": guest.User.UUID, "device_id": "signout-device"})
+	performJSONRequest[map[string]any](t, router, http.MethodPost, "/v1/auth/logout", account.Token, nil, http.StatusOK)
+
+	again := guestIn(newApp)
+	if again.User == nil || !again.User.IsGuest || again.User.ID == account.User.ID {
+		t.Fatalf("start for free must give a new guest, got %#v", again.User)
+	}
+	if repeat := guestIn(newApp); repeat.User.ID != again.User.ID {
+		t.Fatal("the same install must reach that new guest again")
+	}
+
+	// An app from before guest secrets on a phone whose device id is held by a
+	// secret guest — the case Finnri Preview hit — still gets in.
+	expectFreshGuest(t, guestIn(map[string]string{"device_id": "signout-device"}), again)
 }
 
 func TestGuestSecretMustLookLikeOne(t *testing.T) {

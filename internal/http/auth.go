@@ -486,9 +486,21 @@ func (s *Server) authGuest(c *gin.Context) {
 	}
 
 	user, found, err := s.resolveGuest(deviceID, secretHash)
+	// This install's device id belongs to a guest that what it sent cannot
+	// open: no secret from an app older than guest secrets, or another
+	// secret. That guest stays shut, but "Start for free" is a request for a
+	// guest, not for that one, and refusing it left a signed-out phone with no
+	// way in but Google (2026-11-23, Finnri Preview after signing out). Start
+	// a fresh guest instead, without the device id — one guest per device id
+	// is unique — and still count its credits against the device, so this is
+	// no way round the trial limit.
+	deviceTaken := false
+	if errors.Is(err, errGuestCredentialsInvalid) {
+		err, deviceTaken = nil, true
+	}
 	if err == nil && !found {
 		var deviceIDPtr *string
-		if deviceID != "" {
+		if deviceID != "" && !deviceTaken {
 			deviceIDPtr = &deviceID
 		}
 		user = models.User{
