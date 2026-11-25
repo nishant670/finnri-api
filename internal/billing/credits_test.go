@@ -644,15 +644,81 @@ func TestReserveCreditsDebitsOnceAndRefusesTheSameKeyAgain(t *testing.T) {
 	}
 }
 
-// Requests sent together with one key buy one read between them. The unique
-// index is created by the Postgres schema script, so it is added here to stand
-// in for it.
-func TestParallelReservationsWithOneKeyBuyOneRead(t *testing.T) {
-	db := setupCreditTestDB(t)
+// addUserRequestKeyIndex stands in for the unique index the Postgres schema
+// script creates.
+func addUserRequestKeyIndex(t *testing.T, db *gorm.DB) {
+	t.Helper()
 	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_user_idempotency
 		ON ai_usage_events (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key <> ''`).Error; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// On Postgres two requests can both look for a key before either has stored
+// it. The loser then fails at the unique index, or at the allowance check once
+// the winner has spent the credits. That moment is staged here by hiding the
+// winner's row from the loser's first lookup.
+func TestLosingARaceForAKeyIsReportedAsAReplay(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		creditsLeft int
+	}{
+		{"loses at the unique index", 100},
+		{"loses on credits the winner spent", 0},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := setupCreditTestDB(t)
+			addUserRequestKeyIndex(t, db)
+			now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+			service := NewCreditServiceWithClock(db, func() time.Time { return now })
+			user := createCreditTestUser(t, db)
+			grant, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "raced-key"); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&models.CreditGrant{}).Where("id = ?", grant.ID).Update("credits_remaining", scenario.creditsLeft).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			hidden := false
+			const hook = "test:hide_first_key_lookup"
+			if err := db.Callback().Query().Before("gorm:query").Register(hook, func(query *gorm.DB) {
+				if _, isEvent := query.Statement.Dest.(*models.AIUsageEvent); isEvent && !hidden {
+					hidden = true
+					query.Statement.Where("1 = 0")
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Callback().Query().Remove(hook) })
+
+			event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "raced-key")
+
+			if !hidden {
+				t.Fatal("the first lookup was never hidden, so no race was staged")
+			}
+			if !errors.Is(err, ErrRequestReplayed) {
+				t.Fatalf("the loser should be told the key is used, got %v", err)
+			}
+			if event.ID != 0 {
+				t.Fatalf("the loser must get nothing to read with: %#v", event)
+			}
+			if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 5 {
+				t.Fatalf("expected only the winner's debit, daily usage 5, got %d", got)
+			}
+		})
+	}
+}
+
+// Requests sent together with one key buy one read between them. This
+// database runs them one at a time, so it covers the key lookup only; the race
+// between two lookups is TestLosingARaceForAKeyIsReportedAsAReplay.
+func TestParallelReservationsWithOneKeyBuyOneRead(t *testing.T) {
+	db := setupCreditTestDB(t)
+	addUserRequestKeyIndex(t, db)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
 	service := NewCreditServiceWithClock(db, func() time.Time { return now })
 	user := createCreditTestUser(t, db)

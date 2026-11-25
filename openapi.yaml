@@ -2357,6 +2357,7 @@ paths:
             ai_request_already_used: this Idempotency-Key already paid for an AI
             read. The provider is not called and nothing is charged. A key pays for
             one read, whatever became of it.
+            A PDF whose rows can be read locally returns them with 200 instead.
         "200":
           description: Summary, rows, proposed card updates and warnings
           content:
@@ -2650,6 +2651,7 @@ paths:
             ai_request_already_used: this Idempotency-Key already paid for an AI
             read. The provider is not called and nothing is charged. A key pays for
             one read, whatever became of it.
+            A PDF whose rows can be read locally returns them with 200 instead.
         "200":
           description: The diff
           content:

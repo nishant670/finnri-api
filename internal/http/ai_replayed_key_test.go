@@ -82,6 +82,25 @@ func multipartAIRequest(t *testing.T, field, filename string, data []byte, extra
 	return aiRouteRequest{contentType: writer.FormDataContentType(), body: body.Bytes()}
 }
 
+// No row the local parser can read here, so a refusal cannot fall back to it.
+const unreadableStatementPDF = "BT /F1 10 Tf 72 720 Td (12 Oct) Tj 0 -14 Td (AMAZON PAY INDIA) Tj 0 -14 Td (1,250.00) Tj ET"
+
+// The local parser reads this row on its own, for free.
+const readableStatementPDF = "BT /F1 12 Tf 72 720 Td (10/07/2026 SWIGGY BANGALORE 480.00) Tj ET"
+
+func statementPDFRequest(t *testing.T, content string) aiRouteRequest {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "statement.pdf")
+	if err := writeTextPDF(t, path, content); err != nil {
+		t.Fatalf("could not build a test PDF: %v", err)
+	}
+	pdf, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return multipartAIRequest(t, "file", "statement.pdf", pdf, nil)
+}
+
 // Every route that pays for an AI call, with a request that gets as far as
 // making it.
 var aiRoutes = []struct {
@@ -105,17 +124,13 @@ var aiRoutes = []struct {
 		return multipartAIRequest(t, "image", "receipt.png", receiptTestPNG, nil)
 	}},
 	{"statement PDF", (*Server).readCardStatement, func(t *testing.T) aiRouteRequest {
-		// No row the local parser can read, so a refusal cannot fall back to it.
-		path := filepath.Join(t.TempDir(), "statement.pdf")
-		if err := writeTextPDF(t, path, "BT /F1 10 Tf 72 720 Td (12 Oct) Tj 0 -14 Td (AMAZON PAY INDIA) Tj 0 -14 Td (1,250.00) Tj ET"); err != nil {
-			t.Fatalf("could not build a test PDF: %v", err)
-		}
-		pdf, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request := multipartAIRequest(t, "file", "statement.pdf", pdf, nil)
+		request := statementPDFRequest(t, unreadableStatementPDF)
 		request.needsCard = true
+		return request
+	}},
+	{"statement PDF, saved bill", (*Server).uploadCardStatementPDF, func(t *testing.T) aiRouteRequest {
+		request := statementPDFRequest(t, unreadableStatementPDF)
+		request.needsCard, request.needsStatement = true, true
 		return request
 	}},
 	{"statement screenshots, new bill", (*Server).readCardStatement, func(t *testing.T) aiRouteRequest {
@@ -278,5 +293,62 @@ func TestAReusedRequestKeyNeverReachesTheAIProvider(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// Rows the free parser already has are not refused because of the key, just as
+// they are not refused for want of credits. The model is still not asked.
+func TestAReusedKeyStillGetsTheLocalStatementRows(t *testing.T) {
+	for _, saved := range []bool{false, true} {
+		name, handler := "new bill", (*Server).readCardStatement
+		if saved {
+			name, handler = "saved bill", (*Server).uploadCardStatementPDF
+		}
+		t.Run(name, func(t *testing.T) {
+			user := newAIRouteUser(t)
+			key := "reused-" + generateUUID()
+			if _, _, err := billing.NewCreditService(database.DB).ReserveCredits(billing.SubjectForUser(user.ID), ai.ActionTransactionParseText, key); err != nil {
+				t.Fatal(err)
+			}
+			request := statementPDFRequest(t, readableStatementPDF)
+			request.needsCard, request.needsStatement = true, saved
+
+			response, calls := callAIRoute(t, name, handler, request, user, key)
+
+			if calls != 0 {
+				t.Fatalf("the provider was called %d times for a reused key", calls)
+			}
+			if response.Code != 200 || !strings.Contains(response.Body.String(), "SWIGGY BANGALORE") {
+				t.Fatalf("the local rows should still come back: %d %s", response.Code, response.Body.String())
+			}
+			if got := aiUsageCount(t, user.ID); got != 1 {
+				t.Fatalf("local rows are free, got %d usage rows", got)
+			}
+		})
+	}
+}
+
+// A guest's keys are looked up by device, not by account.
+func TestAGuestsReusedKeyNeverReachesTheAIProvider(t *testing.T) {
+	useSmokeDatabase(t)
+	deviceID := "guest-device-" + generateUUID()
+	guest := models.User{UUID: generateUUID(), Username: "guest_" + generateUUID()[:12], IsGuest: true, DeviceID: &deviceID}
+	if err := database.DB.Create(&guest).Error; err != nil {
+		t.Fatal(err)
+	}
+	credits := billing.NewCreditService(database.DB)
+	if _, _, err := credits.EnsureGuestTrialGrant(deviceID, "203.0.113.7"); err != nil {
+		t.Fatal(err)
+	}
+	text := aiRoutes[0]
+
+	key := "guest-key-" + generateUUID()
+	response, calls := callAIRoute(t, text.name, text.handler, text.request(t), guest, key)
+	if calls != 1 {
+		t.Fatalf("a guest's new key should reach the provider once, got %d: %d %s", calls, response.Code, response.Body.String())
+	}
+	response, calls = callAIRoute(t, text.name, text.handler, text.request(t), guest, key)
+	if calls != 0 || response.Code != 409 || !strings.Contains(response.Body.String(), "ai_request_already_used") {
+		t.Fatalf("calls = %d, status = %d, body = %s", calls, response.Code, response.Body.String())
 	}
 }
