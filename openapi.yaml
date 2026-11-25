@@ -478,6 +478,11 @@ paths:
                   type: string
                   default: Asia/Kolkata
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: A transaction draft, or an answer to a question about recorded transactions
           content:
@@ -525,6 +530,11 @@ paths:
                   type: string
                   default: Asia/Kolkata
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: A transaction draft built from the receipt
           content:
@@ -1207,6 +1217,11 @@ paths:
             schema:
               $ref: "#/components/schemas/StatementAlertInput"
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: Existing statement updated, or a manual statement preserved
           headers:
@@ -2337,6 +2352,11 @@ paths:
                     type: string
                     format: binary
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: Summary, rows, proposed card updates and warnings
           content:
@@ -2625,6 +2645,11 @@ paths:
                   type: string
                   description: Used once to decrypt, then discarded. Never stored.
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: The diff
           content:
@@ -2669,6 +2694,11 @@ paths:
                     type: string
                     format: binary
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: The normal statement diff plus screenshot checksum and AI credit usage
           content:

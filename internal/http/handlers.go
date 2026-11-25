@@ -1121,6 +1121,13 @@ func writeCreditReservationError(c *gin.Context, allowance billing.AllowanceResu
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
 		return
 	}
+	if errors.Is(err, billing.ErrRequestReplayed) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "ai_request_already_used",
+			"message": "That request was already used. Please try again.",
+		})
+		return
+	}
 	if !errors.Is(err, billing.ErrAllowanceDenied) {
 		c.JSON(500, gin.H{"error": "credit_reservation_failed"})
 		return

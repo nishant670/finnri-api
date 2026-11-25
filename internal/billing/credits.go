@@ -71,6 +71,10 @@ const (
 var ErrAllowanceDenied = errors.New("ai credit allowance denied")
 var ErrInvalidCreditSubject = errors.New("invalid credit subject")
 
+// ErrRequestReplayed means this idempotency key has already paid for a read.
+// The caller must not call the provider: nothing was reserved for this one.
+var ErrRequestReplayed = errors.New("ai request key already used")
+
 type CreditService struct {
 	db       *gorm.DB
 	registry ai.ActionRegistry
@@ -180,33 +184,26 @@ func (s *CreditService) CheckAllowance(subject CreditSubject, actionCode ai.Acti
 func (s *CreditService) ReserveCredits(subject CreditSubject, actionCode ai.ActionCode, idempotencyKey string) (models.AIUsageEvent, AllowanceResult, error) {
 	var event models.AIUsageEvent
 	var allowance AllowanceResult
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if !subject.valid() {
 			allowance = AllowanceResult{Allowed: false, Reason: AllowanceSubjectRequired}
 			return ErrInvalidCreditSubject
 		}
 
-		idempotencyKey = strings.TrimSpace(idempotencyKey)
+		// One key pays for one provider call. This used to answer "allowed" with
+		// the earlier event, so the handler called the provider again while
+		// nothing new was reserved and FinalizeUsage ignored the settled event:
+		// one charge bought any number of reads, of any kind, with no credits
+		// left. The earlier event's status makes no difference — no result is
+		// stored to hand back.
 		if idempotencyKey != "" {
-			existing, found, err := findUsageEventByIdempotency(tx, subject, idempotencyKey)
+			_, found, err := findUsageEventByIdempotency(tx, subject, idempotencyKey)
 			if err != nil {
 				return err
 			}
 			if found {
-				event = existing
-				action, err := s.registry.Require(ai.ActionCode(existing.ActionCode))
-				if err != nil {
-					return err
-				}
-				allowance = AllowanceResult{
-					Allowed:          true,
-					Reason:           AllowanceAllowed,
-					Action:           action,
-					RequiredCredits:  existing.ReservedCredits,
-					AvailableCredits: existing.ReservedCredits,
-					DailyRemaining:   existing.ReservedCredits,
-				}
-				return nil
+				return ErrRequestReplayed
 			}
 		}
 
@@ -247,6 +244,14 @@ func (s *CreditService) ReserveCredits(subject CreditSubject, actionCode ai.Acti
 		return adjustDailyUsage(tx, subject, now, allowance.RequiredCredits)
 	})
 	if err != nil {
+		// Two requests that arrive together can both find no event. The unique
+		// index on the key lets only one insert, and the other can also lose on
+		// credits the winner just spent. Either way it is a repeat, and says so.
+		if idempotencyKey != "" && !errors.Is(err, ErrRequestReplayed) && subject.valid() {
+			if _, found, lookupErr := findUsageEventByIdempotency(s.db, subject, idempotencyKey); lookupErr == nil && found {
+				return models.AIUsageEvent{}, AllowanceResult{}, ErrRequestReplayed
+			}
+		}
 		if errors.Is(err, ErrAllowanceDenied) {
 			s.recordAllowanceDenial(subject, allowance)
 		}

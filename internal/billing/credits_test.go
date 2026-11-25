@@ -580,7 +580,7 @@ func TestCheckAllowanceDeniesGuestForNonGuestAction(t *testing.T) {
 	}
 }
 
-func TestReserveCreditsDebitsGrantDailyUsageAndIsIdempotent(t *testing.T) {
+func TestReserveCreditsDebitsOnceAndRefusesTheSameKeyAgain(t *testing.T) {
 	db := setupCreditTestDB(t)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
 	service := NewCreditServiceWithClock(db, func() time.Time { return now })
@@ -610,15 +610,83 @@ func TestReserveCreditsDebitsGrantDailyUsageAndIsIdempotent(t *testing.T) {
 		t.Fatalf("expected daily usage 5, got %d", got)
 	}
 
-	replayed, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "parse-1")
-	if err != nil {
-		t.Fatal(err)
+	replayed, replayAllowance, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, " parse-1 ")
+	if !errors.Is(err, ErrRequestReplayed) {
+		t.Fatalf("expected the same key to be refused, got %v", err)
 	}
-	if replayed.ID != event.ID {
-		t.Fatalf("expected idempotent event %d, got %d", event.ID, replayed.ID)
+	if replayed.ID != 0 || replayAllowance.Allowed {
+		t.Fatalf("a refused key must hand back nothing to read with: event=%#v allowance=%#v", replayed, replayAllowance)
 	}
 	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 5 {
-		t.Fatalf("expected idempotent daily usage to stay 5, got %d", got)
+		t.Fatalf("expected daily usage to stay 5, got %d", got)
+	}
+
+	// Keys are per account: somebody else's "parse-1" is a different request.
+	other := models.User{UUID: t.Name() + "-other", Username: t.Name() + "_other"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.ReserveCredits(SubjectForUser(other.ID), ai.ActionTransactionParseText, "parse-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// No key, no replay rule: each read is reserved on its own.
+	for range 2 {
+		if _, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 15 {
+		t.Fatalf("expected three paid reads, daily usage 15, got %d", got)
+	}
+}
+
+// Requests sent together with one key buy one read between them. The unique
+// index is created by the Postgres schema script, so it is added here to stand
+// in for it.
+func TestParallelReservationsWithOneKeyBuyOneRead(t *testing.T) {
+	db := setupCreditTestDB(t)
+	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_user_idempotency
+		ON ai_usage_events (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key <> ''`).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "same-key")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrRequestReplayed) {
+			t.Fatalf("unexpected reservation error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one reservation, got %d", successes)
+	}
+	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 5 {
+		t.Fatalf("expected one debit, daily usage 5, got %d", got)
 	}
 }
 
