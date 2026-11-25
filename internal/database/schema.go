@@ -32,6 +32,7 @@ func Migrate() error {
 		&models.AdminAuditLog{},
 		&models.AdminDailyMetric{},
 		&models.UserClient{},
+		&models.EntryKeyClaim{},
 		&models.Account{},
 		&models.Entry{},
 		&models.QuickPrompt{},

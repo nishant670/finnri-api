@@ -291,6 +291,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.DELETE("/events/:id/entries", server.removeEventEntries)
 	authorized.GET("/reports/transactions/summary", server.getTransactionSummaryReport)
 	authorized.GET("/entries/:id", server.getEntry)
+	authorized.POST("/entry-keys/:key/cancel", server.cancelEntryKey)
 	authorized.PUT("/entries/:id", server.updateEntry)
 	authorized.DELETE("/entries/:id", server.deleteEntry)
 	authorized.GET("/notifications", server.listNotifications)
@@ -375,6 +376,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.AIAbuseBlock{},
 		&models.Account{},
 		&models.Entry{},
+		&models.EntryKeyClaim{},
 		&models.QuickPrompt{},
 		&models.Notification{},
 		&models.Feedback{},
