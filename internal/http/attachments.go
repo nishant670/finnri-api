@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"finnri/internal/database"
 	"finnri/internal/models"
@@ -80,13 +81,15 @@ func userMayAttach(userID uint, value string) (bool, error) {
 	if !ok {
 		return true, nil
 	}
-	name, ok := safeUploadName(filepath.Base(path))
+	base := filepath.Base(path)
+	name, ok := safeUploadName(strings.ToLower(base))
 	if !ok {
 		return true, nil
 	}
-	// An escaped spelling would be invisible to the LIKE searches above. The
-	// server never issues one.
-	if !strings.Contains(value, name) {
+	// Only the spelling the server issued. A capital one opens the same file on
+	// a disk that ignores case, and an escaped one is invisible to the LIKE
+	// searches above.
+	if base != name || !strings.Contains(value, name) {
 		return false, nil
 	}
 	owners, err := uploadReferenceOwners(name)
@@ -120,4 +123,41 @@ func optionalValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// isRespelledUpload reports a name that differs from one the server issues only
+// by capitals. Removing it could remove that other file.
+func isRespelledUpload(name string) bool {
+	lower := strings.ToLower(name)
+	_, ok := safeUploadName(lower)
+	return ok && lower != name
+}
+
+// entryFiles lists the files named by these entries and by the split bills filed
+// against them. Collect before the change that may drop them. A failed lookup
+// is logged and costs at most a file left behind; inside a Postgres transaction
+// it also fails that transaction, so nothing is removed.
+func entryFiles(db *gorm.DB, userID uint, entryIDs ...uint) []string {
+	if len(entryIDs) == 0 {
+		return nil
+	}
+	var files []string
+	if err := db.Model(&models.Entry{}).
+		Where("user_id = ? AND id IN ? AND attachment <> ?", userID, entryIDs, "").
+		Pluck("attachment", &files).Error; err != nil {
+		log.Printf("failed_attachment_lookup stage=entries err=%v", err)
+	}
+	var billFiles []string
+	if err := db.Model(&models.SplitBill{}).
+		Where("user_id = ? AND entry_id IN ? AND attachment <> ?", userID, entryIDs, "").
+		Pluck("attachment", &billFiles).Error; err != nil {
+		log.Printf("failed_attachment_lookup stage=split_bills err=%v", err)
+	}
+	return append(files, billFiles...)
+}
+
+// deleteDroppedFiles is deleteLocalUploadFiles for an edit: a value the record
+// still carries needs no lookup.
+func deleteDroppedFiles(before []string, kept string) {
+	deleteLocalUploadFiles(slices.DeleteFunc(before, func(value string) bool { return value == kept }))
 }

@@ -137,6 +137,11 @@ func (s *Server) createCardEMIPlan(c *gin.Context) {
 		Notes:            input.Notes,
 	}
 
+	var sourceFiles []string
+	if input.SourceEntryID != nil {
+		sourceFiles = entryFiles(database.DB, userID, *input.SourceEntryID)
+	}
+
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&plan).Error; err != nil {
 			return err
@@ -154,6 +159,8 @@ func (s *Server) createCardEMIPlan(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_emi_plan"})
 		return
 	}
+	// The converted purchase is gone, and its receipt with it.
+	deleteLocalUploadFiles(sourceFiles)
 
 	// Bill anything already due — a plan added late should not sit there
 	// pretending its first months have not happened.
@@ -285,6 +292,8 @@ func (s *Server) deleteCardEMIPlan(c *gin.Context) {
 		}
 	}
 
+	files := entryFiles(database.DB, userID, entryIDs...)
+
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
 		if len(entryIDs) > 0 {
 			if err := tx.Where("id IN ? AND user_id = ?", entryIDs, userID).
@@ -302,6 +311,7 @@ func (s *Server) deleteCardEMIPlan(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_emi_plan"})
 		return
 	}
+	deleteLocalUploadFiles(files)
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 

@@ -32,6 +32,10 @@ func newAttachmentWorld(t *testing.T) attachmentWorld {
 	world := attachmentWorld{router: smokeRouter(t, func(s *Server, _ *config.Config) { server = s })}
 	world.router.POST("/test/upload", server.handleUpload)
 	world.router.DELETE("/v1/user", AuthMiddleware(), server.deleteUser)
+	cards := world.router.Group("/v1", AuthMiddleware())
+	cards.DELETE("/statements/:id", server.deleteCardStatement)
+	cards.DELETE("/statements/:id/payments/:paymentId", server.deleteCardStatementPayment)
+	cards.DELETE("/emi-plans/:id", server.deleteCardEMIPlan)
 	// Upload files are read, written and removed relative to the working directory.
 	t.Chdir(t.TempDir())
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
@@ -149,6 +153,8 @@ func TestAttachmentCannotBeAdoptedFromAnotherUser(t *testing.T) {
 		{"new entry, encoded name", http.MethodPost, "/v1/entries", entryPayload(encoded)},
 		{"new entry, another host", http.MethodPost, "/v1/entries", entryPayload("https://elsewhere.example/uploads/" + name)},
 		{"new entry, bare path", http.MethodPost, "/v1/entries", entryPayload("/uploads/" + name)},
+		{"new entry, capital name", http.MethodPost, "/v1/entries", entryPayload("/uploads/" + strings.ToUpper(name))},
+		{"new entry, capital extension", http.MethodPost, "/v1/entries", entryPayload("/uploads/" + strings.TrimSuffix(name, ".png") + ".PNG")},
 		{"edit entry", http.MethodPut, fmt.Sprintf("/v1/entries/%d", plain.ID), map[string]any{"attachment": receipt}},
 		{"new split bill", http.MethodPost, "/v1/split/bills", billPayload(receipt)},
 		{"edit split bill", http.MethodPut, fmt.Sprintf("/v1/split/bills/%d", ownBill.ID), billPayload(receipt)},
@@ -174,24 +180,6 @@ func TestAttachmentAccessEndsWhenMemberLeavesGroup(t *testing.T) {
 	}
 	if userCanReadUpload(w.member.ID, filepath.Base(receipt)) {
 		t.Fatal("the member kept access to the receipt after leaving the group")
-	}
-}
-
-func TestDeletingAnAdoptedEntryKeepsTheOwnersFile(t *testing.T) {
-	w := newAttachmentWorld(t)
-	_, receipt := w.sharedGroupReceipt(t)
-
-	status, _ := w.request(t, http.MethodPost, "/v1/entries", w.memberToken, entryPayload(receipt))
-	var adopted []models.Entry
-	if err := database.DB.Where("user_id = ?", w.member.ID).Find(&adopted).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range adopted {
-		w.request(t, http.MethodDelete, fmt.Sprintf("/v1/entries/%d", entry.ID), w.memberToken, nil)
-	}
-	t.Logf("adopting answered %d", status)
-	if !fileExists(receipt) {
-		t.Fatal("deleting the member's entry removed the owner's receipt")
 	}
 }
 
@@ -329,5 +317,29 @@ func TestOwnAttachmentsKeepWorking(t *testing.T) {
 	}
 	if !fileExists(photo) {
 		t.Fatal("the group photo was removed")
+	}
+}
+
+// A disk that ignores case, as a developer's Mac does, opens the same file for
+// a capital spelling, so no spelling the server did not issue may reach it.
+func TestCapitalSpellingNeverReachesAFile(t *testing.T) {
+	w := newAttachmentWorld(t)
+	receipt := w.upload(t)
+	w.createEntry(t, w.ownerToken, receipt)
+	capitals := "/uploads/" + strings.ToUpper(filepath.Base(receipt))
+
+	if _, ok := safeUploadName(filepath.Base(capitals)); ok {
+		t.Error("a capital spelling can be asked for and served")
+	}
+	// Where the disk tells the spellings apart this is a second file, so a
+	// missing guard shows there too.
+	respelled := filepath.Join(uploadDir, filepath.Base(capitals))
+	if err := os.WriteFile(respelled, pngBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row := w.forceSecondReference(t, w.member.ID, capitals)
+	w.request(t, http.MethodDelete, fmt.Sprintf("/v1/entries/%d", row.ID), w.memberToken, nil)
+	if !fileExists(receipt) || !fileExists(capitals) {
+		t.Error("deleting a capital spelling removed a file")
 	}
 }

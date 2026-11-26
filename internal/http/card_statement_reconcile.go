@@ -309,7 +309,12 @@ func clearUnitemizedEntry(statement *models.CardStatement) error {
 		Update("unitemized_entry_id", nil).Error; err != nil {
 		return err
 	}
-	return database.DB.
+	files := entryFiles(database.DB, statement.UserID, entryID)
+	if err := database.DB.
 		Where("id = ? AND user_id = ?", entryID, statement.UserID).
-		Delete(&models.Entry{}).Error
+		Delete(&models.Entry{}).Error; err != nil {
+		return err
+	}
+	deleteLocalUploadFiles(files)
+	return nil
 }

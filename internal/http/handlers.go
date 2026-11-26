@@ -1629,16 +1629,20 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if !ensureAttachable(c, userID, "invalid_entry", "attachment", optionalValue(input.Attachment)) {
 		return
 	}
-	// Hold the previous receipt so it can be removed once the swap is committed.
-	replacedAttachment := ""
 	if input.Attachment != nil {
-		if entry.Attachment != "" && entry.Attachment != *input.Attachment {
-			replacedAttachment = entry.Attachment
-		}
 		entry.Attachment = *input.Attachment
 	}
 	if input.AccountID.Set {
 		entry.AccountID = input.AccountID.Value
+	}
+
+	// Read before saving: the edit can replace the receipt, and rewrites or
+	// removes the entry's split bills along with theirs. An edit that sends
+	// neither a receipt nor a split removes no file: syncing the split bill can
+	// still overwrite a receipt it alone carried, which nobody asked to delete.
+	var previousFiles []string
+	if input.Attachment != nil || input.Split.Set {
+		previousFiles = entryFiles(database.DB, userID, entry.ID)
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
@@ -1655,9 +1659,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
 	}
-	if replacedAttachment != "" {
-		deleteLocalUploadFiles([]string{replacedAttachment})
-	}
+	deleteDroppedFiles(previousFiles, entry.Attachment)
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 	// See createEntry: the user performed this edit and saw it succeed.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
@@ -1706,6 +1708,8 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		return
 	}
 
+	files := entryFiles(database.DB, userID, entry.ID)
+
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := deleteEntryDependents(tx, userID, uint(id)); err != nil {
 			return err
@@ -1726,8 +1730,8 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	// Removed only if no other record still names it.
-	deleteLocalUploadFiles([]string{entry.Attachment})
+	// Removed only if no other record still names them.
+	deleteLocalUploadFiles(files)
 	// See createEntry: the user performed this delete and saw it succeed.
 
 	c.JSON(200, gin.H{"message": "entry deleted"})
@@ -2009,6 +2013,12 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 		}
 		attachments = append(attachments, splitAttachments...)
 
+		var groupPhotos []string
+		if err := tx.Model(&models.SplitGroup{}).Where("user_id = ? AND photo_url <> ?", user.ID, "").Pluck("photo_url", &groupPhotos).Error; err != nil {
+			return err
+		}
+		attachments = append(attachments, groupPhotos...)
+
 		var feedbackAttachments []models.StringArray
 		if err := tx.Model(&models.Feedback{}).Where("user_id = ?", user.ID).Pluck("attachments", &feedbackAttachments).Error; err != nil {
 			return err
@@ -2171,6 +2181,9 @@ func deleteLocalUploadFiles(attachments []string) {
 			continue
 		}
 		seen[path] = struct{}{}
+		if isRespelledUpload(filepath.Base(path)) {
+			continue
+		}
 		// When that cannot be checked the file stays: an orphan can be swept
 		// later, a removed receipt cannot be brought back.
 		owners, err := uploadReferenceOwners(filepath.Base(path))

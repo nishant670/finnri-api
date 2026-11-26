@@ -1142,10 +1142,12 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 
 	var group models.SplitGroup
 	var addedFriendIDs []uint
+	var previousPhoto string
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := ownedSplitGroups(tx, userID).Where("id = ?", id).First(&group).Error; err != nil {
 			return err
 		}
+		previousPhoto = group.PhotoURL
 		group.Name = strings.TrimSpace(input.Name)
 		group.Kind = normalizedSplitGroupKind(input.Kind)
 		input.applyKindLabel(&group)
@@ -1195,6 +1197,7 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_group"})
 		return
 	}
+	deleteDroppedFiles([]string{previousPhoto}, group.PhotoURL)
 	// A new or lowered limit can already be passed.
 	checkSplitGroupBalanceAlerts(database.DB, group.ID)
 	memberInvites := inviteSplitGroupMembersForOwner(userID, group, addedFriendIDs)
@@ -1412,6 +1415,7 @@ func (s *Server) archiveSplitGroup(c *gin.Context) {
 	}
 
 	var removedEntries int64
+	var droppedFiles []string
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		result := ownedSplitGroups(tx.Model(&models.SplitGroup{}), userID).
 			Where("id = ?", id).
@@ -1446,9 +1450,14 @@ func (s *Server) archiveSplitGroup(c *gin.Context) {
 		entryIDs := make([]uint, 0, len(bills))
 		for _, bill := range bills {
 			billIDs = append(billIDs, bill.ID)
+			droppedFiles = append(droppedFiles, bill.Attachment)
 			if bill.EntryID != nil {
 				entryIDs = append(entryIDs, *bill.EntryID)
 			}
+		}
+		// Read while the rows are still there.
+		if deleteEntries {
+			droppedFiles = append(droppedFiles, entryFiles(tx, userID, entryIDs...)...)
 		}
 
 		// Participants first: they are what the balances are summed from, and
@@ -1483,6 +1492,7 @@ func (s *Server) archiveSplitGroup(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_archive_split_group"})
 		return
 	}
+	deleteLocalUploadFiles(droppedFiles)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "split group archived",
@@ -1728,11 +1738,13 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 
 	var bill models.SplitBill
 	var previousGroupID uint
+	var previousFiles []string
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("user_id = ? AND id = ?", userID, id).First(&bill).Error; err != nil {
 			return err
 		}
 		previousGroupID = derefUint(bill.GroupID)
+		previousFiles = []string{bill.Attachment}
 		// Omission from an older split client must not detach its transaction.
 		if input.EntryID != nil {
 			bill.EntryID = input.EntryID
@@ -1749,6 +1761,7 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 			if err := tx.Where("user_id = ? AND id = ?", userID, *bill.EntryID).First(&entry).Error; err != nil {
 				return err
 			}
+			previousFiles = append(previousFiles, entry.Attachment)
 			entry.Title, entry.Amount, entry.Currency, entry.Date, entry.Notes = bill.Title, bill.TotalAmount, bill.Currency, bill.Date, bill.Notes
 			if input.Mode != nil {
 				entry.Mode = bill.Mode
@@ -1803,6 +1816,7 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_update_split_bill"})
 		return
 	}
+	deleteDroppedFiles(previousFiles, bill.Attachment)
 	// Both sides of a bill moved between groups.
 	checkSplitGroupBalanceAlerts(database.DB, previousGroupID, derefUint(bill.GroupID))
 
@@ -1819,14 +1833,17 @@ func (s *Server) deleteSplitBill(c *gin.Context) {
 	}
 
 	var deletedGroupID uint
+	var receipt string
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		var groupIDs []*uint
-		if err := tx.Model(&models.SplitBill{}).Where("user_id = ? AND id = ?", userID, id).
-			Pluck("group_id", &groupIDs).Error; err != nil {
+		// Read into the model: plucking group_id alone failed on a bill outside
+		// any group, whose group_id is NULL.
+		var found []models.SplitBill
+		if err := tx.Select("group_id", "attachment").Where("user_id = ? AND id = ?", userID, id).
+			Find(&found).Error; err != nil {
 			return err
 		}
-		if len(groupIDs) > 0 {
-			deletedGroupID = derefUint(groupIDs[0])
+		if len(found) > 0 {
+			deletedGroupID, receipt = derefUint(found[0].GroupID), found[0].Attachment
 		}
 		if err := tx.Where("user_id = ? AND bill_id = ?", userID, id).Delete(&models.SplitParticipant{}).Error; err != nil {
 			return err
@@ -1847,6 +1864,7 @@ func (s *Server) deleteSplitBill(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_split_bill"})
 		return
 	}
+	deleteLocalUploadFiles([]string{receipt})
 	checkSplitGroupBalanceAlerts(database.DB, deletedGroupID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "split bill deleted"})

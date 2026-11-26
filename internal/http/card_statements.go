@@ -301,6 +301,7 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 			if payment.BankEntryID == nil {
 				continue
 			}
+			removedAttachments = append(removedAttachments, entryFiles(tx, userID, *payment.BankEntryID)...)
 			if err := tx.Where("id = ? AND user_id = ?", *payment.BankEntryID, userID).
 				Delete(&models.Entry{}).Error; err != nil {
 				return err
@@ -320,6 +321,7 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 				return err
 			}
 			for _, entry := range imported {
+				removedAttachments = append(removedAttachments, entryFiles(tx, userID, entry.ID)...)
 				if err := deleteEntryDependents(tx, userID, entry.ID); err != nil {
 					return err
 				}
@@ -328,7 +330,6 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 					return result.Error
 				}
 				removed += result.RowsAffected
-				removedAttachments = append(removedAttachments, entry.Attachment)
 			}
 		}
 		bucket := statement.UnitemizedEntryID
@@ -341,6 +342,7 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 			return err
 		}
 		if bucket != nil {
+			removedAttachments = append(removedAttachments, entryFiles(tx, userID, *bucket)...)
 			return tx.Where("id = ? AND user_id = ?", *bucket, userID).Delete(&models.Entry{}).Error
 		}
 		return nil
@@ -518,12 +520,14 @@ func (s *Server) deleteCardStatementPayment(c *gin.Context) {
 	}
 
 	if payment.BankEntryID != nil {
+		files := entryFiles(database.DB, userID, *payment.BankEntryID)
 		if err := database.DB.
 			Where("id = ? AND user_id = ?", *payment.BankEntryID, userID).
 			Delete(&models.Entry{}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_payment"})
 			return
 		}
+		deleteLocalUploadFiles(files)
 	}
 	if err := database.DB.Delete(&payment).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_delete_payment"})
