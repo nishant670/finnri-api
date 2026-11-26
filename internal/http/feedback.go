@@ -72,6 +72,10 @@ func (s *Server) createFeedback(c *gin.Context) {
 		return
 	}
 
+	if !ensureAttachable(c, userID, "invalid_feedback", "attachments", feedback.Attachments...) {
+		return
+	}
+
 	if err := database.DB.Create(&feedback).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_feedback"})
 		return

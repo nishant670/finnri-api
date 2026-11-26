@@ -278,10 +278,11 @@ func uploadSignature(sessionTokenHash, name string, expires int64) string {
 
 func safeUploadName(raw string) (string, bool) {
 	name := strings.TrimSpace(raw)
-	if name == "" || filepath.Base(name) != name {
+	// Lower case only, as randomUploadName writes them.
+	if name == "" || name != strings.ToLower(name) || filepath.Base(name) != name {
 		return "", false
 	}
-	extension := strings.ToLower(filepath.Ext(name))
+	extension := filepath.Ext(name)
 	allowed := false
 	for _, candidate := range allowedUploadTypes {
 		if extension == candidate {
