@@ -981,6 +981,9 @@ func (s *Server) createSplitGroup(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group", "fields": fields})
 		return
 	}
+	if !ensureAttachable(c, userID, "invalid_split_group", "photo_url", optionalValue(input.PhotoURL)) {
+		return
+	}
 	if fields, err := validateSplitGroupFriends(userID, input.FriendIDs); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "split_friend_lookup_failed"})
 		return
@@ -1124,6 +1127,9 @@ func (s *Server) updateSplitGroup(c *gin.Context) {
 	}
 	if fields := input.validate(); len(fields) > 0 {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_group", "fields": fields})
+		return
+	}
+	if !ensureAttachable(c, userID, "invalid_split_group", "photo_url", optionalValue(input.PhotoURL)) {
 		return
 	}
 	if fields, err := validateSplitGroupFriends(userID, input.FriendIDs); err != nil {
@@ -1555,6 +1561,9 @@ func (s *Server) createSplitBill(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": fields})
 		return
 	}
+	if !ensureAttachable(c, userID, "invalid_split_bill", "attachment", optionalValue(input.Attachment)) {
+		return
+	}
 	if input.EntryID != nil {
 		if ok, err := userOwnsEntry(userID, *input.EntryID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "entry_lookup_failed"})
@@ -1682,6 +1691,9 @@ func (s *Server) updateSplitBill(c *gin.Context) {
 	}
 	if fields := input.validate(); len(fields) > 0 {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_split_bill", "fields": fields})
+		return
+	}
+	if !ensureAttachable(c, userID, "invalid_split_bill", "attachment", optionalValue(input.Attachment)) {
 		return
 	}
 	if input.EntryID != nil {

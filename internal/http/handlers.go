@@ -1258,6 +1258,10 @@ func (s *Server) saveEntry(c *gin.Context) {
 		}
 	}
 
+	if !ensureAttachable(c, userID, "invalid_entry", "attachment", input.Attachment) {
+		return
+	}
+
 	entry := input.toModel(userID)
 	if idempotencyKey != "" {
 		entry.IdempotencyKey = &idempotencyKey
@@ -1622,6 +1626,9 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.SourceText != nil {
 		entry.SourceText = *input.SourceText
 	}
+	if !ensureAttachable(c, userID, "invalid_entry", "attachment", optionalValue(input.Attachment)) {
+		return
+	}
 	// Hold the previous receipt so it can be removed once the swap is committed.
 	replacedAttachment := ""
 	if input.Attachment != nil {
@@ -1719,7 +1726,7 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	// The row is gone, so nothing else can reference the receipt now.
+	// Removed only if no other record still names it.
 	deleteLocalUploadFiles([]string{entry.Attachment})
 	// See createEntry: the user performed this delete and saw it succeed.
 
@@ -2151,6 +2158,8 @@ func localUploadPathFromAttachment(raw string) (string, bool) {
 	return filepath.Join("uploads", relative), true
 }
 
+// deleteLocalUploadFiles removes the files no record names any more. Call it
+// after the change that dropped the references has committed.
 func deleteLocalUploadFiles(attachments []string) {
 	seen := make(map[string]struct{}, len(attachments))
 	for _, attachment := range attachments {
@@ -2162,6 +2171,16 @@ func deleteLocalUploadFiles(attachments []string) {
 			continue
 		}
 		seen[path] = struct{}{}
+		// When that cannot be checked the file stays: an orphan can be swept
+		// later, a removed receipt cannot be brought back.
+		owners, err := uploadReferenceOwners(filepath.Base(path))
+		if err != nil {
+			log.Printf("failed_delete_upload file=%s stage=references err=%v", filepath.Base(path), err)
+			continue
+		}
+		if len(owners) > 0 {
+			continue
+		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("failed_delete_upload file=%s err=%v", filepath.Base(path), err)
 		}

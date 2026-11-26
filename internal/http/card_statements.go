@@ -351,7 +351,7 @@ func (s *Server) deleteCardStatement(c *gin.Context) {
 		return
 	}
 
-	// The rows are gone, so nothing else can reference their receipts now.
+	// Removed only if no other record still names them.
 	deleteLocalUploadFiles(removedAttachments)
 	retileNextStatement(account, statement.ID, statement.StatementDate)
 	c.JSON(http.StatusOK, gin.H{"deleted": true, "removed_transactions": removed})
