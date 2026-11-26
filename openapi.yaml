@@ -269,6 +269,16 @@ paths:
       summary: Return feature and guest-conversion adoption metrics
       responses:
         "200": {description: Feature adoption metrics}
+  /v1/analytics/events:
+    post:
+      summary: Record a batch of product usage events (a listed name and one optional lowercase label each)
+      responses:
+        "200": {description: Counts of accepted and dropped events}
+  /v1/admin/analytics/product-funnel:
+    get:
+      summary: Return product usage events by step and label for a date window
+      responses:
+        "200": {description: Product funnel}
   /v1/admin/audit-log:
     get:
       summary: Browse immutable admin action records
@@ -468,6 +478,11 @@ paths:
                   type: string
                   default: Asia/Kolkata
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: A transaction draft, or an answer to a question about recorded transactions
           content:
@@ -515,6 +530,11 @@ paths:
                   type: string
                   default: Asia/Kolkata
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: A transaction draft built from the receipt
           content:
@@ -558,6 +578,8 @@ paths:
                 $ref: "#/components/schemas/SavedEntry"
         "400":
           description: Invalid payload
+        "409":
+          description: The Idempotency-Key was cancelled (`entry_key_cancelled`)
         "422":
           description: Field validation or account ownership failed
           content:
@@ -661,6 +683,42 @@ paths:
                 $ref: "#/components/schemas/EntryPage"
         "422":
           description: Invalid filters
+        "500":
+          description: Database error
+  /v1/entry-keys/{key}/cancel:
+    parameters:
+      - in: path
+        name: key
+        required: true
+        description: The Idempotency-Key a create was sent with.
+        schema:
+          type: string
+          maxLength: 128
+    post:
+      summary: Settle a create that was never answered
+      description: >-
+        Returns the entry the key saved. If it saved none, the key is cancelled
+        for good: a create carrying it, even one already on its way, is refused
+        with 409 `entry_key_cancelled`. Safe to repeat.
+      responses:
+        "200":
+          description: Either the saved entry, or the key is now cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [saved, cancelled]
+                properties:
+                  saved:
+                    type: boolean
+                  cancelled:
+                    type: boolean
+                  entry:
+                    $ref: "#/components/schemas/SavedEntry"
+        "401":
+          description: Not signed in
+        "422":
+          description: Key too long
         "500":
           description: Database error
   /v1/entries/export:
@@ -1149,6 +1207,32 @@ paths:
                   $ref: "#/components/schemas/AccountProvider"
         "422":
           description: Invalid account type
+  /v1/card-products:
+    get:
+      summary: List real card products for Add card's picker
+      description: >
+        The card catalogue (docs/CREDIT_CARD_SYSTEM_PLAN_2026-11-13.md §5).
+        Each product's art is a sketch the app draws from `drawing`, `tone`
+        and `orientation`; no bank or network artwork. Hidden products are
+        left out. Fees are present only when taken from the issuer's terms.
+      parameters:
+        - in: query
+          name: issuer
+          required: false
+          schema:
+            type: string
+          description: A provider id (hdfc) or a name the provider list knows (HDFC Bank). Lists that bank's cards, most held first.
+      responses:
+        "200":
+          description: Card products
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CardProduct"
+        "422":
+          description: Not a bank that issues credit cards
   /v1/accounts/{id}/statements/alert:
     parameters:
       - in: path
@@ -1171,6 +1255,11 @@ paths:
             schema:
               $ref: "#/components/schemas/StatementAlertInput"
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: Existing statement updated, or a manual statement preserved
           headers:
@@ -2301,6 +2390,12 @@ paths:
                     type: string
                     format: binary
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
+            A PDF whose rows can be read locally returns them with 200 instead.
         "200":
           description: Summary, rows, proposed card updates and warnings
           content:
@@ -2589,6 +2684,12 @@ paths:
                   type: string
                   description: Used once to decrypt, then discarded. Never stored.
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
+            A PDF whose rows can be read locally returns them with 200 instead.
         "200":
           description: The diff
           content:
@@ -2633,6 +2734,11 @@ paths:
                     type: string
                     format: binary
       responses:
+        "409":
+          description: >-
+            ai_request_already_used: this Idempotency-Key already paid for an AI
+            read. The provider is not called and nothing is charged. A key pays for
+            one read, whatever became of it.
         "200":
           description: The normal statement diff plus screenshot checksum and AI credit usage
           content:
@@ -3810,7 +3916,7 @@ components:
           description: Canonical category names, in picker order.
           items:
             type: string
-          example: ["Food & Drinks", "Transport", "Travel", "Shopping", "Bills", "Entertainment", "Family/Gifts", "Misc"]
+          example: ["Food & Drinks", "Transport", "Travel", "Shopping", "Bills", "Entertainment", "Health", "Family/Gifts", "Misc"]
         default:
           type: string
           description: >-
@@ -3974,6 +4080,17 @@ components:
           type: string
           enum: ["", card, pay_later]
           description: Credit cards only. pay_later for a pay-later line such as CRED flash.
+        card_product_id:
+          type: string
+          nullable: true
+          description: >-
+            Credit cards only. A card-products id, which must be the account's
+            bank; picking one names the bank when none is given and fills a blank
+            annual fee and waiver. Omit to leave it; "" clears it.
+        card_network:
+          type: string
+          enum: ["", visa, mastercard, rupay, amex, diners]
+          description: Credit cards only, shown as plain text. Omit to leave it.
         is_default:
           type: boolean
         auto_created:
@@ -4043,6 +4160,30 @@ components:
           type: string
           enum: ["", pay_later]
           description: Credit cards only. pay_later names the card as a pay-later line.
+        card_product_id:
+          type: string
+          nullable: true
+        card_product:
+          type: object
+          description: The linked product's name and art, so the card can be drawn.
+          properties:
+            id:
+              type: string
+            issuer_id:
+              type: string
+            name:
+              type: string
+            tone:
+              type: string
+              enum: [deep, solid, tint, pale]
+            drawing:
+              type: string
+            orientation:
+              type: string
+              enum: [landscape, portrait]
+        card_network:
+          type: string
+          enum: ["", visa, mastercard, rupay, amex, diners]
         is_default:
           type: boolean
         auto_created:
@@ -4068,6 +4209,55 @@ components:
           type: array
           items:
             type: string
+    CardProduct:
+      type: object
+      required: [id, issuer_id, name, tone, drawing, orientation, source_urls]
+      properties:
+        id:
+          type: string
+          example: hdfc-millennia
+        issuer_id:
+          type: string
+          description: The account provider id of the issuing bank.
+        name:
+          type: string
+          example: Millennia
+        tone:
+          type: string
+          enum: [deep, solid, tint, pale]
+        drawing:
+          type: string
+          description: Name of a sketch the app ships; an unknown one draws the plain card.
+        orientation:
+          type: string
+          enum: [landscape, portrait]
+        art_idea:
+          type: string
+        art_drawn_as:
+          type: string
+        art_reviewed:
+          type: boolean
+        joining_fee:
+          type: number
+          nullable: true
+        annual_fee:
+          type: number
+          nullable: true
+        fee_waiver_spend:
+          type: number
+          nullable: true
+        source_urls:
+          type: array
+          items:
+            type: string
+        last_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        sort_order:
+          type: integer
+        hidden:
+          type: boolean
     AccountWithSummary:
       allOf:
         - $ref: "#/components/schemas/Account"
@@ -4123,6 +4313,9 @@ components:
           description: >-
             Non-card accounts with an opening balance only — opening plus money in
             minus money out. Absent otherwise, because net flow is not a balance.
+        paid_in_full_streak:
+          type: integer
+          description: Credit cards. Bills paid in full in a row, newest first; an open bill not yet due is skipped.
         annual_fee:
           type: object
           description: >-

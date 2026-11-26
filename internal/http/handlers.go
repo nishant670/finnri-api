@@ -170,6 +170,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.POST("/users/:id/credits/adjustments", requireAdminRole(models.AdminRoleSupport), s.createUserCreditAdjustment)
 		admin.PATCH("/users/:id/test", requireAdminRole(models.AdminRoleSupport), s.updateAdminUserTest)
 		admin.GET("/trials", s.listAdminTrials)
+		admin.GET("/audience", s.getAdminAudience)
 		admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), s.createAdminGiftPass)
 		admin.POST("/gifts/bulk", requireAdminRole(models.AdminRoleSupport), s.createAdminBulkGift)
 		admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), s.revokeAdminGiftPass)
@@ -200,6 +201,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.GET("/analytics/retention", s.getAdminRetention)
 		admin.GET("/analytics/engagement", s.getAdminEngagement)
 		admin.GET("/analytics/feature-adoption", s.getAdminFeatureAdoption)
+		admin.GET("/analytics/product-funnel", s.getAdminProductFunnel)
 		admin.GET("/audit-log", s.listAdminAuditLog)
 		admin.GET("/health", s.getAdminHealth)
 		admin.GET("/export/:resource", s.exportAdminCSV)
@@ -213,11 +215,14 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), s.publishAdminAppRelease)
 		admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), s.unpublishAdminAppRelease)
 		admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), s.deleteAdminAppRelease)
+		admin.GET("/card-products", s.listAdminCardProducts)
+		admin.POST("/card-products", requireAdminRole(models.AdminRoleSupport), s.createAdminCardProduct)
+		admin.PUT("/card-products/:id", requireAdminRole(models.AdminRoleSupport), s.updateAdminCardProduct)
 	}
 
 	// Protected Routes (User Token)
 	authorized := r.Group("/v1")
-	authorized.Use(AuthMiddleware())
+	authorized.Use(AuthMiddlewareWithConfig(cfg), authenticatedBodyLimit(), userRateLimit(cfg.UserRateLimitRPS, cfg.UserRateLimitBurst, "user"))
 	{
 		authorized.POST("/parse", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParse)
 		authorized.POST("/parse/receipt", uploadRequestLimits(cfg), rateLimit(cfg, "ai"), s.handleParseReceipt)
@@ -242,6 +247,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/events/:id/entries", s.removeEventEntries)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
+		authorized.POST("/entry-keys/:key/cancel", s.cancelEntryKey)
 		authorized.PUT("/entries/:id", s.updateEntry)
 		authorized.DELETE("/entries/:id", s.deleteEntry)
 		authorized.GET("/refundables", s.listRefundables)
@@ -254,8 +260,11 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/user", s.deleteUser)
 		authorized.POST("/auth/logout", s.authLogout)
 		authorized.POST("/auth/sessions/revoke-all", s.authRevokeAllSessions)
-		authorized.POST("/upload", uploadRequestLimits(cfg), s.handleUpload)
+		// Its own, tighter count: a file is written to disk before any record
+		// points at it, so this is the one route that can fill the volume.
+		authorized.POST("/upload", uploadRequestLimits(cfg), userRateLimit(cfg.UploadRateLimitRPS, cfg.UploadRateLimitBurst, "upload"), s.handleUpload)
 		authorized.POST("/feedback", s.createFeedback)
+		authorized.POST("/analytics/events", jsonRequestLimits(cfg), s.recordProductEvents)
 
 		// Billing and AI credit visibility
 		authorized.GET("/billing/status", s.getBillingStatus)
@@ -269,6 +278,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.POST("/accounts", s.saveAccount)
 		authorized.GET("/accounts", s.listAccounts)
 		authorized.GET("/account-providers", listAccountProviders)
+		authorized.GET("/card-products", listCardProducts)
 		authorized.PUT("/accounts/:id", s.updateAccount)
 		authorized.POST("/accounts/:id/paid-off", s.markCardPaidOff)
 		authorized.POST("/accounts/:id/balance", s.setAccountBalance)
@@ -424,6 +434,8 @@ func skipsStaticBearer(path string) bool {
 	return path == "/health" ||
 		strings.HasPrefix(path, "/v1/auth/") ||
 		strings.HasPrefix(path, "/v1/entries") ||
+		// "/v1/entry-keys": not covered by the line above.
+		strings.HasPrefix(path, "/v1/entry-keys") ||
 		strings.HasPrefix(path, "/v1/refundables") ||
 		strings.HasPrefix(path, "/v1/quick-prompts") ||
 		strings.HasPrefix(path, "/v1/user") ||
@@ -448,6 +460,7 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/events") ||
 		strings.HasPrefix(path, "/v1/accounts") ||
 		strings.HasPrefix(path, "/v1/account-providers") ||
+		strings.HasPrefix(path, "/v1/card-products") ||
 		// Statements nested under a card are covered by the line above, but
 		// the top-level ones are not: "/v1/statements/:id" and
 		// "/v1/statements/upcoming" do not have "/v1/accounts" as a prefix.
@@ -456,6 +469,8 @@ func skipsStaticBearer(path string) bool {
 		strings.HasPrefix(path, "/v1/emi-plans") ||
 		strings.HasPrefix(path, "/v1/notifications") ||
 		strings.HasPrefix(path, "/v1/feedback") ||
+		// Usage events from the app's queue. "/v1/events" above is occasions.
+		strings.HasPrefix(path, "/v1/analytics") ||
 		strings.HasPrefix(path, "/v1/budgets") ||
 		strings.HasPrefix(path, "/v1/subscriptions") ||
 		// Not covered by the line above: "/v1/subscription-occurrences" does
@@ -1109,6 +1124,13 @@ func writeCreditReservationError(c *gin.Context, allowance billing.AllowanceResu
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credit_subject"})
 		return
 	}
+	if errors.Is(err, billing.ErrRequestReplayed) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":   "ai_request_already_used",
+			"message": "That request was already used. Please try again.",
+		})
+		return
+	}
 	if !errors.Is(err, billing.ErrAllowanceDenied) {
 		c.JSON(500, gin.H{"error": "credit_reservation_failed"})
 		return
@@ -1246,16 +1268,33 @@ func (s *Server) saveEntry(c *gin.Context) {
 		}
 	}
 
+	if !ensureAttachable(c, userID, "invalid_entry", "attachment", input.Attachment) {
+		return
+	}
+
 	entry := input.toModel(userID)
 	if idempotencyKey != "" {
 		entry.IdempotencyKey = &idempotencyKey
 	}
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if idempotencyKey != "" {
+			claim, err := claimEntryKey(tx, userID, idempotencyKey)
+			if err != nil {
+				return err
+			}
+			if claim.Cancelled {
+				return errEntryKeyCancelled
+			}
+		}
 		if err := tx.Create(&entry).Error; err != nil {
 			return err
 		}
 		return createEntrySplitBill(tx, userID, entry, input.Split)
 	}); err != nil {
+		if errors.Is(err, errEntryKeyCancelled) {
+			c.JSON(409, gin.H{"error": "entry_key_cancelled", "message": "This save was cancelled."})
+			return
+		}
 		if idempotencyKey != "" {
 			var existing models.Entry
 			if lookupErr := database.DB.Preload("Account").
@@ -1610,16 +1649,23 @@ func (s *Server) updateEntry(c *gin.Context) {
 	if input.SourceText != nil {
 		entry.SourceText = *input.SourceText
 	}
-	// Hold the previous receipt so it can be removed once the swap is committed.
-	replacedAttachment := ""
+	if !ensureAttachable(c, userID, "invalid_entry", "attachment", optionalValue(input.Attachment)) {
+		return
+	}
 	if input.Attachment != nil {
-		if entry.Attachment != "" && entry.Attachment != *input.Attachment {
-			replacedAttachment = entry.Attachment
-		}
 		entry.Attachment = *input.Attachment
 	}
 	if input.AccountID.Set {
 		entry.AccountID = input.AccountID.Value
+	}
+
+	// Read before saving: the edit can replace the receipt, and rewrites or
+	// removes the entry's split bills along with theirs. An edit that sends
+	// neither a receipt nor a split removes no file: syncing the split bill can
+	// still overwrite a receipt it alone carried, which nobody asked to delete.
+	var previousFiles []string
+	if input.Attachment != nil || input.Split.Set {
+		previousFiles = entryFiles(database.DB, userID, entry.ID)
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
@@ -1636,9 +1682,7 @@ func (s *Server) updateEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "failed_update_entry"})
 		return
 	}
-	if replacedAttachment != "" {
-		deleteLocalUploadFiles([]string{replacedAttachment})
-	}
+	deleteDroppedFiles(previousFiles, entry.Attachment)
 	_ = database.DB.Preload("Account").First(&entry, entry.ID).Error
 	// See createEntry: the user performed this edit and saw it succeed.
 	_ = maybeCreateBudgetAlertsForEntry(entry)
@@ -1687,6 +1731,8 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		return
 	}
 
+	files := entryFiles(database.DB, userID, entry.ID)
+
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := deleteEntryDependents(tx, userID, uint(id)); err != nil {
 			return err
@@ -1707,8 +1753,8 @@ func (s *Server) deleteEntry(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	// The row is gone, so nothing else can reference the receipt now.
-	deleteLocalUploadFiles([]string{entry.Attachment})
+	// Removed only if no other record still names them.
+	deleteLocalUploadFiles(files)
 	// See createEntry: the user performed this delete and saw it succeed.
 
 	c.JSON(200, gin.H{"message": "entry deleted"})
@@ -1990,6 +2036,12 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 		}
 		attachments = append(attachments, splitAttachments...)
 
+		var groupPhotos []string
+		if err := tx.Model(&models.SplitGroup{}).Where("user_id = ? AND photo_url <> ?", user.ID, "").Pluck("photo_url", &groupPhotos).Error; err != nil {
+			return err
+		}
+		attachments = append(attachments, groupPhotos...)
+
 		var feedbackAttachments []models.StringArray
 		if err := tx.Model(&models.Feedback{}).Where("user_id = ?", user.ID).Pluck("attachments", &feedbackAttachments).Error; err != nil {
 			return err
@@ -2063,16 +2115,19 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.CardStatement{}, "card statements"},
 			{&models.MonthlyReview{}, "monthly reviews"},
 			{&models.Feedback{}, "feedback"},
+			{&models.ProductEvent{}, "product events"},
 			{&models.SubscriptionReminder{}, "subscription reminders"},
 			{&models.SubscriptionOccurrence{}, "subscription occurrences"},
 			{&models.Subscription{}, "subscriptions"},
 			{&models.RecurringCandidateDecision{}, "recurring candidate decisions"},
 			{&models.PushDevice{}, "push devices"},
+			{&models.UserClient{}, "user clients"},
 			{&models.Notification{}, "notifications"},
 			{&models.QuickPrompt{}, "quick prompts"},
 			{&models.UserCategory{}, "user categories"},
 			{&models.AccountRule{}, "account rules"},
 			{&models.Entry{}, "entries"},
+			{&models.EntryKeyClaim{}, "entry key claims"},
 			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
 			{&models.AuthSession{}, "auth sessions"},
@@ -2137,6 +2192,8 @@ func localUploadPathFromAttachment(raw string) (string, bool) {
 	return filepath.Join("uploads", relative), true
 }
 
+// deleteLocalUploadFiles removes the files no record names any more. Call it
+// after the change that dropped the references has committed.
 func deleteLocalUploadFiles(attachments []string) {
 	seen := make(map[string]struct{}, len(attachments))
 	for _, attachment := range attachments {
@@ -2148,6 +2205,19 @@ func deleteLocalUploadFiles(attachments []string) {
 			continue
 		}
 		seen[path] = struct{}{}
+		if isRespelledUpload(filepath.Base(path)) {
+			continue
+		}
+		// When that cannot be checked the file stays: an orphan can be swept
+		// later, a removed receipt cannot be brought back.
+		owners, err := uploadReferenceOwners(filepath.Base(path))
+		if err != nil {
+			log.Printf("failed_delete_upload file=%s stage=references err=%v", filepath.Base(path), err)
+			continue
+		}
+		if len(owners) > 0 {
+			continue
+		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("failed_delete_upload file=%s err=%v", filepath.Base(path), err)
 		}
@@ -2255,6 +2325,13 @@ func (s *Server) saveAccount(c *gin.Context) {
 	}
 	account := models.Account{UserID: userID}
 	input.apply(&account)
+	if fields, err := applyAccountCardProduct(input, &account); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_card_product"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
 	if input.CurrentBalance != nil {
 		// A new account has no entries, so today's balance is its opening.
 		account.Balance = *input.CurrentBalance
@@ -2299,9 +2376,7 @@ func (s *Server) listAccounts(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	for index := range accounts {
-		hydrateAccountProvider(&accounts[index])
-	}
+	hydrateAccountProviders(accounts)
 
 	// Each account arrives with what its transactions prove, not just what the
 	// user typed into it once. See account_summary.go for the rules.
@@ -2350,6 +2425,13 @@ func (s *Server) updateAccount(c *gin.Context) {
 		return
 	}
 	input.apply(&account)
+	if fields, err := applyAccountCardProduct(input, &account); err != nil {
+		c.JSON(500, gin.H{"error": "failed_load_card_product"})
+		return
+	} else if len(fields) > 0 {
+		c.JSON(422, gin.H{"error": "invalid_account", "fields": fields})
+		return
+	}
 	if input.CurrentBalance != nil {
 		opening, err := openingForCurrentBalance(userID, account.ID, *input.CurrentBalance)
 		if err != nil {

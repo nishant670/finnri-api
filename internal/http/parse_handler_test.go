@@ -158,7 +158,7 @@ func TestParseHandlerNormalizesNoCostEMICreditCardDrift(t *testing.T) {
 		parser: fixtureParser{result: []byte(`{
 			"title":"Titan Specs","amount":null,"type":"expense","currency":"INR",
 			"mode":"Credit Card","card_network":"HDFC","account_hint":null,
-			"category":"Healthcare","merchant":"Titan","purpose_type":"emi",
+			"category":"Eyewear","merchant":"Titan","purpose_type":"emi",
 			"tags":"EMI","date":"2026-07-19","emi_tenure_months":6,
 			"no_cost_emi":true,
 			"confidence":{"amount":0.2,"emi":0.9},

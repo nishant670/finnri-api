@@ -75,14 +75,16 @@ func (s *Server) updateAdminUserTest(c *gin.Context) {
 		c.JSON(422, gin.H{"error": "is_test_required"})
 		return
 	}
-	updates := map[string]any{"is_test": false, "test_reason": "", "test_marked_at": nil}
+	// test_marked_at records when the flag was last decided, cleared included,
+	// so automatic tagging never overrules an admin's call.
+	now := time.Now().UTC()
+	updates := map[string]any{"is_test": false, "test_reason": "", "test_marked_at": &now}
 	if *input.IsTest {
 		reason := firstNonEmpty(strings.TrimSpace(input.Reason), models.UserTestReasonManual)
 		if !validUserTestReason(reason) {
 			c.JSON(422, gin.H{"error": "invalid_test_reason"})
 			return
 		}
-		now := time.Now().UTC()
 		updates = map[string]any{"is_test": true, "test_reason": reason, "test_marked_at": &now}
 	}
 	result := database.DB.Model(&models.User{}).Where("id = ?", id).Updates(updates)

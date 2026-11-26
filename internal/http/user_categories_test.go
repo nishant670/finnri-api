@@ -158,3 +158,30 @@ func TestDeleteUserDataRemovesUserCategories(t *testing.T) {
 		t.Fatalf("user categories survived account deletion: %d", count)
 	}
 }
+
+// Health became a built-in category on 2026-11-23. Somebody who had already
+// made their own "Health", from the picker or on an entry, must see it once.
+func TestCustomHealthCategoryIsNotListedTwiceOnceBuiltIn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useSmokeDatabase(t)
+	router := smokeRouter(t)
+	user, token := createBillingTestUserSession(t)
+
+	saved := models.UserCategory{UserID: user.ID, Type: "expense", Name: "Health", NameKey: "health"}
+	if err := database.DB.Create(&saved).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedCategoryEntry(t, user.ID, "expense", "health")
+	seedCategoryEntry(t, user.ID, "expense", "Pet Care")
+
+	got := performJSONRequest[CustomCategoriesResponse](t, router, http.MethodGet, "/v1/categories/custom", token, nil, http.StatusOK)
+	if strings.Join(got.Expense, "|") != "Pet Care" {
+		t.Fatalf("expense categories = %v, want only Pet Care", got.Expense)
+	}
+
+	added := performJSONRequest[CustomCategoryResponse](t, router, http.MethodPost, "/v1/categories/custom", token,
+		map[string]any{"name": "medicines", "type": "expense"}, http.StatusOK)
+	if !added.Canonical || added.Name != "Health" {
+		t.Fatalf("medicines should resolve to the built-in Health, got %#v", added)
+	}
+}

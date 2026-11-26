@@ -48,6 +48,14 @@ func TestRuntimeSchemaIncludesDataIntegrityConstraints(t *testing.T) {
 		"ai_usage_limit_events_reason_check",
 		"ai_model_pricings_operation_check",
 		"ai_abuse_blocks_scope_check",
+		"CREATE TABLE IF NOT EXISTS card_products",
+		"card_products_tone_check",
+		"card_products_orientation_check",
+		"card_products_fees_non_negative_check",
+		"fk_accounts_card_product",
+		"REFERENCES card_products(id) ON DELETE SET NULL",
+		"accounts_card_product_check",
+		"accounts_card_network_check",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(joined, fragment) {

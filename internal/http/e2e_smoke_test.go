@@ -185,6 +185,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.PATCH("/users/:id/test", requireAdminRole(models.AdminRoleSupport), server.updateAdminUserTest)
 	admin.POST("/gifts/bulk", requireAdminRole(models.AdminRoleSupport), server.createAdminBulkGift)
 	admin.GET("/trials", server.listAdminTrials)
+	admin.GET("/audience", server.getAdminAudience)
 	admin.POST("/users/:id/passes", requireAdminRole(models.AdminRoleSupport), server.createAdminGiftPass)
 	admin.POST("/users/:id/passes/:pass_id/revoke", requireAdminRole(models.AdminRoleSupport), server.revokeAdminGiftPass)
 	admin.GET("/ai/metrics", server.getAIMetrics)
@@ -212,6 +213,9 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.POST("/releases/:id/publish", requireAdminRole(models.AdminRoleSupport), server.publishAdminAppRelease)
 	admin.POST("/releases/:id/unpublish", requireAdminRole(models.AdminRoleSupport), server.unpublishAdminAppRelease)
 	admin.DELETE("/releases/:id", requireAdminRole(models.AdminRoleSupport), server.deleteAdminAppRelease)
+	admin.GET("/card-products", server.listAdminCardProducts)
+	admin.POST("/card-products", requireAdminRole(models.AdminRoleSupport), server.createAdminCardProduct)
+	admin.PUT("/card-products/:id", requireAdminRole(models.AdminRoleSupport), server.updateAdminCardProduct)
 	admin.GET("/feedback", server.listAdminFeedback)
 	admin.GET("/feedback/stats", server.getAdminFeedbackStats)
 	admin.GET("/feedback/:id/attachments/:index", server.getAdminFeedbackAttachment)
@@ -221,6 +225,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	admin.GET("/analytics/retention", server.getAdminRetention)
 	admin.GET("/analytics/engagement", server.getAdminEngagement)
 	admin.GET("/analytics/feature-adoption", server.getAdminFeatureAdoption)
+	admin.GET("/analytics/product-funnel", server.getAdminProductFunnel)
 	admin.GET("/audit-log", server.listAdminAuditLog)
 	admin.GET("/health", server.getAdminHealth)
 	admin.GET("/export/:resource", server.exportAdminCSV)
@@ -242,6 +247,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.GET("/ai/usage", server.listAIUsage)
 	authorized.GET("/ai/credits", server.getAICredits)
 	authorized.GET("/accounts", server.listAccounts)
+	authorized.GET("/card-products", listCardProducts)
 	authorized.POST("/accounts/:id/paid-off", server.markCardPaidOff)
 	authorized.POST("/accounts", server.saveAccount)
 	authorized.PUT("/accounts/:id", server.updateAccount)
@@ -258,6 +264,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.POST("/subscriptions/:id/mark-paid", server.markSubscriptionPaid)
 	authorized.DELETE("/subscriptions/:id", server.deleteSubscription)
 	authorized.POST("/feedback", server.createFeedback)
+	authorized.POST("/analytics/events", server.recordProductEvents)
 	authorized.POST("/auth/logout", server.authLogout)
 	authorized.POST("/auth/sessions/revoke-all", server.authRevokeAllSessions)
 	authorized.POST("/entries", server.saveEntry)
@@ -284,6 +291,7 @@ func smokeRouter(t *testing.T, configure ...func(*Server, *config.Config)) *gin.
 	authorized.DELETE("/events/:id/entries", server.removeEventEntries)
 	authorized.GET("/reports/transactions/summary", server.getTransactionSummaryReport)
 	authorized.GET("/entries/:id", server.getEntry)
+	authorized.POST("/entry-keys/:key/cancel", server.cancelEntryKey)
 	authorized.PUT("/entries/:id", server.updateEntry)
 	authorized.DELETE("/entries/:id", server.deleteEntry)
 	authorized.GET("/notifications", server.listNotifications)
@@ -354,6 +362,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.AdminUser{},
 		&models.AdminAuditLog{},
 		&models.AdminDailyMetric{},
+		&models.UserClient{},
 		&models.Plan{},
 		&models.UserSubscription{},
 		&models.CreditGrant{},
@@ -367,9 +376,11 @@ func useSmokeDatabase(t *testing.T) {
 		&models.AIAbuseBlock{},
 		&models.Account{},
 		&models.Entry{},
+		&models.EntryKeyClaim{},
 		&models.QuickPrompt{},
 		&models.Notification{},
 		&models.Feedback{},
+		&models.ProductEvent{},
 		&models.Budget{},
 		&models.BudgetAlert{},
 		&models.MonthlyReview{},
@@ -384,6 +395,7 @@ func useSmokeDatabase(t *testing.T) {
 		&models.RecurringCandidateDecision{},
 		&models.UserCategory{},
 		&models.AccountRule{},
+		&models.CardProduct{},
 		&models.Event{},
 		&models.AppRelease{},
 		&models.AppReleaseItem{},
