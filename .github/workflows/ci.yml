@@ -19,6 +19,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Only the credit concurrency tests use this: SQLite runs one transaction at
+    # a time, so it cannot show two requests overlapping. It exists for this job
+    # alone and holds nothing.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -36,6 +51,9 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
-      # The tests use an in-memory SQLite database, so no Postgres service.
+      # Most tests use an in-memory SQLite database. Without TEST_POSTGRES_DSN
+      # the PostgreSQL ones skip, so it must stay set here.
       - name: Test
+        env:
+          TEST_POSTGRES_DSN: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
         run: go test ./...
