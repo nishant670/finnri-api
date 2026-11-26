@@ -254,8 +254,9 @@ func (s *Server) readStatementPDFText(c *gin.Context, text string, anchor time.T
 	creditService := billing.NewCreditService(database.DB)
 	usageEvent, allowance, reserveErr := creditService.ReserveCredits(subject, action.Code, parseIdempotencyHeader(c))
 	if reserveErr != nil {
-		// Out of credits is no reason to refuse rows the parser already has.
-		if errors.Is(reserveErr, billing.ErrAllowanceDenied) && len(localLines) > 0 {
+		// Out of credits, or a used request key, is no reason to refuse rows
+		// the parser already has.
+		if (errors.Is(reserveErr, billing.ErrAllowanceDenied) || errors.Is(reserveErr, billing.ErrRequestReplayed)) && len(localLines) > 0 {
 			return local()
 		}
 		writeCreditReservationError(c, allowance, reserveErr)

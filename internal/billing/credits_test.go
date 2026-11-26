@@ -580,7 +580,7 @@ func TestCheckAllowanceDeniesGuestForNonGuestAction(t *testing.T) {
 	}
 }
 
-func TestReserveCreditsDebitsGrantDailyUsageAndIsIdempotent(t *testing.T) {
+func TestReserveCreditsDebitsOnceAndRefusesTheSameKeyAgain(t *testing.T) {
 	db := setupCreditTestDB(t)
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
 	service := NewCreditServiceWithClock(db, func() time.Time { return now })
@@ -610,15 +610,149 @@ func TestReserveCreditsDebitsGrantDailyUsageAndIsIdempotent(t *testing.T) {
 		t.Fatalf("expected daily usage 5, got %d", got)
 	}
 
-	replayed, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "parse-1")
-	if err != nil {
-		t.Fatal(err)
+	replayed, replayAllowance, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, " parse-1 ")
+	if !errors.Is(err, ErrRequestReplayed) {
+		t.Fatalf("expected the same key to be refused, got %v", err)
 	}
-	if replayed.ID != event.ID {
-		t.Fatalf("expected idempotent event %d, got %d", event.ID, replayed.ID)
+	if replayed.ID != 0 || replayAllowance.Allowed {
+		t.Fatalf("a refused key must hand back nothing to read with: event=%#v allowance=%#v", replayed, replayAllowance)
 	}
 	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 5 {
-		t.Fatalf("expected idempotent daily usage to stay 5, got %d", got)
+		t.Fatalf("expected daily usage to stay 5, got %d", got)
+	}
+
+	// Keys are per account: somebody else's "parse-1" is a different request.
+	other := models.User{UUID: t.Name() + "-other", Username: t.Name() + "_other"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.ReserveCredits(SubjectForUser(other.ID), ai.ActionTransactionParseText, "parse-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// No key, no replay rule: each read is reserved on its own.
+	for range 2 {
+		if _, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 15 {
+		t.Fatalf("expected three paid reads, daily usage 15, got %d", got)
+	}
+}
+
+// addUserRequestKeyIndex stands in for the unique index the Postgres schema
+// script creates.
+func addUserRequestKeyIndex(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_usage_events_user_idempotency
+		ON ai_usage_events (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key <> ''`).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// On Postgres two requests can both look for a key before either has stored
+// it. The loser then fails at the unique index, or at the allowance check once
+// the winner has spent the credits. That moment is staged here by hiding the
+// winner's row from the loser's first lookup.
+func TestLosingARaceForAKeyIsReportedAsAReplay(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		creditsLeft int
+	}{
+		{"loses at the unique index", 100},
+		{"loses on credits the winner spent", 0},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			db := setupCreditTestDB(t)
+			addUserRequestKeyIndex(t, db)
+			now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+			service := NewCreditServiceWithClock(db, func() time.Time { return now })
+			user := createCreditTestUser(t, db)
+			grant, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "raced-key"); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&models.CreditGrant{}).Where("id = ?", grant.ID).Update("credits_remaining", scenario.creditsLeft).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			hidden := false
+			const hook = "test:hide_first_key_lookup"
+			if err := db.Callback().Query().Before("gorm:query").Register(hook, func(query *gorm.DB) {
+				if _, isEvent := query.Statement.Dest.(*models.AIUsageEvent); isEvent && !hidden {
+					hidden = true
+					query.Statement.Where("1 = 0")
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Callback().Query().Remove(hook) })
+
+			event, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "raced-key")
+
+			if !hidden {
+				t.Fatal("the first lookup was never hidden, so no race was staged")
+			}
+			if !errors.Is(err, ErrRequestReplayed) {
+				t.Fatalf("the loser should be told the key is used, got %v", err)
+			}
+			if event.ID != 0 {
+				t.Fatalf("the loser must get nothing to read with: %#v", event)
+			}
+			if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 5 {
+				t.Fatalf("expected only the winner's debit, daily usage 5, got %d", got)
+			}
+		})
+	}
+}
+
+// Requests sent together with one key buy one read between them. This
+// database runs them one at a time, so it covers the key lookup only; the race
+// between two lookups is TestLosingARaceForAKeyIsReportedAsAReplay.
+func TestParallelReservationsWithOneKeyBuyOneRead(t *testing.T) {
+	db := setupCreditTestDB(t)
+	addUserRequestKeyIndex(t, db)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "same-key")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrRequestReplayed) {
+			t.Fatalf("unexpected reservation error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one reservation, got %d", successes)
+	}
+	if got := dailyUsageForTest(t, db, SubjectForUser(user.ID), now); got != 5 {
+		t.Fatalf("expected one debit, daily usage 5, got %d", got)
 	}
 }
 
