@@ -211,3 +211,81 @@ func TestModelPricingOverridesCostEstimate(t *testing.T) {
 		t.Fatalf("estimated cost = %d, want 330", finalized.EstimatedCostUSDMicros)
 	}
 }
+
+// A month-long admin view must not add a user's days together: 4 days of 30
+// credits is 120 in the window, but no single day reaches a 100-credit limit.
+func TestAbuseAlertUsesBusiestSingleDayNotWindowTotal(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 11, 24, 10, 0, 0, 0, time.UTC)
+
+	user := models.User{UUID: "spread-user", Username: "spread_user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	guest := "spreadguest00000000000000000000000000000000000000000000000000000"
+	newEvent := func(id string, userID *uint, guestHash string, credits int, at time.Time) models.AIUsageEvent {
+		return models.AIUsageEvent{
+			UserID:            userID,
+			GuestDeviceIDHash: guestHash,
+			RequestID:         id,
+			ActionCode:        "transaction_parse_text",
+			InputKind:         "text",
+			Status:            UsageStatusSucceeded,
+			EstimatedCredits:  credits,
+			ReservedCredits:   credits,
+			FinalCredits:      credits,
+			StartedAt:         at,
+		}
+	}
+	events := []models.AIUsageEvent{}
+	for day := 0; day < 4; day++ {
+		events = append(events, newEvent("spread-"+string(rune('a'+day)), &user.ID, "", 30, now.AddDate(0, 0, -day)))
+	}
+	// The guest's busiest day: two reads on the same UTC date.
+	events = append(events,
+		newEvent("guest-1", nil, guest, 25, now.AddDate(0, 0, -10)),
+		newEvent("guest-2", nil, guest, 25, now.AddDate(0, 0, -10).Add(time.Hour)),
+	)
+	if err := db.Create(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := AlertConfig{AbuseDailyCreditsThreshold: 100}
+	metrics, err := BuildAIMetrics(db, now.AddDate(0, 0, -30), now.Add(time.Hour), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.TotalCreditsCharged != 170 {
+		t.Fatalf("total credits = %d, want 170", metrics.TotalCreditsCharged)
+	}
+	if metrics.MaxSubjectDailyCredits != 50 {
+		t.Fatalf("max subject daily credits = %d, want 50 (the guest's busiest day)", metrics.MaxSubjectDailyCredits)
+	}
+	for _, alert := range metrics.Alerts {
+		if alert.Code == "ai_abuse_credit_threshold" {
+			t.Fatalf("abuse alert fired for spread-out usage: %#v", metrics.Alerts)
+		}
+	}
+
+	// A real one-day spike still fires.
+	if err := db.Create(&[]models.AIUsageEvent{
+		newEvent("spike-1", &user.ID, "", 50, now.Add(-2*time.Hour)),
+		newEvent("spike-2", &user.ID, "", 50, now.Add(-time.Hour)),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	metrics, err = BuildAIMetrics(db, now.AddDate(0, 0, -30), now.Add(time.Hour), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.MaxSubjectDailyCredits != 130 {
+		t.Fatalf("max subject daily credits = %d, want 130", metrics.MaxSubjectDailyCredits)
+	}
+	fired := false
+	for _, alert := range metrics.Alerts {
+		fired = fired || alert.Code == "ai_abuse_credit_threshold"
+	}
+	if !fired {
+		t.Fatalf("abuse alert did not fire for a 130-credit day: %#v", metrics.Alerts)
+	}
+}

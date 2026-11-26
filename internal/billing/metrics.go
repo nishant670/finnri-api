@@ -211,23 +211,36 @@ func metricRows(db *gorm.DB, start, end time.Time, groupExpr string) ([]UsageMet
 	return rows, err
 }
 
+// maxSubjectDailyCredits finds the most credits any one user or guest device
+// used on a single day inside the window. It must stay per day: the abuse
+// alert compares it to a daily threshold, and summing the whole window made a
+// 30-day admin view fire for ordinary use. Days are UTC dates, the same
+// boundary dailyCreditsUsed uses for the daily credit limit. Bucketing happens
+// in Go so the query stays portable between Postgres and the SQLite tests.
 func maxSubjectDailyCredits(db *gorm.DB, metrics *AIMetrics) error {
 	var rows []struct {
-		Subject string
-		Credits int64
+		Subject   string
+		StartedAt time.Time
+		Credits   int64
 	}
 	err := db.Model(&models.AIUsageEvent{}).
-		Where("started_at >= ? AND started_at < ?", metrics.WindowStart, metrics.WindowEnd).
-		Select("COALESCE(CAST(user_id AS TEXT), guest_device_id_hash) AS subject, COALESCE(SUM(final_credits), 0) AS credits").
-		Group("subject").
-		Order("credits DESC").
-		Limit(1).
+		Where("started_at >= ? AND started_at < ? AND final_credits > 0", metrics.WindowStart, metrics.WindowEnd).
+		Select("COALESCE(CAST(user_id AS TEXT), guest_device_id_hash) AS subject, started_at, final_credits AS credits").
 		Scan(&rows).Error
 	if err != nil {
 		return err
 	}
-	if len(rows) > 0 {
-		metrics.MaxSubjectDailyCredits = rows[0].Credits
+	type subjectDay struct {
+		subject string
+		day     string
+	}
+	perDay := map[subjectDay]int64{}
+	for _, row := range rows {
+		key := subjectDay{subject: row.Subject, day: row.StartedAt.UTC().Format("2006-01-02")}
+		perDay[key] += row.Credits
+		if perDay[key] > metrics.MaxSubjectDailyCredits {
+			metrics.MaxSubjectDailyCredits = perDay[key]
+		}
 	}
 	return nil
 }
