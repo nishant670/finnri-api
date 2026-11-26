@@ -578,6 +578,8 @@ paths:
                 $ref: "#/components/schemas/SavedEntry"
         "400":
           description: Invalid payload
+        "409":
+          description: The Idempotency-Key was cancelled (`entry_key_cancelled`)
         "422":
           description: Field validation or account ownership failed
           content:
@@ -681,6 +683,42 @@ paths:
                 $ref: "#/components/schemas/EntryPage"
         "422":
           description: Invalid filters
+        "500":
+          description: Database error
+  /v1/entry-keys/{key}/cancel:
+    parameters:
+      - in: path
+        name: key
+        required: true
+        description: The Idempotency-Key a create was sent with.
+        schema:
+          type: string
+          maxLength: 128
+    post:
+      summary: Settle a create that was never answered
+      description: >-
+        Returns the entry the key saved. If it saved none, the key is cancelled
+        for good: a create carrying it, even one already on its way, is refused
+        with 409 `entry_key_cancelled`. Safe to repeat.
+      responses:
+        "200":
+          description: Either the saved entry, or the key is now cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [saved, cancelled]
+                properties:
+                  saved:
+                    type: boolean
+                  cancelled:
+                    type: boolean
+                  entry:
+                    $ref: "#/components/schemas/SavedEntry"
+        "401":
+          description: Not signed in
+        "422":
+          description: Key too long
         "500":
           description: Database error
   /v1/entries/export:

@@ -247,6 +247,7 @@ func NewServer(cfg *config.Config) *gin.Engine {
 		authorized.DELETE("/events/:id/entries", s.removeEventEntries)
 		authorized.GET("/reports/transactions/summary", s.getTransactionSummaryReport)
 		authorized.GET("/entries/:id", s.getEntry)
+		authorized.POST("/entry-keys/:key/cancel", s.cancelEntryKey)
 		authorized.PUT("/entries/:id", s.updateEntry)
 		authorized.DELETE("/entries/:id", s.deleteEntry)
 		authorized.GET("/refundables", s.listRefundables)
@@ -433,6 +434,8 @@ func skipsStaticBearer(path string) bool {
 	return path == "/health" ||
 		strings.HasPrefix(path, "/v1/auth/") ||
 		strings.HasPrefix(path, "/v1/entries") ||
+		// "/v1/entry-keys": not covered by the line above.
+		strings.HasPrefix(path, "/v1/entry-keys") ||
 		strings.HasPrefix(path, "/v1/refundables") ||
 		strings.HasPrefix(path, "/v1/quick-prompts") ||
 		strings.HasPrefix(path, "/v1/user") ||
@@ -1274,11 +1277,24 @@ func (s *Server) saveEntry(c *gin.Context) {
 		entry.IdempotencyKey = &idempotencyKey
 	}
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if idempotencyKey != "" {
+			claim, err := claimEntryKey(tx, userID, idempotencyKey)
+			if err != nil {
+				return err
+			}
+			if claim.Cancelled {
+				return errEntryKeyCancelled
+			}
+		}
 		if err := tx.Create(&entry).Error; err != nil {
 			return err
 		}
 		return createEntrySplitBill(tx, userID, entry, input.Split)
 	}); err != nil {
+		if errors.Is(err, errEntryKeyCancelled) {
+			c.JSON(409, gin.H{"error": "entry_key_cancelled", "message": "This save was cancelled."})
+			return
+		}
 		if idempotencyKey != "" {
 			var existing models.Entry
 			if lookupErr := database.DB.Preload("Account").
@@ -2111,6 +2127,7 @@ func deleteUserData(db *gorm.DB, user models.User) ([]string, error) {
 			{&models.UserCategory{}, "user categories"},
 			{&models.AccountRule{}, "account rules"},
 			{&models.Entry{}, "entries"},
+			{&models.EntryKeyClaim{}, "entry key claims"},
 			{&models.Event{}, "events"},
 			{&models.Account{}, "accounts"},
 			{&models.AuthSession{}, "auth sessions"},
