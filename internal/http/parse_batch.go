@@ -3,7 +3,9 @@ package http
 import (
 	"encoding/json"
 	"log"
+	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -90,6 +92,7 @@ func takeBatchExtras(item map[string]any) (any, bool) {
 
 type batchParseRequest struct {
 	transcript    string
+	tz            string
 	items         []map[string]any
 	overCapText   string
 	knownNames    ai.KnownNames
@@ -162,14 +165,17 @@ func (s *Server) respondParsedBatch(c *gin.Context, req batchParseRequest) {
 	}
 
 	kept := make([]any, 0, len(items))
+	read := make([]map[string]any, 0, len(items))
 	dropped := 0
 	for _, item := range items {
 		if s.readBatchItem(item, req.transcript, req) {
 			kept = append(kept, item)
+			read = append(read, item)
 		} else {
 			dropped++
 		}
 	}
+	fillSpokenDates(read, req.transcript, todayIn(req.tz))
 
 	inputChars := utf8.RuneCountInString(req.transcript)
 	if len(kept) == 0 {
@@ -230,4 +236,115 @@ func (s *Server) respondParsedBatch(c *gin.Context, req batchParseRequest) {
 		response[key] = value
 	}
 	c.JSON(200, response)
+}
+
+// spokenDayWords are the day words a spoken day says once for everything after
+// it. "kal" and "parso" are left out: each means both a day before and a day
+// after, so the model's reading of them stands.
+var spokenDayWords = regexp.MustCompile(`(?i)\b(day before yesterday|yesterday|today)\b`)
+
+func spokenDayOffset(word string) int {
+	switch strings.ToLower(word) {
+	case "day before yesterday":
+		return -2
+	case "yesterday":
+		return -1
+	default:
+		return 0
+	}
+}
+
+/*
+fillSpokenDates is the server's own hold on "said once, carries forward" for
+dates. "Yesterday I had sweets for 176, then lunch 140, then paid Aditya 140"
+came back on 26 Nov with no date on any item: the lean batch leaves a key out
+when the model doesn't fill it, and the app then showed three rows dated today,
+each saying "Date unclear, check it".
+
+An item with no date takes the last day word said before or within its own
+words, after the previous item's; failing that, the previous item's date.
+Items the model dated keep their date, and pass it on. Nothing is guessed: an
+item with no day word anywhere before it stays undated and flagged.
+*/
+func fillSpokenDates(items []map[string]any, transcript, today string) {
+	todayDate, err := time.Parse("2006-01-02", today)
+	if err != nil || len(items) == 0 {
+		return
+	}
+	lower := strings.ToLower(transcript)
+	words := [][]int{}
+	for _, word := range spokenDayWords.FindAllStringIndex(transcript, -1) {
+		// "for yesterday's dinner" names another day's thing, not the day
+		// being told: Priya paying back today stays today.
+		rest := transcript[word[1]:]
+		if strings.HasPrefix(rest, "'s") || strings.HasPrefix(rest, "’s") {
+			continue
+		}
+		words = append(words, word)
+	}
+	cursor := 0
+	carried := ""
+	for _, item := range items {
+		end := -1
+		if source, _ := item["source_text"].(string); strings.TrimSpace(source) != "" {
+			phrase := strings.ToLower(strings.TrimSpace(source))
+			if phrase != strings.TrimSpace(lower) {
+				if at := strings.Index(lower[cursor:], phrase); at >= 0 {
+					end = cursor + at + len(phrase)
+				}
+			}
+		}
+		if date, ok := item["date"].(string); ok && strings.TrimSpace(date) != "" {
+			carried = date
+			if end >= 0 {
+				cursor = end
+			}
+			continue
+		}
+		date := carried
+		if end >= 0 {
+			for _, word := range words {
+				if word[0] >= cursor && word[0] < end {
+					offset := spokenDayOffset(transcript[word[0]:word[1]])
+					date = todayDate.AddDate(0, 0, offset).Format("2006-01-02")
+				}
+			}
+			cursor = end
+		}
+		if date == "" {
+			continue
+		}
+		item["date"] = date
+		carried = date
+		clearDateFlags(item)
+	}
+}
+
+// clearDateFlags takes "date" off an item's confirm and missing lists, once a
+// date the person said has been put on it.
+func clearDateFlags(item map[string]any) {
+	if flags, ok := item["needs_confirmation"].(map[string]any); ok {
+		delete(flags, "date")
+	}
+	if confidence, ok := item["confidence"].(map[string]any); ok {
+		delete(confidence, "date")
+	}
+	switch missing := item["missing_fields"].(type) {
+	case []string:
+		kept := make([]string, 0, len(missing))
+		for _, field := range missing {
+			if field != "date" {
+				kept = append(kept, field)
+			}
+		}
+		item["missing_fields"] = kept
+	case []any:
+		kept := make([]any, 0, len(missing))
+		for _, field := range missing {
+			if field != "date" {
+				kept = append(kept, field)
+			}
+		}
+		item["missing_fields"] = kept
+	}
 }
