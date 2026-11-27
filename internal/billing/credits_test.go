@@ -1234,6 +1234,48 @@ func TestParallelReservationsDoNotBypassDailyLimit(t *testing.T) {
 	}
 }
 
+// The expiry job, a refunded pass and a guest signing in can take credits
+// after the allowance check passed. That is a refusal, not a server error.
+func TestReserveCreditsRefusesWhenCreditsGoAfterTheCheck(t *testing.T) {
+	db := setupCreditTestDB(t)
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	service := NewCreditServiceWithClock(db, func() time.Time { return now })
+
+	user := createCreditTestUser(t, db)
+	if _, _, err := service.EnsureLoggedInFreeTrialGrant(user.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Empties the grant between the check and the debit, inside the same
+	// transaction, so the refusal rolls it back too.
+	if err := db.Callback().Create().After("gorm:create").Register("test:drain_grants", func(tx *gorm.DB) {
+		if tx.Statement.Table != "ai_usage_events" {
+			return
+		}
+		if err := tx.Session(&gorm.Session{NewDB: true}).Exec("UPDATE credit_grants SET credits_remaining = 3").Error; err != nil {
+			t.Error(err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, allowance, err := service.ReserveCredits(SubjectForUser(user.ID), ai.ActionTransactionParseText, "short")
+	if !errors.Is(err, ErrAllowanceDenied) || allowance.Allowed || allowance.Reason != AllowanceInsufficientCredits {
+		t.Fatalf("expected an insufficient credits refusal, got err=%v allowance=%+v", err, allowance)
+	}
+	if allowance.AvailableCredits != LoggedInFreeTrialCredits {
+		// The rolled-back drain leaves the balance as it was; a real one would
+		// leave less, and that is the figure reported.
+		t.Fatalf("expected the balance to be read again, got %d", allowance.AvailableCredits)
+	}
+	var events int64
+	if err := db.Model(&models.AIUsageEvent{}).Count(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if events != 0 {
+		t.Fatalf("expected nothing to be reserved, got %d events", events)
+	}
+}
+
 func createCreditTestUser(t *testing.T, db *gorm.DB) models.User {
 	t.Helper()
 	user := models.User{UUID: t.Name() + "-uuid", Username: t.Name() + "_user"}

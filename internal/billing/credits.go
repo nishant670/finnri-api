@@ -75,6 +75,13 @@ var ErrInvalidCreditSubject = errors.New("invalid credit subject")
 // The caller must not call the provider: nothing was reserved for this one.
 var ErrRequestReplayed = errors.New("ai request key already used")
 
+// errCreditsRanShort means the grants held less than the debit needed.
+var errCreditsRanShort = errors.New("insufficient credits while reserving")
+
+// creditLockNamespace keys the per-subject advisory lock, apart from the
+// checkout lock's namespace in internal/http.
+const creditLockNamespace int32 = 0x46_4e_43 // "FNC"
+
 type CreditService struct {
 	db       *gorm.DB
 	registry ai.ActionRegistry
@@ -190,6 +197,9 @@ func (s *CreditService) ReserveCredits(subject CreditSubject, actionCode ai.Acti
 			allowance = AllowanceResult{Allowed: false, Reason: AllowanceSubjectRequired}
 			return ErrInvalidCreditSubject
 		}
+		if err := lockCreditSubject(tx, subject); err != nil {
+			return err
+		}
 
 		// One key pays for one provider call. This used to answer "allowed" with
 		// the earlier event, so the handler called the provider again while
@@ -239,20 +249,34 @@ func (s *CreditService) ReserveCredits(subject CreditSubject, actionCode ai.Acti
 			return err
 		}
 		if err := debitAvailableGrants(tx, subject, allowance.RequiredCredits, ReasonReservationDebit, reservationLedgerKey(event.RequestID), &event.ID, now); err != nil {
+			// Expiry, a refunded pass or a guest signing in can take credits
+			// without this subject's lock. That is a refusal, not a fault.
+			if errors.Is(err, errCreditsRanShort) {
+				allowance.Allowed = false
+				allowance.Reason = AllowanceInsufficientCredits
+				return ErrAllowanceDenied
+			}
 			return err
 		}
 		return adjustDailyUsage(tx, subject, now, allowance.RequiredCredits)
 	})
 	if err != nil {
-		// Two requests that arrive together can both find no event. The unique
-		// index on the key lets only one insert, and the other can also lose on
-		// credits the winner just spent. Either way it is a repeat, and says so.
+		// The subject lock makes two requests with one key take turns, so the
+		// second finds the first's event above. This is the backstop for a
+		// writer outside that lock: whether the unique index on the key or a
+		// refusal stopped us, an event now holding the key makes it a repeat.
 		if idempotencyKey != "" && !errors.Is(err, ErrRequestReplayed) && subject.valid() {
 			if _, found, lookupErr := findUsageEventByIdempotency(s.db, subject, idempotencyKey); lookupErr == nil && found {
 				return models.AIUsageEvent{}, AllowanceResult{}, ErrRequestReplayed
 			}
 		}
 		if errors.Is(err, ErrAllowanceDenied) {
+			// The balance read before a short debit is out of date.
+			if allowance.Reason == AllowanceInsufficientCredits && allowance.AvailableCredits >= allowance.RequiredCredits {
+				if available, lookupErr := availableCredits(s.db, subject, s.now()); lookupErr == nil {
+					allowance.AvailableCredits = available
+				}
+			}
 			s.recordAllowanceDenial(subject, allowance)
 		}
 		return models.AIUsageEvent{}, allowance, err
@@ -263,7 +287,7 @@ func (s *CreditService) ReserveCredits(subject CreditSubject, actionCode ai.Acti
 func (s *CreditService) FinalizeUsage(eventID uint, usage ProviderUsage) (models.AIUsageEvent, error) {
 	var event models.AIUsageEvent
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&event, eventID).Error; err != nil {
+		if err := lockUsageEvent(tx, eventID, &event); err != nil {
 			return err
 		}
 		if event.Status != UsageStatusReserved {
@@ -358,7 +382,7 @@ func (s *CreditService) CancelReservationWithStatus(eventID uint, status string)
 		if status != UsageStatusCancelled && status != UsageStatusFailedBeforeProvider {
 			return fmt.Errorf("invalid cancellation status: %s", status)
 		}
-		if err := tx.First(&event, eventID).Error; err != nil {
+		if err := lockUsageEvent(tx, eventID, &event); err != nil {
 			return err
 		}
 		if event.Status != UsageStatusReserved {
@@ -880,6 +904,43 @@ func (s *CreditService) PurgeAnonymousGuestUsageBefore(cutoff time.Time) (Anonym
 	return result, err
 }
 
+// lockCreditSubject makes one subject's credit changes take turns until the
+// transaction ends. Reading the balance, the daily count or an event's status
+// and then writing is only safe while this is held: row locks alone let a
+// second request pass the daily limit on a count read before the first one
+// finished.
+//
+// It must be the first lock the transaction takes. Everything that holds it
+// then locks rows in an order no other holder for that subject can cross, so
+// two requests from one person cannot deadlock. SQLite, used only by tests,
+// runs one transaction at a time and needs none.
+func lockCreditSubject(tx *gorm.DB, subject CreditSubject) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	key := "guest:" + strings.TrimSpace(subject.GuestDeviceIDHash)
+	if subject.UserID != nil {
+		key = fmt.Sprintf("user:%d", *subject.UserID)
+	}
+	return tx.Exec("SELECT pg_advisory_xact_lock(?, hashtext(?))", creditLockNamespace, key).Error
+}
+
+// lockUsageEvent locks the event's subject, then loads the event. The first
+// read only finds whose it is: another settlement may finish while this one
+// waits, so the status must come from the second.
+func lockUsageEvent(tx *gorm.DB, eventID uint, event *models.AIUsageEvent) error {
+	var owner models.AIUsageEvent
+	if err := tx.Select("user_id", "guest_device_id_hash").First(&owner, eventID).Error; err != nil {
+		return err
+	}
+	if err := lockCreditSubject(tx, subjectFromEvent(owner)); err != nil {
+		return err
+	}
+	return tx.First(event, eventID).Error
+}
+
+// checkAllowanceTx only reads. A caller that goes on to debit must already
+// hold lockCreditSubject, or the answer can be stale by the time it acts.
 func (s *CreditService) checkAllowanceTx(tx *gorm.DB, subject CreditSubject, actionCode ai.ActionCode) (AllowanceResult, error) {
 	if !subject.valid() {
 		return AllowanceResult{Allowed: false, Reason: AllowanceSubjectRequired}, nil
@@ -1039,7 +1100,7 @@ func debitAvailableGrants(tx *gorm.DB, subject CreditSubject, credits int, reaso
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return fmt.Errorf("credit grant balance changed during reservation")
+			return fmt.Errorf("%w: a grant balance changed during reservation", errCreditsRanShort)
 		}
 		balanceAfter := grant.CreditsRemaining - take
 		if err := createLedger(tx, models.CreditLedger{
@@ -1058,7 +1119,7 @@ func debitAvailableGrants(tx *gorm.DB, subject CreditSubject, credits int, reaso
 		remaining -= take
 	}
 	if remaining > 0 {
-		return fmt.Errorf("insufficient credits while reserving")
+		return errCreditsRanShort
 	}
 	return nil
 }
@@ -1095,7 +1156,13 @@ func refundEventCredits(tx *gorm.DB, event models.AIUsageEvent, credits int, rea
 		if debit.GrantID == nil {
 			return fmt.Errorf("debit ledger missing grant id")
 		}
-		if err := tx.First(&grant, *debit.GrantID).Error; err != nil {
+		// Locked, so that nothing changes the balance between this read and
+		// the write below, including writers that skip the subject lock.
+		grantQuery := tx
+		if tx.Dialector.Name() != "sqlite" {
+			grantQuery = grantQuery.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := grantQuery.First(&grant, *debit.GrantID).Error; err != nil {
 			return err
 		}
 		newBalance := grant.CreditsRemaining + refund
@@ -1149,33 +1216,40 @@ func refundedCreditsForDebit(tx *gorm.DB, debit models.CreditLedger) (int, error
 	return total, err
 }
 
+// adjustDailyUsage adds delta to the subject's count for that day, never below
+// zero. The database does the arithmetic, so no change is lost to another
+// writer, and losing the race to create the day's row turns into an update.
 func adjustDailyUsage(tx *gorm.DB, subject CreditSubject, at time.Time, delta int) error {
 	if delta == 0 {
 		return nil
 	}
 	usageDate := at.UTC().Format("2006-01-02")
-	var usage models.DailyCreditUsage
-	query := tx.Where("usage_date = ?", usageDate)
-	query = scopeDailyUsage(query, subject)
-	if err := query.First(&usage).Error; err == nil {
-		next := usage.CreditsUsed + delta
-		if next < 0 {
-			next = 0
-		}
-		return tx.Model(&usage).Update("credits_used", next).Error
-	} else if err != gorm.ErrRecordNotFound {
+	add := func() (int64, error) {
+		query := tx.Model(&models.DailyCreditUsage{}).Where("usage_date = ?", usageDate)
+		result := scopeDailyUsage(query, subject).Update(
+			"credits_used",
+			gorm.Expr("CASE WHEN credits_used + ? < 0 THEN 0 ELSE credits_used + ? END", delta, delta),
+		)
+		return result.RowsAffected, result.Error
+	}
+	if updated, err := add(); err != nil || updated > 0 {
 		return err
 	}
-	if delta < 0 {
-		delta = 0
-	}
-	usage = models.DailyCreditUsage{
+	usage := models.DailyCreditUsage{
 		UserID:            subject.UserID,
 		GuestDeviceIDHash: strings.TrimSpace(subject.GuestDeviceIDHash),
 		UsageDate:         usageDate,
-		CreditsUsed:       delta,
+		CreditsUsed:       max(delta, 0),
 	}
-	return tx.Create(&usage).Error
+	created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&usage)
+	if created.Error != nil || created.RowsAffected > 0 {
+		return created.Error
+	}
+	updated, err := add()
+	if err == nil && updated == 0 {
+		return fmt.Errorf("daily credit usage row could not be created or updated")
+	}
+	return err
 }
 
 func findUsageEventByIdempotency(tx *gorm.DB, subject CreditSubject, idempotencyKey string) (models.AIUsageEvent, bool, error) {
