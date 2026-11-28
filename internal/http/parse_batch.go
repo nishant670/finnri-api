@@ -243,6 +243,13 @@ func (s *Server) respondParsedBatch(c *gin.Context, req batchParseRequest) {
 // after, so the model's reading of them stands.
 var spokenDayWords = regexp.MustCompile(`(?i)\b(day before yesterday|yesterday|today)\b`)
 
+// otherDayCues are words that may point at a day other than today without
+// saying which: a weekday, a month, "kal", "last week", "3 days ago", "the
+// 5th". Where one comes before an item, an undated item stays undated and
+// flagged. Words that only look like a cue ("last", "may", "sat") cost nothing
+// worse than the flag, which is what every undated item had before.
+var otherDayCues = regexp.MustCompile(`(?i)\b(kal|parso|parson|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|week|weekend|month|ago|last|pichhle|pichle|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december|\d{1,2}(st|nd|rd|th))\b|\b\d{1,2}[/-]\d{1,2}\b`)
+
 func spokenDayOffset(word string) int {
 	switch strings.ToLower(word) {
 	case "day before yesterday":
@@ -263,8 +270,13 @@ each saying "Date unclear, check it".
 
 An item with no date takes the last day word said before or within its own
 words, after the previous item's; failing that, the previous item's date.
-Items the model dated keep their date, and pass it on. Nothing is guessed: an
-item with no day word anywhere before it stays undated and flagged.
+Items the model dated keep their date, and pass it on.
+
+An item that is still undated, with nothing before it that could mean another
+day (otherDayCues), is today: a day told without a date is today's, as the
+app's sheet already says (24 Nov retest: every row of "glue 20, tape 30" read
+"Date unclear, check it"). The same goes for an item the model dated today but
+flagged. Where such a cue was said, the item keeps its flag for the person.
 */
 func fillSpokenDates(items []map[string]any, transcript, today string) {
 	todayDate, err := time.Parse("2006-01-02", today)
@@ -282,6 +294,13 @@ func fillSpokenDates(items []map[string]any, transcript, today string) {
 		}
 		words = append(words, word)
 	}
+	otherDay := otherDayCues.FindAllStringIndex(transcript, -1)
+	cueBefore := func(end int) bool {
+		if end < 0 {
+			end = len(transcript)
+		}
+		return len(otherDay) > 0 && otherDay[0][0] < end
+	}
 	cursor := 0
 	carried := ""
 	for _, item := range items {
@@ -296,6 +315,9 @@ func fillSpokenDates(items []map[string]any, transcript, today string) {
 		}
 		if date, ok := item["date"].(string); ok && strings.TrimSpace(date) != "" {
 			carried = date
+			if date == today && !cueBefore(end) {
+				clearDateFlags(item)
+			}
 			if end >= 0 {
 				cursor = end
 			}
@@ -310,6 +332,9 @@ func fillSpokenDates(items []map[string]any, transcript, today string) {
 				}
 			}
 			cursor = end
+		}
+		if date == "" && !cueBefore(end) {
+			date = today
 		}
 		if date == "" {
 			continue
