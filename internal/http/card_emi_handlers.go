@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -83,6 +84,20 @@ func (s *Server) createCardEMIPlan(c *gin.Context) {
 		return
 	}
 	if input.SourceEntryID != nil {
+		// Converting deletes the purchase, so a convert sent again because its
+		// answer was lost would find nothing and fail. It gets the plan the
+		// first one made instead.
+		var existing models.CardEMIPlan
+		if err := database.DB.Select("id").
+			Where("user_id = ? AND account_id = ? AND source_entry_id = ?", userID, accountID, *input.SourceEntryID).
+			First(&existing).Error; err == nil {
+			c.Header("Idempotency-Replayed", "true")
+			respondWithEMIPlan(c, userID, existing.ID, http.StatusOK)
+			return
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "emi_plan_lookup_failed"})
+			return
+		}
 		var source models.Entry
 		if err := database.DB.
 			Where("id = ? AND user_id = ? AND account_id = ?", *input.SourceEntryID, userID, accountID).
