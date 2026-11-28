@@ -53,6 +53,18 @@ func (s *Server) createSubscription(c *gin.Context) {
 		}
 	}
 
+	// A create sent again because its answer was lost carries the same key,
+	// and gets the recurring item the first one made (see saveNewTransaction
+	// in the app, which gives each step a deadline).
+	idempotencyKey, keyFields := parseIdempotencyKey(c.GetHeader("Idempotency-Key"))
+	if len(keyFields) > 0 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_subscription", "fields": keyFields})
+		return
+	}
+	if idempotencyKey != "" && respondWithReplayedSubscription(c, userID, idempotencyKey) {
+		return
+	}
+
 	now := time.Now()
 	var loggedOn *time.Time
 	if raw := strings.TrimSpace(input.LogPaymentOn); raw != "" {
@@ -68,6 +80,9 @@ func (s *Server) createSubscription(c *gin.Context) {
 
 	subscription := models.Subscription{UserID: userID}
 	input.apply(&subscription)
+	if idempotencyKey != "" {
+		subscription.IdempotencyKey = &idempotencyKey
+	}
 	var loggedEntry *models.Entry
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&subscription).Error; err != nil {
@@ -80,6 +95,10 @@ func (s *Server) createSubscription(c *gin.Context) {
 		loggedEntry = entry
 		return err
 	}); err != nil {
+		// Two sends of one key at once: the unique index lets one in.
+		if idempotencyKey != "" && respondWithReplayedSubscription(c, userID, idempotencyKey) {
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_create_subscription"})
 		return
 	}
@@ -91,6 +110,25 @@ func (s *Server) createSubscription(c *gin.Context) {
 	}
 	_ = database.DB.Preload("Account").First(&subscription, subscription.ID).Error
 	c.JSON(http.StatusCreated, buildSubscriptionResponse(subscription, now))
+}
+
+// respondWithReplayedSubscription answers with the recurring item an earlier
+// create with this key made, if there is one.
+func respondWithReplayedSubscription(c *gin.Context, userID uint, idempotencyKey string) bool {
+	var existing models.Subscription
+	err := database.DB.Preload("Account").
+		Where("user_id = ? AND idempotency_key = ?", userID, idempotencyKey).
+		First(&existing).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "idempotency_lookup_failed"})
+			return true
+		}
+		return false
+	}
+	c.Header("Idempotency-Replayed", "true")
+	c.JSON(http.StatusOK, buildSubscriptionResponse(existing, time.Now()))
+	return true
 }
 
 func (s *Server) listSubscriptions(c *gin.Context) {
