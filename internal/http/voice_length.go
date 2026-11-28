@@ -104,7 +104,8 @@ func findMP4Box(data []byte, kind string) ([]byte, bool) {
 			size = binary.BigEndian.Uint64(data[offset+8 : offset+16])
 			header = 16
 		}
-		if size < header || uint64(offset)+size > uint64(len(data)) {
+		// Compared against what is left, so a large size cannot overflow.
+		if size < header || size > uint64(len(data)-offset) {
 			return nil, false
 		}
 		if boxType == kind {
