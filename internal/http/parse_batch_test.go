@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"finnri/internal/ai"
 	"finnri/internal/config"
@@ -282,4 +283,143 @@ func TestMP4DurationReadsVersion1AndRejectsJunk(t *testing.T) {
 	if _, ok := mp4DurationSeconds([]byte{0, 0, 0, 200, 'm', 'o', 'o', 'v'}); ok {
 		t.Fatal("a box that runs past the end must not parse")
 	}
+}
+
+// The 26 Nov device test, as the model answered it: three lean items, none
+// with a date, though the text opens with "Yesterday".
+func TestParseBatchPutsASpokenDayOnUndatedItems(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	text := "Yesterday I had sweets in Haldiram for Rs. 175.99 paid by UPI and then had a lunch in office canteen. Aditya paid for it, Rs. 140"
+	batch := `{"stage":"batch","intent":"capture","items":[` +
+		`{"type":"expense","title":"Sweets","amount":175.99,"mode":"UPI","category":"Food & Drinks","time_slot":null,"mode_carried":false,"source_text":"I had sweets in Haldiram for Rs. 175.99 paid by UPI"},` +
+		`{"type":"expense","title":"Lunch","amount":140,"mode":"UPI","category":"Food & Drinks","time_slot":"afternoon","mode_carried":false,"source_text":"had a lunch in office canteen. Aditya paid for it, Rs. 140"}]}`
+	server, _ := newBatchTestServer(t, batch, singleMetroDraft)
+
+	response, body := runBatchParse(t, server, text, true)
+
+	if response.Code != 200 {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	yesterday := todayIn("Asia/Kolkata")
+	parsed, _ := time.Parse("2006-01-02", yesterday)
+	yesterday = parsed.AddDate(0, 0, -1).Format("2006-01-02")
+	for _, value := range body["items"].([]any) {
+		item := value.(map[string]any)
+		if item["date"] != yesterday {
+			t.Fatalf("%v dated %v, want yesterday %s", item["title"], item["date"], yesterday)
+		}
+		if flags, _ := item["needs_confirmation"].(map[string]any); flags["date"] != nil {
+			t.Fatalf("%v still asks to check its date: %v", item["title"], flags)
+		}
+		for _, field := range item["missing_fields"].([]any) {
+			if field == "date" {
+				t.Fatalf("%v still lists date as missing", item["title"])
+			}
+		}
+	}
+}
+
+func TestFillSpokenDates(t *testing.T) {
+	item := func(source string, date any) map[string]any {
+		return map[string]any{
+			"source_text":        source,
+			"date":               date,
+			"needs_confirmation": map[string]any{"date": true, "mode": true},
+			"missing_fields":     []string{"date"},
+		}
+	}
+	const today = "2026-11-27"
+
+	t.Run("a day word applies forward, not back", func(t *testing.T) {
+		items := []map[string]any{
+			item("chai 20", nil),
+			item("yesterday auto 60", nil),
+			item("lunch 140", nil),
+			item("today movie 300", nil),
+			item("popcorn 200", nil),
+		}
+		fillSpokenDates(items, "chai 20, yesterday auto 60, lunch 140, today movie 300, popcorn 200", today)
+		// The first, with nothing said before it, is today's.
+		want := []any{"2026-11-27", "2026-11-26", "2026-11-26", "2026-11-27", "2026-11-27"}
+		for i, it := range items {
+			if it["date"] != want[i] {
+				t.Fatalf("item %d date = %v, want %v", i, it["date"], want[i])
+			}
+		}
+		if flags := items[1]["needs_confirmation"].(map[string]any); flags["date"] != nil || flags["mode"] != true {
+			t.Fatalf("flags = %v, want only date cleared", flags)
+		}
+		if missing := items[1]["missing_fields"].([]string); len(missing) != 0 {
+			t.Fatalf("missing_fields = %v", missing)
+		}
+	})
+
+	t.Run("a date the model gave stands and carries", func(t *testing.T) {
+		items := []map[string]any{item("auto 60", "2026-11-23"), item("yesterday lunch 140", nil), item("tea 20", nil)}
+		items[0]["needs_confirmation"] = map[string]any{}
+		fillSpokenDates(items, "on Sunday auto 60, yesterday lunch 140, tea 20", today)
+		if items[0]["date"] != "2026-11-23" || items[1]["date"] != "2026-11-26" || items[2]["date"] != "2026-11-26" {
+			t.Fatalf("dates = %v %v %v", items[0]["date"], items[1]["date"], items[2]["date"])
+		}
+	})
+
+	t.Run("day before yesterday, and words that only look like it", func(t *testing.T) {
+		items := []map[string]any{item("dinner 400", nil), item("kal auto 50", nil)}
+		fillSpokenDates(items, "day before yesterday dinner 400, kal auto 50", today)
+		if items[0]["date"] != "2026-11-25" || items[1]["date"] != "2026-11-25" {
+			t.Fatalf("dates = %v %v", items[0]["date"], items[1]["date"])
+		}
+		paidBack := []map[string]any{item("Priya paid me back 200 for yesterday's dinner", nil), item("chai 30", nil)}
+		fillSpokenDates(paidBack, "petrol 500, then Priya paid me back 200 for yesterday's dinner, then chai 30", today)
+		if paidBack[0]["date"] != today || paidBack[1]["date"] != today {
+			t.Fatalf("yesterday's dinner dated today's items: %v %v", paidBack[0]["date"], paidBack[1]["date"])
+		}
+		todays := []map[string]any{item("bread 40", nil)}
+		fillSpokenDates(todays, "yesterdays bread 40", today)
+		if todays[0]["date"] != today {
+			t.Fatalf("a word containing yesterday dated the item: %v", todays[0]["date"])
+		}
+	})
+
+	t.Run("nothing said is today, unless something hints at another day", func(t *testing.T) {
+		plain := []map[string]any{item("glue 20", nil), item("tape 30", nil)}
+		fillSpokenDates(plain, "glue 20, tape 30", today)
+		for _, it := range plain {
+			if it["date"] != today || it["needs_confirmation"].(map[string]any)["date"] != nil {
+				t.Fatalf("undated item = %v, want today with no date flag", it)
+			}
+			if it["needs_confirmation"].(map[string]any)["mode"] != true {
+				t.Fatal("only the date flag may go")
+			}
+		}
+		for _, text := range []string{"kal auto 50, lunch 140", "on Sunday auto 50, lunch 140", "auto 50 on the 5th, lunch 140", "3 days ago auto 50, lunch 140"} {
+			first, _, _ := strings.Cut(text, ", ")
+			hinted := []map[string]any{item(first, nil), item("lunch 140", nil)}
+			fillSpokenDates(hinted, text, today)
+			for _, it := range hinted {
+				if it["date"] != nil || it["needs_confirmation"].(map[string]any)["date"] != true {
+					t.Fatalf("%q: item = %v, want undated and flagged", text, it)
+				}
+			}
+		}
+		// A cue after an item says nothing about it.
+		later := []map[string]any{item("glue 20", nil), item("kal tape 30", nil)}
+		fillSpokenDates(later, "glue 20, kal tape 30", today)
+		if later[0]["date"] != today || later[1]["date"] != today {
+			t.Fatalf("dates = %v %v, want glue today and tape carried from it", later[0]["date"], later[1]["date"])
+		}
+	})
+
+	t.Run("the model's own today, flagged, loses the flag", func(t *testing.T) {
+		dated := []map[string]any{item("glue 20", today)}
+		fillSpokenDates(dated, "glue 20", today)
+		if dated[0]["needs_confirmation"].(map[string]any)["date"] != nil {
+			t.Fatalf("flags = %v", dated[0]["needs_confirmation"])
+		}
+		hinted := []map[string]any{item("auto 50", today)}
+		fillSpokenDates(hinted, "kal auto 50", today)
+		if hinted[0]["needs_confirmation"].(map[string]any)["date"] != true {
+			t.Fatal("a today the model doubted after 'kal' must stay flagged")
+		}
+	})
 }

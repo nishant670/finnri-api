@@ -166,7 +166,7 @@ func TestAdminAudienceCountsPeoplePerPlatform(t *testing.T) {
 	})
 	client := func(user models.User, platform, device, form, version, build string) {
 		t.Helper()
-		row := models.UserClient{UserID: user.ID, ClientKey: generateUUID()[:32], Platform: platform, Device: device, FormFactor: form, AppVersion: version, AppBuild: build, Variant: "play", FirstSeenAt: now.Add(-time.Hour), LastSeenAt: now.Add(-time.Hour)}
+		row := models.UserClient{UserID: user.ID, ClientKey: generateUUID()[:32], Platform: platform, Device: device, FormFactor: form, AppVersion: version, AppBuild: build, Variant: "play", FirstSeenAt: earlierTodayUTC(now), LastSeenAt: earlierTodayUTC(now)}
 		if platform == "web" {
 			row.Variant = "web"
 		}

@@ -56,6 +56,10 @@ type Subscription struct {
 	Platform  string  `gorm:"type:varchar(120)" json:"platform,omitempty"`
 	StepUpPct float64 `gorm:"not null;default:0" json:"step_up_pct"`
 
+	// IdempotencyKey is the create's Idempotency-Key, when the app sent one:
+	// the same key from the same user answers with this row, not a second one.
+	IdempotencyKey *string `gorm:"type:varchar(128)" json:"-"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

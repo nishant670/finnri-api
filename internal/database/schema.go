@@ -412,6 +412,13 @@ func runtimeSchemaStatements() []string {
 			ADD COLUMN IF NOT EXISTS purpose_type VARCHAR(40) NOT NULL DEFAULT 'normal_spend'`,
 		`CREATE INDEX IF NOT EXISTS idx_subscriptions_autopay_due
 			ON subscriptions (status, autopay, next_due_date)`,
+		// See migrations/0082_add_subscription_idempotency.sql: a create that
+		// was sent again, because its answer was lost, finds the first one.
+		`ALTER TABLE subscriptions
+			ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_user_idempotency
+			ON subscriptions (user_id, idempotency_key)
+			WHERE idempotency_key IS NOT NULL`,
 		`ALTER TABLE subscriptions
 			DROP CONSTRAINT IF EXISTS subscriptions_amount_positive_check`,
 		`ALTER TABLE subscriptions

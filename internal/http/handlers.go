@@ -745,6 +745,7 @@ func (s *Server) handleParse(c *gin.Context) {
 				overCap, _ := parsedObj["over_cap_text"].(string)
 				s.respondParsedBatch(c, batchParseRequest{
 					transcript:    transcript,
+					tz:            tz,
 					items:         items,
 					overCapText:   overCap,
 					knownNames:    knownNames,

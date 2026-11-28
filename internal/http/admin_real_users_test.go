@@ -227,6 +227,30 @@ func TestAdminPaidConversionCountsRealUsersOnly(t *testing.T) {
 	}
 }
 
+// earlierTodayUTC is a moment shortly before now that is still inside today's
+// UTC day, which is the window the admin overview, AI metrics and audience
+// read when no dates are given. Plain now-1h fell into yesterday for any run
+// between 00:00 and 01:00 UTC (05:30–06:30 IST) and zeroed every count.
+func earlierTodayUTC(now time.Time) time.Time {
+	now = now.UTC()
+	at := now.Add(-time.Hour)
+	if dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC); at.Before(dayStart) {
+		return dayStart
+	}
+	return at
+}
+
+func TestEarlierTodayUTCStaysInsideToday(t *testing.T) {
+	justAfterMidnight := time.Date(2026, 11, 27, 0, 39, 0, 0, time.UTC)
+	if got := earlierTodayUTC(justAfterMidnight); !got.Equal(time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("00:39 UTC must give today's midnight, got %s", got)
+	}
+	afternoon := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC)
+	if got := earlierTodayUTC(afternoon); !got.Equal(afternoon.Add(-time.Hour)) {
+		t.Fatalf("15:00 UTC must give an hour ago, got %s", got)
+	}
+}
+
 func TestAdminAIUsageSplitsByUserTypeAndKeepsTotals(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	useSmokeDatabase(t)
@@ -243,7 +267,7 @@ func TestAdminAIUsageSplitsByUserTypeAndKeepsTotals(t *testing.T) {
 	})
 	event := func(userID *uint, hash string, credits int, cost int64) {
 		t.Helper()
-		row := models.AIUsageEvent{UserID: userID, GuestDeviceIDHash: hash, RequestID: generateUUID(), ActionCode: "transaction_parse_text", InputKind: "text", Status: "succeeded", EstimatedCredits: credits, FinalCredits: credits, EstimatedCostUSDMicros: cost, StartedAt: now.Add(-time.Hour)}
+		row := models.AIUsageEvent{UserID: userID, GuestDeviceIDHash: hash, RequestID: generateUUID(), ActionCode: "transaction_parse_text", InputKind: "text", Status: "succeeded", EstimatedCredits: credits, FinalCredits: credits, EstimatedCostUSDMicros: cost, StartedAt: earlierTodayUTC(now)}
 		if err := database.DB.Create(&row).Error; err != nil {
 			t.Fatal(err)
 		}

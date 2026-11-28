@@ -52,6 +52,36 @@ type Parser interface {
 	ParseText(ctx context.Context, transcript, tz string, known KnownNames) ([]byte, Usage, error)
 }
 
+// clockNow is time.Now, swappable so tests can stand on a fixed day.
+var clockNow = time.Now
+
+// dateContext tells the model today's date and weekday, and spells out the
+// week either side of it with weekday names.
+//
+// With only "Today is 2026-11-23" the model has to work out the weekday itself,
+// and gpt-4o-mini gets it wrong: on Monday 23 Nov 2026 it read "last Saturday"
+// as 19 Nov and "on Friday" as 18 Nov, four runs out of four. Given the days by
+// name, it only has to look one up.
+func dateContext(today time.Time) string {
+	day := func(offset int) string {
+		d := today.AddDate(0, 0, offset)
+		return d.Format("Mon 2006-01-02")
+	}
+	past := make([]string, 0, 7)
+	for offset := -7; offset <= -1; offset++ {
+		past = append(past, day(offset))
+	}
+	coming := make([]string, 0, 7)
+	for offset := 1; offset <= 7; offset++ {
+		coming = append(coming, day(offset))
+	}
+	return fmt.Sprintf(
+		"Today is %s, %s. Past 7 days: %s. Next 7 days: %s.",
+		today.Format("Monday"), today.Format("2006-01-02"),
+		strings.Join(past, ", "), strings.Join(coming, ", "),
+	)
+}
+
 func NewOpenAIClient(cfg *config.Config) *OpenAIClient {
 	client := &http.Client{}
 	if cfg.ReqTimeoutSec > 0 {
@@ -134,7 +164,7 @@ func (c *OpenAIClient) parseWithPrompt(ctx context.Context, httpClient *http.Cli
 	if loc == nil {
 		loc = time.FixedZone("IST", 5*3600+1800)
 	}
-	nowStr := time.Now().In(loc).Format("2006-01-02")
+	dates := dateContext(clockNow().In(loc))
 
 	body := map[string]any{
 		"model":                 c.cfg.OpenAILlmModel,
@@ -142,7 +172,7 @@ func (c *OpenAIClient) parseWithPrompt(ctx context.Context, httpClient *http.Cli
 		"max_completion_tokens": maxTokens,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. Today is %s.%s\nText: %s", tz, nowStr, known.contextLines(), transcript)},
+			{"role": "user", "content": fmt.Sprintf("Context: Timezone is %s. %s%s\nText: %s", tz, dates, known.contextLines(), transcript)},
 		},
 	}
 	b, _ := json.Marshal(body)
